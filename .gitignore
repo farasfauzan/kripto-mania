@@ -1,0 +1,19 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Streamlit secrets (contains sensitive API keys and tokens)
+.streamlit/secrets.toml
+.streamlit/
+
+# Temporary test scripts
+test_signal.py
+
+# Local environments
+.env
+.venv
+env/
+venv/
+ENV/
