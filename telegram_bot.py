@@ -36,6 +36,7 @@ TELEGRAM_CHANNEL = "https://t.me/+VPlOcY2wFGA0NWU1"
 _last_sinyal_date = None
 _last_summary_date = None
 _fomo_sent_symbols = {}
+_confluence_sent_symbols = {}  # track real-time confluence alerts
 _active_signals = {}  # track sinyal beli aktif untuk TP/SL monitor
 _daily_stats = {"tp_hit": 0, "sl_hit": 0, "signals_sent": 0}
 
@@ -47,6 +48,12 @@ def log(msg):
 
 def clamp(value, lower, upper):
     return max(lower, min(upper, value))
+
+
+def is_entry_action(action):
+    """Check if action is a genuine entry signal (not 'JANGAN BELI')."""
+    action = str(action or "").upper()
+    return "BELI KUAT" in action or "CICIL BELI" in action
 
 
 # =============================================================================
@@ -329,6 +336,211 @@ def build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_le
     return "APPROVE", net, 1.0
 
 
+def compute_ema200_trend(candles):
+    if candles.empty or len(candles) < 220:
+        return {
+            "ema200_ok": False,
+            "ema200": None,
+            "trend_side": "NO DATA"
+        }
+    close = candles["close"].astype(float)
+    ema200 = close.ewm(span=200, adjust=False).mean()
+    last_price = float(close.iloc[-1])
+    last_ema200 = float(ema200.iloc[-1])
+    if last_price > last_ema200:
+        side = "BULLISH"
+        ok = True
+    else:
+        side = "BEARISH"
+        ok = False
+    return {
+        "ema200_ok": ok,
+        "ema200": last_ema200,
+        "trend_side": side
+    }
+
+
+def compute_volume_anomaly(candles, threshold=1.2):
+    if candles.empty or len(candles) < 22:
+        return {
+            "volume_ok": False,
+            "volume_ratio": 1.0
+        }
+
+    closed = candles.iloc[:-1]
+    volume = closed["volume"].astype(float)
+
+    avg20 = volume.tail(21).iloc[:-1].mean()
+    last_vol = float(volume.iloc[-1])
+
+    if avg20 <= 0:
+        return {
+            "volume_ok": False,
+            "volume_ratio": 1.0
+        }
+
+    ratio = last_vol / avg20
+
+    return {
+        "volume_ok": ratio >= threshold,
+        "volume_ratio": round(ratio, 2)
+    }
+
+
+def detect_bullish_pinbar(candles):
+    if candles.empty or len(candles) < 3:
+        return {
+            "pinbar_ok": False,
+            "pinbar_type": "NO DATA"
+        }
+
+    closed = candles.iloc[:-1]
+    c = closed.iloc[-1]
+
+    open_ = float(c["open"])
+    high = float(c["high"])
+    low = float(c["low"])
+    close = float(c["close"])
+
+    candle_range = high - low
+    body = abs(close - open_)
+    upper_shadow = high - max(open_, close)
+    lower_shadow = min(open_, close) - low
+
+    if candle_range <= 0:
+        return {
+            "pinbar_ok": False,
+            "pinbar_type": "INVALID"
+        }
+
+    body_pct = body / candle_range
+    lower_pct = lower_shadow / candle_range
+    upper_pct = upper_shadow / candle_range
+
+    bullish_pinbar = (
+        lower_pct >= 0.45 and
+        body_pct <= 0.35 and
+        close > open_ and
+        upper_pct <= 0.35
+    )
+
+    return {
+        "pinbar_ok": bullish_pinbar,
+        "pinbar_type": "BULLISH_PINBAR" if bullish_pinbar else "NO_REJECTION"
+    }
+
+
+def compute_dynamic_walls(candles, tolerance_pct=1.0):
+    if candles.empty or len(candles) < 100:
+        return {
+            "dynamic_wall_ok": False,
+            "wall_type": "NO DATA"
+        }
+    close = candles["close"].astype(float)
+    last_price = float(close.iloc[-1])
+    ma99 = float(close.rolling(99).mean().iloc[-1])
+    mid = float(close.tail(20).mean())
+    std = float(close.tail(20).std())
+    upper_bb = mid + 2 * std
+    lower_bb = mid - 2 * std
+    def near(a, b):
+        if b <= 0:
+            return False
+        return abs(a - b) / b * 100 <= tolerance_pct
+    near_ma99 = near(last_price, ma99)
+    near_lower_bb = near(last_price, lower_bb)
+    near_upper_bb = near(last_price, upper_bb)
+    ok = near_ma99 or near_lower_bb
+    if near_lower_bb:
+        wall_type = "LOWER_BB"
+    elif near_ma99:
+        wall_type = "MA99"
+    elif near_upper_bb:
+        wall_type = "UPPER_BB"
+    else:
+        wall_type = "NONE"
+    return {
+        "dynamic_wall_ok": ok,
+        "wall_type": wall_type,
+        "ma99": ma99,
+        "lower_bb": lower_bb,
+        "upper_bb": upper_bb
+    }
+
+
+def compute_static_sr(candles, tolerance_pct=1.2):
+    if candles.empty or len(candles) < 100:
+        return {
+            "sr_ok": False,
+            "sr_type": "NO DATA",
+            "support": None,
+            "resistance": None,
+        }
+
+    closed = candles.iloc[:-1] if len(candles) > 101 else candles
+    recent = closed.tail(100)
+
+    last_price = float(recent["close"].iloc[-1])
+    support = float(recent["low"].min())
+    resistance = float(recent["high"].max())
+
+    near_support = abs(last_price - support) / support * 100 <= tolerance_pct if support > 0 else False
+    near_resistance = abs(last_price - resistance) / resistance * 100 <= tolerance_pct if resistance > 0 else False
+
+    return {
+        "sr_ok": near_support,
+        "sr_type": "SUPPORT" if near_support else "RESISTANCE" if near_resistance else "NONE",
+        "support": support,
+        "resistance": resistance,
+    }
+
+
+def compute_confluence_signal(candles):
+    ema200 = compute_ema200_trend(candles)
+    volume = compute_volume_anomaly(candles, threshold=1.2)
+    pinbar = detect_bullish_pinbar(candles)
+    dynamic = compute_dynamic_walls(candles, tolerance_pct=1.0)
+    sr = compute_static_sr(candles, tolerance_pct=1.2)
+    checks = {
+        "Trend EMA200": ema200["ema200_ok"],
+        "Volume 1.2x MA20": volume["volume_ok"],
+        "Bullish Pinbar": pinbar["pinbar_ok"],
+        "Dynamic Wall": dynamic["dynamic_wall_ok"],
+        "Static Support": sr["sr_ok"],
+    }
+    passed = sum(1 for v in checks.values() if v)
+    total = len(checks)
+    if passed == 5:
+        label = "VALID 5/5"
+        strength = "SANGAT KUAT"
+        allow_entry = True
+    elif passed == 4:
+        label = "VALID 4/5"
+        strength = "KUAT"
+        allow_entry = True
+    elif passed == 3:
+        label = "VALID 3/5"
+        strength = "PANTAU"
+        allow_entry = False
+    else:
+        label = f"INVALID {passed}/5"
+        strength = "TOLAK"
+        allow_entry = False
+    return {
+        "confluence_passed": passed,
+        "confluence_total": total,
+        "confluence_label": label,
+        "confluence_strength": strength,
+        "allow_entry": allow_entry,
+        "checks": checks,
+        "ema200": ema200,
+        "volume": volume,
+        "pinbar": pinbar,
+        "dynamic": dynamic,
+        "sr": sr,
+    }
+
+
 def analyze_coin(symbol, data, candles):
     """Analisis lengkap satu koin menggunakan semua indikator."""
     price = data["price"]
@@ -364,6 +576,7 @@ def analyze_coin(symbol, data, candles):
     adx_data = compute_adx(candles)
     ml = compute_ml_forecast(candles)
     bt = compute_backtest(candles)
+    confluence = compute_confluence_signal(candles)
 
     # --- SCORING ---
     liquidity_bonus = min(16, vol_idr / 1_000_000_000)
@@ -419,6 +632,18 @@ def analyze_coin(symbol, data, candles):
     else:
         action, emoji = "HINDARI", "⛔"
 
+    # Confluence Gate: Entry hanya diperbolehkan jika minimal 4 dari 5 indikator valid
+    if not confluence["allow_entry"]:
+        if action in ("BELI KUAT", "CICIL BELI"):
+            action = "WATCH" if confluence["confluence_passed"] >= 3 else "JANGAN BELI"
+            emoji = "⚪" if confluence["confluence_passed"] >= 3 else "🔴"
+
+    # Anti-FOMO Filter: Jangan asal masuk jika sudah terlalu dekat harga tertinggi 24h
+    if range_pos > 85 and change > 5:
+        if action in ("BELI KUAT", "CICIL BELI"):
+            action = "WATCH"
+            emoji = "⚪"
+
     # Risk level
     risk_pts = 0
     if abs(change) >= 10: risk_pts += 2
@@ -446,9 +671,10 @@ def analyze_coin(symbol, data, candles):
     sl = price * (1 - stop_pct / 100)
     trailing = clamp(stop_pct * 0.55, 1.5, 5)
 
-    # Allocation (adjusted by verdict)
+    # Allocation (adjusted by verdict, confluence and conf strength)
     risk_mod = {"RENDAH": 1.0, "SEDANG": 0.65, "TINGGI": 0.35}[risk_level]
-    alloc = clamp(7 * (score / 100) * risk_mod * size_mult, 0, 10) if "BELI" in action else 0
+    conf_size_mult = 1.0 if confluence["confluence_passed"] == 5 else 0.5 if confluence["confluence_passed"] == 4 else 0
+    alloc = clamp(7 * (score / 100) * risk_mod * size_mult * conf_size_mult, 0, 10) if is_entry_action(action) and confluence["allow_entry"] else 0
 
     return {
         "symbol": symbol, "price": price, "change": change, "vol_idr": vol_idr,
@@ -463,6 +689,12 @@ def analyze_coin(symbol, data, candles):
         "tp1": tp1, "tp2": tp2, "tp3": tp3, "stop_loss": sl,
         "trailing_pct": round(trailing, 1), "alloc_pct": round(alloc, 1),
         "range_pos": round(range_pos, 1),
+        # Confluence
+        "confluence_passed": confluence["confluence_passed"],
+        "confluence_total": confluence["confluence_total"],
+        "confluence_label": confluence["confluence_label"],
+        "confluence_strength": confluence["confluence_strength"],
+        "confluence_checks": confluence["checks"],
     }
 
 
@@ -574,7 +806,7 @@ def send_sinyal_harian(all_coins):
         "",
     ]
 
-    buy_count = sum(1 for s in signals if "BELI" in s["action"])
+    buy_count = sum(1 for s in signals if is_entry_action(s["action"]))
 
     for s in signals:
         pair_url = MAIN_ASSETS[s["symbol"]].upper().replace("_", "")
@@ -591,7 +823,7 @@ def send_sinyal_harian(all_coins):
             lines.append(f"   Backtest: {s['bt_label']} (WR {s['bt_wr']}%, {s['bt_trades']} trades)")
         lines.append(f"   Risiko: {s['risk_level']} | Verdict: {s['verdict']} ({s['verdict_net']}/100)")
 
-        if "BELI" in s["action"]:
+        if is_entry_action(s["action"]):
             lines.append(f"   TP1/TP2/TP3: {format_idr(s['tp1'])} / {format_idr(s['tp2'])} / {format_idr(s['tp3'])}")
             lines.append(f"   SL: {format_idr(s['stop_loss'])} | Trailing: {s['trailing_pct']}%")
             lines.append(f"   Alokasi: {s['alloc_pct']}% modal")
@@ -729,6 +961,85 @@ def check_fomo_and_alert(all_coins):
             _fomo_sent_symbols[sym] = coin
 
 
+def check_realtime_confluence_alerts(all_coins):
+    global _confluence_sent_symbols
+    now_ts = time.time()
+
+    # Bersihkan cache alert yang sudah lebih dari 12 jam (43200 detik)
+    _confluence_sent_symbols = {k: v for k, v in _confluence_sent_symbols.items() if now_ts - v["sent_at"] < 43200}
+
+    for sym, pair in MAIN_ASSETS.items():
+        if sym not in all_coins:
+            continue
+
+        # Hindari spam: jika baru dikirim dalam 12 jam terakhir, lewati
+        if sym in _confluence_sent_symbols:
+            continue
+
+        try:
+            candles = fetch_candles(pair)
+            time.sleep(0.3)  # rate limit safety
+            if candles.empty:
+                continue
+
+            res = analyze_coin(sym, all_coins[sym], candles)
+            
+            # Cek apakah masuk kriteria 4/5 atau 5/5 dengan aksi BELI
+            if is_entry_action(res["action"]) and res["confluence_passed"] >= 4:
+                # Kirim alert instan!
+                pair_url = pair.upper().replace("_", "")
+                link = f"https://indodax.com/market/{pair_url}?ref={INDODAX_REF}"
+                ch_sign = "+" if res["change"] >= 0 else ""
+                
+                # Buat daftar checklist confluence
+                valid_checks = []
+                for name, ok in res["confluence_checks"].items():
+                    if ok:
+                        valid_checks.append(f"   🟢 {name}: VALID")
+                    else:
+                        valid_checks.append(f"   🔴 {name}: TIDAK")
+                valid_checks_text = "\n".join(valid_checks)
+
+                msg = (
+                    f"🚨 *SINYAL MASUK INSTAN (CONFLUENCE {res['confluence_passed']}/5)* 🚨\n"
+                    f"🔥 *{sym}* — {res['action']} (Score: {res['score']}/100)\n"
+                    f"──────────────────────\n"
+                    f"💵 Harga: {format_idr(res['price'])} ({ch_sign}{res['change']:.2f}%)\n"
+                    f"🛡️ Confluence: *{res['confluence_label']}* ({res['confluence_strength']})\n\n"
+                    f"✅ *Status Gerbang Konfluensi:*\n"
+                    f"{valid_checks_text}\n\n"
+                    f"🧠 ML Forecast: *{res['ml_label']}* ({res['ml_prob']}%, {res['ml_conf']})\n"
+                    f"📊 Backtest: *{res['bt_label']}* (WR {res['bt_wr']}%, {res['bt_trades']} trades)\n"
+                    f"──────────────────────\n"
+                    f"🎯 TP1 / TP2 / TP3: {format_idr(res['tp1'])} / {format_idr(res['tp2'])} / {format_idr(res['tp3'])}\n"
+                    f"🛑 Stop Loss: {format_idr(res['stop_loss'])} | Trailing: {res['trailing_pct']}%\n"
+                    f"💰 Alokasi Modal: *{res['alloc_pct']}%*\n\n"
+                    f"[🔥 EKSEKUSI DI INDODAX]({link})\n"
+                    f"──────────────────────\n"
+                    f"⚠️ *Bukan saran keuangan. Selalu gunakan uang dingin (DYOR).* \n"
+                    f"💎 *Gabung Premium:* {TELEGRAM_CHANNEL}"
+                )
+                
+                send_message(msg, notify=True)
+                log(f"REAL-TIME CONFLUENCE ALERT TERKIRIM untuk {sym} ({res['confluence_label']})")
+                
+                # Masukkan ke list monitor TP/SL bot jika belum ada
+                if sym not in _active_signals:
+                    _active_signals[sym] = {
+                        'entry': res['price'], 'tp1': res['tp1'], 'tp2': res['tp2'], 'tp3': res['tp3'],
+                        'sl': res['stop_loss'], 'hit': set(), 'time': datetime.now(WIB).isoformat(),
+                    }
+                    _daily_stats['signals_sent'] += 1
+                
+                # Catat ke cache agar tidak spam
+                _confluence_sent_symbols[sym] = {
+                    "sent_at": now_ts,
+                    "price": res["price"],
+                }
+        except Exception as e:
+            log(f"Gagal memproses real-time alert untuk {sym}: {e}")
+
+
 def should_send_sinyal():
     global _last_sinyal_date
     now = datetime.now(WIB)
@@ -851,13 +1162,16 @@ if __name__ == "__main__":
             if should_send_sinyal():
                 send_sinyal_harian(all_coins)
 
-            # 2. FOMO detection (setiap siklus)
+            # 2. Real-time Confluence Alert 4/5+ (setiap siklus)
+            check_realtime_confluence_alerts(all_coins)
+
+            # 3. FOMO detection (setiap siklus)
             check_fomo_and_alert(all_coins)
 
-            # 3. TP/SL price monitor
+            # 4. TP/SL price monitor
             check_tp_sl_alerts(all_coins)
 
-            # 4. Daily summary (jam 21:00 WIB)
+            # 5. Daily summary (jam 21:00 WIB)
             send_daily_summary()
 
             time.sleep(120)

@@ -1,5 +1,6 @@
 import os
 import threading
+from textwrap import dedent
 
 import time
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,6 @@ import pandas as pd
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
-from openai import OpenAI
 
 # =============================================================================
 # CONFIG & CONSTANTS
@@ -210,6 +210,13 @@ TELEGRAM_MAX_LENGTH = 4096
 def clamp(value, min_val, max_val):
     return max(min_val, min(value, max_val))
 
+
+def is_entry_action(action):
+    """Check if action is a genuine entry signal (not 'JANGAN BELI')."""
+    action = str(action or "").upper()
+    return "BELI KUAT" in action or "CICIL BELI" in action
+
+
 def _bot_split_text(text, max_len=TELEGRAM_MAX_LENGTH):
     if len(text) <= max_len:
         return [text]
@@ -264,7 +271,7 @@ def _bot_format_idr(value):
     return f"Rp{value:,.2f}"
 
 def _bot_format_sinyal_harian(signals):
-    buy_signals = [s for s in signals if "BELI" in s["action"]]
+    buy_signals = [s for s in signals if is_entry_action(s.get("action", ""))]
     if not buy_signals:
         return None
     now = datetime.now(BOT_WIB)
@@ -321,7 +328,7 @@ def _bot_generate_signal(prices):
         risk_level = "TINGGI" if abs(change) >= 10 or vol_idr < 100_000_000 else "SEDANG" if abs(change) >= 5 or vol_idr < 1_000_000_000 else "RENDAH"
         risk_modifier = {"RENDAH": 1.0, "SEDANG": 0.65, "TINGGI": 0.35}[risk_level]
         allocation_pct = 0
-        if "BELI" in action:
+        if is_entry_action(action):
             allocation_pct = clamp(7 * (score / 100) * risk_modifier, 1, 10)
         gain_pct = clamp(3 + max(change, 0) * 0.85 + (score - 60) * 0.12, 2, 16)
         stop_pct = clamp(2.6 + abs(change) * 0.35 + (1 if risk_level == "TINGGI" else 0), 2.5, 9)
@@ -820,6 +827,7 @@ def fetch_all_ticker_data():
     shared_tickers, shared_at, shared_err = _read_shared_tickers()
     tickers, prices_24h, server_time, error = fetch_indodax_tickers()
     if tickers:
+        _write_shared_tickers(tickers)
         return tickers, prices_24h, server_time, None
     if shared_tickers:
         return shared_tickers, {}, shared_at, "⚠️ Data dari cache (API timeout)"
@@ -1496,10 +1504,12 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     if bt["bt_trades"] >= 6:
         bt_adj = (bt["bt_wr"] - 50) * 0.12
 
-    momentum = change
+    # Market mode adjustment
+    mode = market_stats.get("mode", "normal") if market_stats else "normal"
+    mode_rules = MARKET_MODE_RULES.get(mode, MARKET_MODE_RULES["normal"])
     base = (
         50
-        + momentum * 4.2
+        + change * 4.2
         + liquidity_bonus
         + tech_score * 0.65
         + bb_bonus
@@ -1508,13 +1518,14 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         + bt_adj
         - fomo_penalty
         - micin_penalty
+        + mode_rules.get("score_adjustment", 0)
     )
     score = int(clamp(round(base), 0, 100))
 
     # Action
-    if score >= 80 and momentum > 1:
+    if score >= 80 and change > 1:
         action, emoji = "BELI KUAT", "🟢"
-    elif score >= 65 and momentum > 0:
+    elif score >= 65 and change > 0:
         action, emoji = "CICIL BELI", "🟡"
     elif score >= 50:
         action, emoji = "WATCH", "⚪"
@@ -1556,7 +1567,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     # Laraskan rekomendasi tindakan berdasarkan komite verdict
     if verdict == "TOLAK":
         action, emoji = "JANGAN BELI", "🔴"
-    elif verdict == "TUNGGU" and "BELI" in action:
+    elif verdict == "TUNGGU" and is_entry_action(action):
         action, emoji = "WATCH", "⚪"
 
     # --- ENTRY ZONE & TWO STEPS AHEAD ---
@@ -1572,7 +1583,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     resistance_r2 = price * 1.10  # +10%
     
     # Two Steps Ahead scenarios
-    if "BELI" in action:
+    if is_entry_action(action):
         # Skenario bullish
         step1_action = "🚀 Naik ke R1"
         step1_price = resistance_r1
@@ -1615,17 +1626,23 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         trailing = clamp((1.5 * atr) / price * 100 * 0.55, 1.5, 5)
     else:
         # Fallback ke rumus momentum biasa jika ATR tidak valid
-        gain_pct = clamp(3 + max(momentum, 0) * 0.75 + (score - 60) * 0.22, 2, 18)
-        stop_pct = clamp(2.6 + abs(momentum) * 0.35 + (1 if risk_level == "TINGGI" else 0), 2.5, 9)
+        gain_pct = clamp(3 + max(change, 0) * 0.75 + (score - 60) * 0.22, 2, 18)
+        stop_pct = clamp(2.6 + abs(change) * 0.35 + (1 if risk_level == "TINGGI" else 0), 2.5, 9)
         tp1 = price * (1 + gain_pct * 0.35 / 100)
         tp2 = price * (1 + gain_pct * 0.7 / 100)
         target = price * (1 + gain_pct / 100)
         stop_loss = price * (1 - stop_pct / 100)
         trailing = clamp(stop_pct * 0.55, 1.5, 5)
 
-    # Allocation (adjusted by verdict and confluence)
+    # Allocation (adjusted by verdict, confluence, conf strength, and market mode)
     risk_mod = {"RENDAH": 1.0, "SEDANG": 0.65, "TINGGI": 0.35}[risk_level]
-    alloc = clamp(7 * (score / 100) * risk_mod * size_mult, 0, 10) if "BELI" in action and confluence["allow_entry"] else 0
+    conf_size_mult = 1.0 if confluence["confluence_passed"] == 5 else 0.5 if confluence["confluence_passed"] == 4 else 0
+    market_mult = mode_rules.get("allocation_multiplier", 1.0)
+    alloc = (
+        clamp(7 * (score / 100) * risk_mod * size_mult * conf_size_mult * market_mult, 0, 10)
+        if is_entry_action(action) and confluence["allow_entry"]
+        else 0
+    )
 
     category = COIN_CATEGORIES.get(symbol, "Lainnya")
     category_color = CATEGORY_COLORS.get(category, "#6b7280")
@@ -1687,7 +1704,7 @@ def _cached_fetch_candles_parallel(pairs_list):
         except Exception:
             return p, pd.DataFrame()
             
-    with ThreadPoolExecutor(max_workers=12) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(fetch_one, p) for p in unique_pairs]
         for fut in futures:
             p, df = fut.result()
@@ -1851,7 +1868,7 @@ def render_sidebar(market_stats, fg_data, all_results):
             st.markdown(f"**Hijau/Merah:** {market_stats['green_count']}/{market_stats['red_count']}")
             st.markdown(f"**Volume:** {format_idr(market_stats['total_vol'])}")
         # Top picks
-        buy_picks = [r for r in all_results if "BELI" in r["action"]][:3]
+        buy_picks = [r for r in all_results if is_entry_action(r.get("action", ""))][:3]
         if buy_picks:
             st.markdown("#### 🔥 Top 3 Picks")
             for p in buy_picks:
@@ -1925,19 +1942,63 @@ def render_rekomendasi_card(item, idx):
     
     # Tentukan teks tombol dan CSS class berdasarkan status rekomendasi
     is_buy_signal = (
-        "BELI" in item.get("action", "") and
+        is_entry_action(item.get("action", "")) and
         item.get("allocation_pct", 0) > 0 and
         item.get("confluence_passed", 0) >= 4 and
         item.get("verdict", "") not in ("TOLAK", "TUNGGU")
     )
 
     if is_buy_signal:
-        cta_text = "🔥 Beli di Indodax"
+        if item.get("confluence_passed", 0) == 5:
+            cta_text = "🔥 Entry Valid"
+        else:
+            cta_text = "🟡 Entry Kecil"
         cta_class = "buy-button-sm"
     else:
         cta_text = "👀 Pantau di Indodax"
         cta_class = "buy-button-sm neutral"
         
+    # Scenario UI: jangan tampilkan "Skenario Bullish" untuk JANGAN BELI/HINDARI
+    action_text = str(item.get("action", ""))
+    entry_action = is_entry_action(action_text)
+    
+    if entry_action:
+        left_scenario_title = "✅ SKENARIO BULLISH"
+        left_scenario_color = "#22c55e"
+        left_scenario_bg = "rgba(34,197,94,0.08)"
+        left_scenario_border = "#22c55e20"
+    elif "WATCH" in action_text:
+        left_scenario_title = "👀 RENCANA PANTAU"
+        left_scenario_color = "#f59e0b"
+        left_scenario_bg = "rgba(245,158,11,0.08)"
+        left_scenario_border = "#f59e0b25"
+    else:
+        left_scenario_title = "⛔ STATUS"
+        left_scenario_color = "#94a3b8"
+        left_scenario_bg = "rgba(148,163,184,0.08)"
+        left_scenario_border = "#94a3b825"
+    
+    def scenario_price(value):
+        try:
+            value = float(value)
+            return format_price(value) if value > 0 else "-"
+        except (TypeError, ValueError):
+            return "-"
+    
+    def scenario_pct(value, force_plus=False):
+        try:
+            value = float(value)
+            if value == 0:
+                return "-"
+            return f"{value:+.1f}%" if force_plus else f"{value:.1f}%"
+        except (TypeError, ValueError):
+            return "-"
+    
+    step1_price_text = scenario_price(item.get("step1_price", 0))
+    step1_gain_text = scenario_pct(item.get("step1_gain", 0), force_plus=True)
+    fail_price_text = scenario_price(item.get("fail_price", 0))
+    fail_loss_text = scenario_pct(item.get("fail_loss", 0))
+    
     # Confluence checklist HTML
     confluence_passed = item.get("confluence_passed", 0)
     confluence_label = item.get("confluence_label", "INVALID 0/5")
@@ -1955,15 +2016,15 @@ def render_rekomendasi_card(item, idx):
     for label, ok in confluence_checks.items():
         icon = "🟢" if ok else "🔴"
         style = "color:#22c55e;font-weight:700" if ok else "color:#94a3b8"
-        checklist_html += f"""
-        <div style="display:flex;justify-content:space-between;font-size:0.75rem;padding:0.15rem 0.3rem">
-            <span style="{style}">{icon} {label}</span>
-            <span style="font-weight:bold;{style}">{'VALID' if ok else 'TOLAK'}</span>
-        </div>
-        """
+        checklist_html += (
+            f'<div style="display:flex;justify-content:space-between;font-size:0.75rem;padding:0.15rem 0.3rem">'
+            f'<span style="{style}">{icon} {label}</span>'
+            f'<span style="font-weight:bold;{style}">{"VALID" if ok else "TOLAK"}</span>'
+            f'</div>'
+        )
         
     st.markdown(
-        f"""
+        dedent(f"""
         <div class="rekomendasi-card" style="margin-bottom:0.8rem">
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem">
                 <div style="display:flex;align-items:center;gap:0.6rem">
@@ -2002,17 +2063,17 @@ def render_rekomendasi_card(item, idx):
             </div>
             <!-- TWO STEPS AHEAD -->
             <div style="margin-top:0.5rem;display:grid;grid-template-columns:1fr 1fr;gap:0.4rem">
-                <div style="background:rgba(34,197,94,0.08);border-radius:10px;padding:0.4rem;text-align:center;border:1px solid #22c55e20">
-                    <div style="font-size:0.65rem;color:#22c55e;font-weight:700">✅ SKENARIO BULLISH</div>
+                <div style="background:{left_scenario_bg};border-radius:10px;padding:0.4rem;text-align:center;border:1px solid {left_scenario_border}">
+                    <div style="font-size:0.65rem;color:{left_scenario_color};font-weight:700">{left_scenario_title}</div>
                     <div style="font-size:0.75rem;color:#ccc;margin-top:0.15rem">{item.get('step1_action', '⏳')}</div>
-                    <div style="font-size:0.85rem;font-weight:800;color:#22c55e">{format_price(item.get('step1_price', 0))}</div>
-                    <div style="font-size:0.7rem;color:#22c55e">+{item.get('step1_gain', 0):.1f}%</div>
+                    <div style="font-size:0.85rem;font-weight:800;color:{left_scenario_color}">{step1_price_text}</div>
+                    <div style="font-size:0.7rem;color:{left_scenario_color}">{step1_gain_text}</div>
                 </div>
                 <div style="background:rgba(239,68,68,0.08);border-radius:10px;padding:0.4rem;text-align:center;border:1px solid #ef444420">
                     <div style="font-size:0.65rem;color:#ef4444;font-weight:700">❌ SKENARIO BEARISH</div>
                     <div style="font-size:0.75rem;color:#ccc;margin-top:0.15rem">{item.get('fail_action', '⛔')}</div>
-                    <div style="font-size:0.85rem;font-weight:800;color:#ef4444">{format_price(item.get('fail_price', 0))}</div>
-                    <div style="font-size:0.7rem;color:#ef4444">{item.get('fail_loss', 0):.1f}%</div>
+                    <div style="font-size:0.85rem;font-weight:800;color:#ef4444">{fail_price_text}</div>
+                    <div style="font-size:0.7rem;color:#ef4444">{fail_loss_text}</div>
                 </div>
             </div>
             <!-- CONFLUENCE GATE CHECKLIST -->
@@ -2029,14 +2090,14 @@ def render_rekomendasi_card(item, idx):
                 <a href="{buy_link}" target="_blank" class="{cta_class}">{cta_text}</a>
             </div>
         </div>
-        """,
+        """).strip(),
         unsafe_allow_html=True,
     )
 
 
 
 def render_rekomendasi_list(results, title, max_items=10):
-    buy_results = [r for r in results if "BELI" in r["action"]]
+    buy_results = [r for r in results if is_entry_action(r.get("action", ""))]
     watch_results = [r for r in results if "WATCH" in r["action"]]
     st.markdown(
         f"""<div class="rekomendasi-hero">
@@ -2072,7 +2133,7 @@ def render_fomo_alerts(tickers, prices_24h):
                         <div style="font-weight:800;font-size:1.1rem">{coin['symbol']}</div>
                         <div style="font-size:0.85rem;color:#888">{format_price(coin['price'])}</div>
                         <div style="font-size:0.75rem;color:#666">Vol: {format_idr(coin['vol_idr'])}</div>
-                        <a href="{link}" target="_blank" style="display:inline-block;margin-top:0.4rem;background:#ef4444;color:white;padding:4px 14px;border-radius:8px;text-decoration:none;font-weight:700;font-size:0.8rem">🔥 Beli</a>
+                        <a href="{link}" target="_blank" style="display:inline-block;margin-top:0.4rem;background:#ef4444;color:white;padding:4px 14px;border-radius:8px;text-decoration:none;font-weight:700;font-size:0.8rem">⚠️ Pantau</a>
                     </div>""",
                     unsafe_allow_html=True,
                 )
@@ -2088,7 +2149,7 @@ def render_fomo_alerts(tickers, prices_24h):
                         <div style="font-size:1.3rem;font-weight:900;color:#f59e0b">+{coin['change']}%</div>
                         <div style="font-weight:800;font-size:1rem">{coin['symbol']}</div>
                         <div style="font-size:0.8rem;color:#888">{format_price(coin['price'])}</div>
-                        <a href="{link}" target="_blank" style="display:inline-block;margin-top:0.3rem;background:#f59e0b;color:white;padding:3px 12px;border-radius:8px;text-decoration:none;font-weight:700;font-size:0.75rem">🔥 Beli</a>
+                        <a href="{link}" target="_blank" style="display:inline-block;margin-top:0.3rem;background:#f59e0b;color:white;padding:3px 12px;border-radius:8px;text-decoration:none;font-weight:700;font-size:0.75rem">⚠️ Pantau</a>
                     </div>""",
                     unsafe_allow_html=True,
                 )
@@ -2152,6 +2213,16 @@ def main():
         render_footer()
         return
     market_stats = compute_market_stats(tickers, prices_24h)
+    if market_stats is None:
+        market_stats = {
+            "mode": "normal",
+            "green_pct": 0,
+            "green_count": 0,
+            "red_count": 0,
+            "avg_change": 0,
+            "total_vol": 0,
+            "total_pairs": 0,
+        }
     main_data = extract_asset_data(tickers, prices_24h, MAIN_ASSETS)
     micin_data = extract_asset_data(tickers, prices_24h, MICIN_ASSETS)
     all_data = {**main_data, **micin_data}
@@ -2271,7 +2342,7 @@ def main():
                             # Ringkasan data market saat ini untuk diumpankan sebagai context
                             market_context = []
                             # Ambil 5 koin dengan score beli tertinggi
-                            buy_results = [r for r in all_results if "BELI" in r["action"]]
+                            buy_results = [r for r in all_results if is_entry_action(r.get("action", ""))]
                             top_picks = buy_results[:5]
                             
                             context_str = "Kondisi Market Real-time Indodax:\n"
@@ -2297,6 +2368,7 @@ def main():
                             for msg in st.session_state.messages[-10:]:
                                 api_messages.append({"role": msg["role"], "content": msg["content"]})
                                 
+                            from openai import OpenAI
                             client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
                             response = client.chat.completions.create(
                                 model="deepseek-chat",
