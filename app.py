@@ -469,6 +469,15 @@ st.markdown(
         transition: all 0.2s ease;
     }
     .buy-button-sm:hover { background: #16a34a; transform: scale(1.04); }
+    .buy-button-sm.neutral {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        color: #bbb !important;
+    }
+    .buy-button-sm.neutral:hover {
+        background: rgba(255, 255, 255, 0.12);
+        color: white !important;
+    }
     .rekomendasi-hero {
         background: linear-gradient(135deg, #022c22, #064e3b, #065f46);
         border: 2px solid #10b981;
@@ -776,12 +785,19 @@ def loading_markup(title="Membaca market crypto...", detail="Mengambil harga Ind
 # =============================================================================
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_indodax_tickers():
-    """Fetch all tickers from Indodax API."""
+    """Fetch all tickers and 24h reference prices from Indodax Summaries API."""
     try:
-        resp = requests.get("https://indodax.com/api/tickers", timeout=10)
+        resp = requests.get("https://indodax.com/api/summaries", timeout=10)
         data = resp.json()
         tickers = data.get("tickers", {})
-        server_time = data.get("server_time", None)
+        prices_24h = data.get("prices_24h", {})
+        
+        server_time = None
+        if tickers:
+            # Extract server time from the first available ticker
+            first_ticker = list(tickers.values())[0]
+            server_time = first_ticker.get("server_time")
+            
         if server_time:
             try:
                 server_dt = datetime.fromtimestamp(int(server_time), tz=timezone.utc)
@@ -789,33 +805,26 @@ def fetch_indodax_tickers():
                 server_dt = datetime.now(timezone.utc)
         else:
             server_dt = datetime.now(timezone.utc)
-        return tickers, server_dt, None
+        return tickers, prices_24h, server_dt, None
     except requests.RequestException as e:
-        return None, None, str(e)
+        return None, None, None, str(e)
     except (KeyError, ValueError, TypeError) as e:
-        return None, None, str(e)
+        return None, None, None, str(e)
 
 
 def fetch_all_ticker_data():
-    """Main fetch function — tries shared tickers first, then API."""
+    """Main fetch function — tries live Summaries API first, fallback to shared tickers."""
     shared_tickers, shared_at, shared_err = _read_shared_tickers()
-    if shared_tickers and shared_at and (datetime.now() - shared_at).total_seconds() < 120:
-        return shared_tickers, shared_at, None
-    tickers, server_time, error = fetch_indodax_tickers()
+    tickers, prices_24h, server_time, error = fetch_indodax_tickers()
     if tickers:
-        return tickers, server_time, None
+        return tickers, prices_24h, server_time, None
     if shared_tickers:
-        return shared_tickers, shared_at, "⚠️ Data dari cache (API timeout)"
-    return {}, datetime.now(), "❌ Gagal ambil data"
+        return shared_tickers, {}, shared_at, "⚠️ Data dari cache (API timeout)"
+    return {}, {}, datetime.now(), "❌ Gagal ambil data"
 
 
-def extract_asset_data(tickers, asset_dict):
-    """Extract price data for a given asset dictionary.
-    
-    Indodax API tidak menyediakan field 'change' secara langsung.
-    Kita hitung perubahan harga dari (last - low) / low * 100 sebagai
-    estimasi perubahan 24 jam.
-    """
+def extract_asset_data(tickers, prices_24h, asset_dict):
+    """Extract price data for a given asset dictionary with accurate 24h change."""
     result = {}
     for symbol, (pair, _) in asset_dict.items():
         if pair in tickers:
@@ -825,11 +834,18 @@ def extract_asset_data(tickers, asset_dict):
                 high = float(info.get("high", 0))
                 low = float(info.get("low", 0))
                 vol_idr = float(info.get("vol_idr", 0))
-                # Hitung perubahan dari low ke last sebagai estimasi 24h change
-                if low > 0:
+                
+                # Gunakan reference price 24 jam lalu dari summaries untuk 24h change nyata
+                pair_key = pair.replace("_", "")
+                ref_price = float(prices_24h.get(pair_key, 0))
+                
+                if ref_price > 0:
+                    change = ((price - ref_price) / ref_price) * 100
+                elif low > 0:
                     change = ((price - low) / low) * 100
                 else:
                     change = 0.0
+                    
                 result[symbol] = {
                     "symbol": symbol,
                     "pair": pair,
@@ -1128,31 +1144,35 @@ def fetch_candles(pair_id, tf="60", lookback_days=21):
 # =============================================================================
 # MARKET ANALYSIS (UPGRADED dengan indikator teknikal)
 # =============================================================================
-def compute_market_stats(tickers):
-    """Compute overall market statistics.
-    
-    Indodax API tidak menyediakan field 'change'. Kita hitung
-    perubahan dari (last - low) / low * 100 sebagai estimasi.
-    """
+def compute_market_stats(tickers, prices_24h):
+    """Compute overall market statistics with accurate 24h changes."""
     idr_pairs = {k: v for k, v in tickers.items() if k.endswith("_idr")}
     if not idr_pairs:
         return None
     changes = []
     volumes = []
     green_count = 0
+    red_count = 0
     for pair, info in idr_pairs.items():
         try:
             price = float(info["last"])
-            low = float(info.get("low", 0))
             vol = float(info.get("vol_idr", 0))
-            if low > 0:
-                change = ((price - low) / low) * 100
+            
+            pair_key = pair.replace("_", "")
+            ref_price = float(prices_24h.get(pair_key, 0))
+            
+            if ref_price > 0:
+                change = ((price - ref_price) / ref_price) * 100
             else:
-                change = 0.0
+                low = float(info.get("low", 0))
+                change = ((price - low) / low) * 100 if low > 0 else 0.0
+                
             changes.append(change)
             volumes.append(vol)
             if change > 0:
                 green_count += 1
+            elif change < 0:
+                red_count += 1
         except (ValueError, TypeError, KeyError):
             continue
 
@@ -1171,7 +1191,7 @@ def compute_market_stats(tickers):
     return {
         "total_pairs": total,
         "green_count": green_count,
-        "red_count": total - green_count,
+        "red_count": red_count,
         "green_pct": round(green_pct, 1),
         "avg_change": round(avg_change, 2),
         "total_vol": total_vol,
@@ -1284,6 +1304,12 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
 
     # Verdict
     verdict, verdict_net, size_mult = build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr)
+
+    # Laraskan rekomendasi tindakan berdasarkan komite verdict
+    if verdict == "TOLAK":
+        action, emoji = "JANGAN BELI", "🔴"
+    elif verdict == "TUNGGU" and "BELI" in action:
+        action, emoji = "WATCH", "⚪"
 
     # --- ENTRY ZONE & TWO STEPS AHEAD ---
     # Entry Zone: harga ideal untuk entry berdasarkan support/resistance
@@ -1570,7 +1596,10 @@ def render_sidebar(market_stats, fg_data, all_results):
         st.markdown("---")
         # Bot status
         st.markdown("#### 🤖 Status Bot")
-        st.markdown("✅ Telegram Bot: **Aktif 24/7**")
+        if BOT_ENABLED:
+            st.markdown("✅ Telegram Bot: **Aktif 24/7**")
+        else:
+            st.markdown("⚪ Telegram Bot: **Nonaktif**")
         st.markdown("✅ Auto-refresh: **60 detik**")
         st.markdown("---")
         st.markdown(
@@ -1631,6 +1660,14 @@ def render_rekomendasi_card(item, idx):
     # Entry Zone display
     entry_color = "#22c55e" if "Koreksi" in item.get("entry_zone_label", "") else "#f59e0b" if "Netral" in item.get("entry_zone_label", "") else "#3b82f6"
     
+    # Tentukan teks tombol dan CSS class berdasarkan status rekomendasi
+    if "BELI" in item["action"]:
+        cta_text = "🔥 Beli di Indodax"
+        cta_class = "buy-button-sm"
+    else:
+        cta_text = "👀 Pantau di Indodax"
+        cta_class = "buy-button-sm neutral"
+        
     st.markdown(
         f"""
         <div class="rekomendasi-card" style="margin-bottom:0.8rem">
@@ -1685,7 +1722,7 @@ def render_rekomendasi_card(item, idx):
                 </div>
             </div>
             <div style="margin-top:0.8rem;text-align:center">
-                <a href="{buy_link}" target="_blank" class="buy-button-sm">🔥 Beli di Indodax</a>
+                <a href="{buy_link}" target="_blank" class="{cta_class}">{cta_text}</a>
             </div>
         </div>
         """,
@@ -1803,16 +1840,16 @@ def main():
     
     loading_placeholder = st.empty()
     loading_placeholder.markdown(loading_markup(), unsafe_allow_html=True)
-    tickers, server_time, error = fetch_all_ticker_data()
+    tickers, prices_24h, server_time, error = fetch_all_ticker_data()
     if error and not tickers:
         loading_placeholder.empty()
         st.error(f"❌ {error}")
         st.info("🔄 Coba refresh halaman dalam beberapa saat.")
         render_footer()
         return
-    market_stats = compute_market_stats(tickers)
-    main_data = extract_asset_data(tickers, MAIN_ASSETS)
-    micin_data = extract_asset_data(tickers, MICIN_ASSETS)
+    market_stats = compute_market_stats(tickers, prices_24h)
+    main_data = extract_asset_data(tickers, prices_24h, MAIN_ASSETS)
+    micin_data = extract_asset_data(tickers, prices_24h, MICIN_ASSETS)
     all_data = {**main_data, **micin_data}
     all_results = analyze_assets(all_data, market_stats)
     main_results = [r for r in all_results if r["symbol"] in MAIN_ASSETS]
@@ -1822,10 +1859,12 @@ def main():
         st.warning(error)
     freshness = "live" if not error else "stale"
     freshness_text = "Live dari Indodax" if not error else "Data cache"
+    
+    WIB = timezone(timedelta(hours=7))
     if server_time:
-        time_str = server_time.strftime("%H:%M:%S WIB")
+        time_str = server_time.astimezone(WIB).strftime("%H:%M:%S WIB")
     else:
-        time_str = datetime.now(timezone(timedelta(hours=7))).strftime("%H:%M:%S WIB")
+        time_str = datetime.now(WIB).strftime("%H:%M:%S WIB")
     st.markdown(
         f"""<div style="display:flex;justify-content:center;margin-bottom:0.5rem">
             <div class="freshness-badge">
