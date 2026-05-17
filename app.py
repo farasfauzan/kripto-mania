@@ -1199,6 +1199,204 @@ def compute_market_stats(tickers, prices_24h):
     }
 
 
+def compute_ema200_trend(candles):
+    if candles.empty or len(candles) < 220:
+        return {
+            "ema200_ok": False,
+            "ema200": None,
+            "trend_side": "NO DATA"
+        }
+    close = candles["close"].astype(float)
+    ema200 = close.ewm(span=200, adjust=False).mean()
+    last_price = float(close.iloc[-1])
+    last_ema200 = float(ema200.iloc[-1])
+    if last_price > last_ema200:
+        side = "BULLISH"
+        ok = True
+    else:
+        side = "BEARISH"
+        ok = False
+    return {
+        "ema200_ok": ok,
+        "ema200": last_ema200,
+        "trend_side": side
+    }
+
+
+def compute_volume_anomaly(candles, threshold=1.2):
+    if candles.empty or len(candles) < 21:
+        return {
+            "volume_ok": False,
+            "volume_ratio": 1.0
+        }
+    volume = candles["volume"].astype(float)
+    avg20 = volume.tail(21).iloc[:-1].mean()
+    last_vol = float(volume.iloc[-1])
+    if avg20 <= 0:
+        return {
+            "volume_ok": False,
+            "volume_ratio": 1.0
+        }
+    ratio = last_vol / avg20
+    return {
+        "volume_ok": ratio >= threshold,
+        "volume_ratio": round(ratio, 2)
+    }
+
+
+def detect_bullish_pinbar(candles):
+    if candles.empty or len(candles) < 2:
+        return {
+            "pinbar_ok": False,
+            "pinbar_type": "NO DATA"
+        }
+    c = candles.iloc[-1]
+    open_ = float(c["open"])
+    high = float(c["high"])
+    low = float(c["low"])
+    close = float(c["close"])
+    candle_range = high - low
+    body = abs(close - open_)
+    upper_shadow = high - max(open_, close)
+    lower_shadow = min(open_, close) - low
+    if candle_range <= 0:
+        return {
+            "pinbar_ok": False,
+            "pinbar_type": "INVALID"
+        }
+    body_pct = body / candle_range
+    lower_pct = lower_shadow / candle_range
+    upper_pct = upper_shadow / candle_range
+    bullish_pinbar = (
+        lower_pct >= 0.45 and
+        body_pct <= 0.35 and
+        close > open_ and
+        upper_pct <= 0.35
+    )
+    return {
+        "pinbar_ok": bullish_pinbar,
+        "pinbar_type": "BULLISH_PINBAR" if bullish_pinbar else "NO_REJECTION"
+    }
+
+
+def compute_dynamic_walls(candles, tolerance_pct=1.0):
+    if candles.empty or len(candles) < 100:
+        return {
+            "dynamic_wall_ok": False,
+            "wall_type": "NO DATA"
+        }
+    close = candles["close"].astype(float)
+    last_price = float(close.iloc[-1])
+    ma99 = float(close.rolling(99).mean().iloc[-1])
+    mid = float(close.tail(20).mean())
+    std = float(close.tail(20).std())
+    upper_bb = mid + 2 * std
+    lower_bb = mid - 2 * std
+    def near(a, b):
+        if b <= 0:
+            return False
+        return abs(a - b) / b * 100 <= tolerance_pct
+    near_ma99 = near(last_price, ma99)
+    near_lower_bb = near(last_price, lower_bb)
+    near_upper_bb = near(last_price, upper_bb)
+    ok = near_ma99 or near_lower_bb
+    if near_lower_bb:
+        wall_type = "LOWER_BB"
+    elif near_ma99:
+        wall_type = "MA99"
+    elif near_upper_bb:
+        wall_type = "UPPER_BB"
+    else:
+        wall_type = "NONE"
+    return {
+        "dynamic_wall_ok": ok,
+        "wall_type": wall_type,
+        "ma99": ma99,
+        "lower_bb": lower_bb,
+        "upper_bb": upper_bb
+    }
+
+
+def compute_static_sr(candles, tolerance_pct=1.2):
+    if candles.empty or len(candles) < 100:
+        return {
+            "sr_ok": False,
+            "sr_type": "NO DATA"
+        }
+    recent = candles.tail(100)
+    last_price = float(recent["close"].iloc[-1])
+    support = float(recent["low"].min())
+    resistance = float(recent["high"].max())
+    near_support = abs(last_price - support) / support * 100 <= tolerance_pct if support > 0 else False
+    near_resistance = abs(last_price - resistance) / resistance * 100 <= tolerance_pct if resistance > 0 else False
+    return {
+        "sr_ok": near_support or near_resistance,
+        "sr_type": "SUPPORT" if near_support else "RESISTANCE" if near_resistance else "NONE",
+        "support": support,
+        "resistance": resistance
+    }
+
+
+def compute_confluence_signal(candles):
+    ema200 = compute_ema200_trend(candles)
+    volume = compute_volume_anomaly(candles, threshold=1.2)
+    pinbar = detect_bullish_pinbar(candles)
+    dynamic = compute_dynamic_walls(candles, tolerance_pct=1.0)
+    sr = compute_static_sr(candles, tolerance_pct=1.2)
+    checks = {
+        "Trend EMA200": ema200["ema200_ok"],
+        "Volume 1.2x MA20": volume["volume_ok"],
+        "Bullish Pinbar": pinbar["pinbar_ok"],
+        "Dynamic Wall": dynamic["dynamic_wall_ok"],
+        "Static Support": sr["sr_ok"],
+    }
+    passed = sum(1 for v in checks.values() if v)
+    total = len(checks)
+    if passed == 5:
+        label = "VALID 5/5"
+        strength = "SANGAT KUAT"
+        allow_entry = True
+    elif passed == 4:
+        label = "VALID 4/5"
+        strength = "KUAT"
+        allow_entry = True
+    elif passed == 3:
+        label = "VALID 3/5"
+        strength = "PANTAU"
+        allow_entry = False
+    else:
+        label = f"INVALID {passed}/5"
+        strength = "TOLAK"
+        allow_entry = False
+    return {
+        "confluence_passed": passed,
+        "confluence_total": total,
+        "confluence_label": label,
+        "confluence_strength": strength,
+        "allow_entry": allow_entry,
+        "checks": checks,
+        "ema200": ema200,
+        "volume": volume,
+        "pinbar": pinbar,
+        "dynamic": dynamic,
+        "sr": sr,
+    }
+
+
+def compute_atr(candles, period=14):
+    if candles.empty or len(candles) < period + 1:
+        return None
+    high = candles["high"].astype(float)
+    low = candles["low"].astype(float)
+    close = candles["close"].astype(float)
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low - close.shift(1)).abs()
+    ], axis=1).max(axis=1)
+    return float(tr.rolling(period).mean().iloc[-1])
+
+
 def analyze_coin_advanced(symbol, data, candles, market_stats):
     """Analisis lengkap satu koin menggunakan semua indikator teknikal."""
     price = data["price"]
@@ -1234,6 +1432,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     adx_data = compute_adx(candles)
     ml = compute_ml_forecast(candles)
     bt = compute_backtest(candles)
+    confluence = compute_confluence_signal(candles)
 
     # --- SCORING (UPGRADED) ---
     liquidity_bonus = min(16, vol_idr / 1_000_000_000)
@@ -1286,6 +1485,18 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         action, emoji = "JANGAN BELI", "🔴"
     else:
         action, emoji = "HINDARI", "⛔"
+
+    # Confluence Gate: Entry hanya diperbolehkan jika minimal 4 dari 5 indikator valid
+    if not confluence["allow_entry"]:
+        if action in ("BELI KUAT", "CICIL BELI"):
+            action = "WATCH" if confluence["confluence_passed"] >= 3 else "JANGAN BELI"
+            emoji = "⚪" if confluence["confluence_passed"] >= 3 else "🔴"
+            
+    # Anti-FOMO Filter: Jangan asal masuk jika sudah terlalu dekat harga tertinggi 24h
+    if range_pos > 85 and change > 5:
+        if action in ("BELI KUAT", "CICIL BELI"):
+            action = "WATCH"
+            emoji = "⚪"
 
     # Risk level
     risk_pts = 0
@@ -1357,18 +1568,27 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         fail_price = 0
         fail_loss = 0
 
-    # Dynamic TP/SL
-    gain_pct = clamp(3 + max(momentum, 0) * 0.75 + (score - 60) * 0.22, 2, 18)
-    stop_pct = clamp(2.6 + abs(momentum) * 0.35 + (1 if risk_level == "TINGGI" else 0), 2.5, 9)
-    tp1 = price * (1 + gain_pct * 0.35 / 100)
-    tp2 = price * (1 + gain_pct * 0.7 / 100)
-    target = price * (1 + gain_pct / 100)
-    stop_loss = price * (1 - stop_pct / 100)
-    trailing = clamp(stop_pct * 0.55, 1.5, 5)
+    # ATR based Dynamic TP/SL with Fallback
+    atr = compute_atr(candles)
+    if atr and atr > 0 and atr < price * 0.25:
+        stop_loss = price - (1.5 * atr)
+        target = price + (2.0 * atr)
+        tp1 = price + (0.7 * atr)
+        tp2 = price + (1.4 * atr)
+        trailing = clamp((1.5 * atr) / price * 100 * 0.55, 1.5, 5)
+    else:
+        # Fallback ke rumus momentum biasa jika ATR tidak valid
+        gain_pct = clamp(3 + max(momentum, 0) * 0.75 + (score - 60) * 0.22, 2, 18)
+        stop_pct = clamp(2.6 + abs(momentum) * 0.35 + (1 if risk_level == "TINGGI" else 0), 2.5, 9)
+        tp1 = price * (1 + gain_pct * 0.35 / 100)
+        tp2 = price * (1 + gain_pct * 0.7 / 100)
+        target = price * (1 + gain_pct / 100)
+        stop_loss = price * (1 - stop_pct / 100)
+        trailing = clamp(stop_pct * 0.55, 1.5, 5)
 
-    # Allocation (adjusted by verdict)
+    # Allocation (adjusted by verdict and confluence)
     risk_mod = {"RENDAH": 1.0, "SEDANG": 0.65, "TINGGI": 0.35}[risk_level]
-    alloc = clamp(7 * (score / 100) * risk_mod * size_mult, 0, 10) if "BELI" in action else 0
+    alloc = clamp(7 * (score / 100) * risk_mod * size_mult, 0, 10) if "BELI" in action and confluence["allow_entry"] else 0
 
     category = COIN_CATEGORIES.get(symbol, "Lainnya")
     category_color = CATEGORY_COLORS.get(category, "#6b7280")
@@ -1407,6 +1627,12 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         "support_s2": support_s2,
         "resistance_r1": resistance_r1,
         "resistance_r2": resistance_r2,
+        # Confluence Gate
+        "confluence_passed": confluence["confluence_passed"],
+        "confluence_total": confluence["confluence_total"],
+        "confluence_label": confluence["confluence_label"],
+        "confluence_strength": confluence["confluence_strength"],
+        "confluence_checks": confluence["checks"],
     }
 
 
@@ -1668,6 +1894,24 @@ def render_rekomendasi_card(item, idx):
         cta_text = "👀 Pantau di Indodax"
         cta_class = "buy-button-sm neutral"
         
+    # Confluence checklist HTML
+    confluence_passed = item.get("confluence_passed", 0)
+    confluence_label = item.get("confluence_label", "INVALID 0/5")
+    confluence_strength = item.get("confluence_strength", "TOLAK")
+    confluence_checks = item.get("confluence_checks", {})
+    conf_color = "#10b981" if "VALID" in confluence_label else "#f59e0b" if "PANTAU" in confluence_strength else "#ef4444"
+    
+    checklist_html = ""
+    for label, ok in confluence_checks.items():
+        icon = "🟢" if ok else "🔴"
+        style = "color:#22c55e;font-weight:700" if ok else "color:#94a3b8"
+        checklist_html += f"""
+        <div style="display:flex;justify-content:space-between;font-size:0.75rem;padding:0.15rem 0.3rem">
+            <span style="{style}">{icon} {label}</span>
+            <span style="font-weight:bold;{style}">{'VALID' if ok else 'TOLAK'}</span>
+        </div>
+        """
+        
     st.markdown(
         f"""
         <div class="rekomendasi-card" style="margin-bottom:0.8rem">
@@ -1719,6 +1963,16 @@ def render_rekomendasi_card(item, idx):
                     <div style="font-size:0.75rem;color:#ccc;margin-top:0.15rem">{item.get('fail_action', '⛔')}</div>
                     <div style="font-size:0.85rem;font-weight:800;color:#ef4444">{format_price(item.get('fail_price', 0))}</div>
                     <div style="font-size:0.7rem;color:#ef4444">{item.get('fail_loss', 0):.1f}%</div>
+                </div>
+            </div>
+            <!-- CONFLUENCE GATE CHECKLIST -->
+            <div style="margin-top:0.6rem;padding:0.5rem;background:rgba(255,255,255,0.03);border-radius:12px;border:1px solid {conf_color}30">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem">
+                    <span style="font-size:0.75rem;color:#aaa;text-transform:uppercase;letter-spacing:0.05em">🛡️ Confluence Gate</span>
+                    <span style="font-size:0.8rem;font-weight:900;color:{conf_color};background:{conf_color}15;padding:0.15rem 0.5rem;border-radius:6px">{confluence_label}</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:0.15rem;background:rgba(0,0,0,0.15);border-radius:8px;padding:0.3rem">
+                    {checklist_html}
                 </div>
             </div>
             <div style="margin-top:0.8rem;text-align:center">
