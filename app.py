@@ -385,25 +385,25 @@ def _bot_format_fomo_alert(fomo_gila, fomo, pumping):
     lines.append(f"💎 *Gabung Premium:* {TELEGRAM_COMMUNITY}")
     return "\n".join(lines)
 
-def _bot_detect_fomo(raw_tickers):
+def _bot_detect_fomo(raw_tickers, prices_24h=None):
     fomo_gila, fomo, pumping = [], [], []
+    prices_24h = prices_24h or {}
+
     for pair, info in raw_tickers.items():
         if not pair.endswith("_idr"):
             continue
+
         try:
             price = float(info["last"])
-            low = float(info.get("low", 0))
             vol = float(info.get("vol_idr", 0))
-            # Indodax API tidak punya field 'change', hitung dari low ke last
-            if low > 0:
-                change = ((price - low) / low) * 100
-            else:
-                change = 0.0
-        except (KeyError, ValueError):
+            change = calculate_24h_change(price, pair, prices_24h)
+
+        except (KeyError, ValueError, TypeError):
             continue
 
         if vol < 100_000_000:
             continue
+
         item = {
             "symbol": pair.replace("_idr", "").upper(),
             "pair": pair,
@@ -411,15 +411,18 @@ def _bot_detect_fomo(raw_tickers):
             "change": round(change, 2),
             "vol_idr": vol,
         }
+
         if change > 15:
             fomo_gila.append(item)
         elif change > 8:
             fomo.append(item)
         elif change > 5:
             pumping.append(item)
+
     fomo_gila.sort(key=lambda x: x["change"], reverse=True)
     fomo.sort(key=lambda x: x["change"], reverse=True)
     pumping.sort(key=lambda x: x["change"], reverse=True)
+
     return fomo_gila, fomo, pumping
 
 # Telegram bot daemon is disabled in app.py to prevent duplication.
@@ -823,40 +826,53 @@ def fetch_all_ticker_data():
     return {}, {}, datetime.now(), "❌ Gagal ambil data"
 
 
+def calculate_24h_change(price, pair, prices_24h):
+    """
+    Hitung change 24h pakai prices_24h dari /api/summaries.
+    Jangan fallback ke low karena bikin bias bullish.
+    """
+    try:
+        pair_key = pair.replace("_", "")
+        ref_price = float((prices_24h or {}).get(pair_key, 0))
+
+        if ref_price <= 0:
+            return 0.0
+
+        return ((float(price) - ref_price) / ref_price) * 100
+    except (TypeError, ValueError, ZeroDivisionError):
+        return 0.0
+
+
 def extract_asset_data(tickers, prices_24h, asset_dict):
-    """Extract price data for a given asset dictionary with accurate 24h change."""
+    """Extract price data with accurate 24h change from prices_24h."""
     result = {}
+
     for symbol, (pair, _) in asset_dict.items():
-        if pair in tickers:
-            try:
-                info = tickers[pair]
-                price = float(info["last"])
-                high = float(info.get("high", 0))
-                low = float(info.get("low", 0))
-                vol_idr = float(info.get("vol_idr", 0))
-                
-                # Gunakan reference price 24 jam lalu dari summaries untuk 24h change nyata
-                pair_key = pair.replace("_", "")
-                ref_price = float(prices_24h.get(pair_key, 0))
-                
-                if ref_price > 0:
-                    change = ((price - ref_price) / ref_price) * 100
-                elif low > 0:
-                    change = ((price - low) / low) * 100
-                else:
-                    change = 0.0
-                    
-                result[symbol] = {
-                    "symbol": symbol,
-                    "pair": pair,
-                    "price": price,
-                    "high": high,
-                    "low": low,
-                    "vol_idr": vol_idr,
-                    "change": round(change, 2),
-                }
-            except (KeyError, ValueError, TypeError):
-                continue
+        if pair not in tickers:
+            continue
+
+        try:
+            info = tickers[pair]
+            price = float(info["last"])
+            high = float(info.get("high", 0))
+            low = float(info.get("low", 0))
+            vol_idr = float(info.get("vol_idr", 0))
+
+            change = calculate_24h_change(price, pair, prices_24h)
+
+            result[symbol] = {
+                "symbol": symbol,
+                "pair": pair,
+                "price": price,
+                "high": high,
+                "low": low,
+                "vol_idr": vol_idr,
+                "change": round(change, 2),
+            }
+
+        except (KeyError, ValueError, TypeError):
+            continue
+
     return result
 
 
@@ -1145,49 +1161,49 @@ def fetch_candles(pair_id, tf="60", lookback_days=21):
 # MARKET ANALYSIS (UPGRADED dengan indikator teknikal)
 # =============================================================================
 def compute_market_stats(tickers, prices_24h):
-    """Compute overall market statistics with accurate 24h changes."""
+    """Compute market statistics using real 24h reference price."""
     idr_pairs = {k: v for k, v in tickers.items() if k.endswith("_idr")}
+
     if not idr_pairs:
         return None
+
     changes = []
     volumes = []
     green_count = 0
     red_count = 0
+
     for pair, info in idr_pairs.items():
         try:
             price = float(info["last"])
             vol = float(info.get("vol_idr", 0))
-            
-            pair_key = pair.replace("_", "")
-            ref_price = float(prices_24h.get(pair_key, 0))
-            
-            if ref_price > 0:
-                change = ((price - ref_price) / ref_price) * 100
-            else:
-                low = float(info.get("low", 0))
-                change = ((price - low) / low) * 100 if low > 0 else 0.0
-                
+            change = calculate_24h_change(price, pair, prices_24h)
+
             changes.append(change)
             volumes.append(vol)
+
             if change > 0:
                 green_count += 1
             elif change < 0:
                 red_count += 1
+
         except (ValueError, TypeError, KeyError):
             continue
 
     if not changes:
         return None
+
     total = len(changes)
-    green_pct = (green_count / total) * 100 if total > 0 else 0
+    green_pct = (green_count / total) * 100
     avg_change = sum(changes) / len(changes)
     total_vol = sum(volumes)
+
     if green_pct >= 70:
         mode = "aggressive"
     elif green_pct >= 40:
         mode = "normal"
     else:
         mode = "defensive"
+
     return {
         "total_pairs": total,
         "green_count": green_count,
@@ -1224,20 +1240,26 @@ def compute_ema200_trend(candles):
 
 
 def compute_volume_anomaly(candles, threshold=1.2):
-    if candles.empty or len(candles) < 21:
+    if candles.empty or len(candles) < 22:
         return {
             "volume_ok": False,
             "volume_ratio": 1.0
         }
-    volume = candles["volume"].astype(float)
+
+    closed = candles.iloc[:-1]
+    volume = closed["volume"].astype(float)
+
     avg20 = volume.tail(21).iloc[:-1].mean()
     last_vol = float(volume.iloc[-1])
+
     if avg20 <= 0:
         return {
             "volume_ok": False,
             "volume_ratio": 1.0
         }
+
     ratio = last_vol / avg20
+
     return {
         "volume_ok": ratio >= threshold,
         "volume_ratio": round(ratio, 2)
@@ -1245,34 +1267,42 @@ def compute_volume_anomaly(candles, threshold=1.2):
 
 
 def detect_bullish_pinbar(candles):
-    if candles.empty or len(candles) < 2:
+    if candles.empty or len(candles) < 3:
         return {
             "pinbar_ok": False,
             "pinbar_type": "NO DATA"
         }
-    c = candles.iloc[-1]
+
+    closed = candles.iloc[:-1]
+    c = closed.iloc[-1]
+
     open_ = float(c["open"])
     high = float(c["high"])
     low = float(c["low"])
     close = float(c["close"])
+
     candle_range = high - low
     body = abs(close - open_)
     upper_shadow = high - max(open_, close)
     lower_shadow = min(open_, close) - low
+
     if candle_range <= 0:
         return {
             "pinbar_ok": False,
             "pinbar_type": "INVALID"
         }
+
     body_pct = body / candle_range
     lower_pct = lower_shadow / candle_range
     upper_pct = upper_shadow / candle_range
+
     bullish_pinbar = (
         lower_pct >= 0.45 and
         body_pct <= 0.35 and
         close > open_ and
         upper_pct <= 0.35
     )
+
     return {
         "pinbar_ok": bullish_pinbar,
         "pinbar_type": "BULLISH_PINBAR" if bullish_pinbar else "NO_REJECTION"
@@ -1321,19 +1351,26 @@ def compute_static_sr(candles, tolerance_pct=1.2):
     if candles.empty or len(candles) < 100:
         return {
             "sr_ok": False,
-            "sr_type": "NO DATA"
+            "sr_type": "NO DATA",
+            "support": None,
+            "resistance": None,
         }
-    recent = candles.tail(100)
+
+    closed = candles.iloc[:-1] if len(candles) > 101 else candles
+    recent = closed.tail(100)
+
     last_price = float(recent["close"].iloc[-1])
     support = float(recent["low"].min())
     resistance = float(recent["high"].max())
+
     near_support = abs(last_price - support) / support * 100 <= tolerance_pct if support > 0 else False
     near_resistance = abs(last_price - resistance) / resistance * 100 <= tolerance_pct if resistance > 0 else False
+
     return {
-        "sr_ok": near_support or near_resistance,
+        "sr_ok": near_support,
         "sr_type": "SUPPORT" if near_support else "RESISTANCE" if near_resistance else "NONE",
         "support": support,
-        "resistance": resistance
+        "resistance": resistance,
     }
 
 
@@ -1887,7 +1924,14 @@ def render_rekomendasi_card(item, idx):
     entry_color = "#22c55e" if "Koreksi" in item.get("entry_zone_label", "") else "#f59e0b" if "Netral" in item.get("entry_zone_label", "") else "#3b82f6"
     
     # Tentukan teks tombol dan CSS class berdasarkan status rekomendasi
-    if "BELI" in item["action"]:
+    is_buy_signal = (
+        "BELI" in item.get("action", "") and
+        item.get("allocation_pct", 0) > 0 and
+        item.get("confluence_passed", 0) >= 4 and
+        item.get("verdict", "") not in ("TOLAK", "TUNGGU")
+    )
+
+    if is_buy_signal:
         cta_text = "🔥 Beli di Indodax"
         cta_class = "buy-button-sm"
     else:
@@ -1899,7 +1943,13 @@ def render_rekomendasi_card(item, idx):
     confluence_label = item.get("confluence_label", "INVALID 0/5")
     confluence_strength = item.get("confluence_strength", "TOLAK")
     confluence_checks = item.get("confluence_checks", {})
-    conf_color = "#10b981" if "VALID" in confluence_label else "#f59e0b" if "PANTAU" in confluence_strength else "#ef4444"
+    
+    if confluence_label.startswith("VALID 5/5") or confluence_label.startswith("VALID 4/5"):
+        conf_color = "#10b981"
+    elif confluence_label.startswith("VALID 3/5"):
+        conf_color = "#f59e0b"
+    else:
+        conf_color = "#ef4444"
     
     checklist_html = ""
     for label, ok in confluence_checks.items():
@@ -2004,8 +2054,8 @@ def render_rekomendasi_list(results, title, max_items=10):
         render_rekomendasi_card(item, i)
 
 
-def render_fomo_alerts(tickers):
-    fomo_gila, fomo, pumping = _bot_detect_fomo(tickers)
+def render_fomo_alerts(tickers, prices_24h):
+    fomo_gila, fomo, pumping = _bot_detect_fomo(tickers, prices_24h)
     if not fomo_gila and not fomo and not pumping:
         return
     st.markdown("## 🚨 FOMO Alert")
@@ -2137,7 +2187,7 @@ def main():
         render_market_stats(market_stats)
     with col_fg:
         render_fear_greed(fg_data)
-    render_fomo_alerts(tickers)
+    render_fomo_alerts(tickers, prices_24h)
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔥 Rekomendasi Beli", "📊 Semua Aset", "🐕 Micin/Meme", "📈 Analisis Detail", "💬 Tanya AI Advisor (DeepSeek)"])
     with tab1:
