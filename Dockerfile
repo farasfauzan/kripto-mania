@@ -9,6 +9,7 @@ COPY . .
 
 # Hugging Face Spaces requires port 7860
 ENV PORT=7860
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 7860
 
