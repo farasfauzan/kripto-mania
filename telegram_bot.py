@@ -809,7 +809,8 @@ def send_daily_summary():
 # MAIN DAEMON LOOP
 # =============================================================================
 if __name__ == "__main__":
-    keep_alive()
+    if os.environ.get("RUN_KEEP_ALIVE") == "true":
+        keep_alive()
 
     log("BOT DAEMON ULTRA SMART -- 24/7")
     log("   Sinyal: 08:00 WIB (RSI+EMA+MACD+BB+Supertrend+ADX+ML+Backtest)")
