@@ -1174,6 +1174,111 @@ def render_market_mode_banner(market_stats):
     )
 
 
+def fetch_fear_greed():
+    """Fetch Fear & Greed Index from alternative.me API."""
+    try:
+        resp = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5)
+        data = resp.json()["data"][0]
+        return {"value": int(data["value"]), "label": data["value_classification"]}
+    except Exception:
+        return None
+
+
+def render_fear_greed(fg_data):
+    """Render Fear & Greed Index gauge widget."""
+    if not fg_data:
+        return
+    val = fg_data["value"]
+    label = fg_data["label"]
+    if val <= 25:
+        color, emoji = "#ef4444", "😱"
+    elif val <= 45:
+        color, emoji = "#f97316", "😰"
+    elif val <= 55:
+        color, emoji = "#eab308", "😐"
+    elif val <= 75:
+        color, emoji = "#22c55e", "😊"
+    else:
+        color, emoji = "#16a34a", "🤑"
+    st.markdown(
+        f"""
+        <div style="background:linear-gradient(135deg,#0f172a,#1e293b);border-radius:16px;padding:1rem 1.5rem;
+                    margin:0.5rem 0;text-align:center;border:1px solid {color}40">
+            <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.3rem">
+                Fear & Greed Index
+            </div>
+            <div style="font-size:2.5rem;font-weight:900;color:{color}">{emoji} {val}</div>
+            <div style="font-size:0.9rem;font-weight:700;color:{color};text-transform:uppercase">{label}</div>
+            <div style="margin-top:0.5rem;background:#334155;border-radius:8px;height:8px;overflow:hidden">
+                <div style="width:{val}%;height:100%;background:linear-gradient(90deg,#ef4444,#f97316,#eab308,#22c55e);border-radius:8px"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.6rem;color:#64748b;margin-top:0.2rem">
+                <span>Extreme Fear</span><span>Extreme Greed</span>
+            </div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_sidebar(market_stats, fg_data, all_results):
+    """Render sidebar with referral CTA, market summary, and bot status."""
+    with st.sidebar:
+        st.markdown(
+            f"""
+            <div style="text-align:center;padding:1rem 0">
+                <div style="font-size:1.5rem;font-weight:900;background:linear-gradient(135deg,#10b981,#3b82f6);
+                            -webkit-background-clip:text;-webkit-text-fill-color:transparent">💰 Kripto Mania</div>
+                <div style="color:#64748b;font-size:0.8rem;margin-top:0.3rem">Dashboard Trading Premium</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown("---")
+        # Referral CTA — prominent
+        st.markdown(
+            f"""
+            <div style="background:linear-gradient(135deg,#059669,#10b981);border-radius:12px;padding:1rem;
+                        text-align:center;margin-bottom:1rem">
+                <div style="font-size:1.1rem;font-weight:800;color:white">🚀 Mulai Trading Sekarang!</div>
+                <div style="font-size:0.75rem;color:#d1fae5;margin:0.3rem 0">Daftar Indodax gratis & dapatkan bonus</div>
+                <a href="{INDODAX_REF}" target="_blank" style="display:inline-block;background:white;color:#059669;
+                   font-weight:800;padding:0.5rem 1.5rem;border-radius:8px;text-decoration:none;margin-top:0.3rem;
+                   font-size:0.9rem">Daftar Sekarang →</a>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        # Fear & Greed in sidebar
+        if fg_data:
+            render_fear_greed(fg_data)
+        # Market summary
+        st.markdown("#### 📊 Ringkasan Market")
+        if market_stats:
+            mode_rules = MARKET_MODE_RULES[market_stats['mode']]
+            st.markdown(f"**Status:** {mode_rules['label']}")
+            st.markdown(f"**Hijau/Merah:** {market_stats['green_count']}/{market_stats['red_count']}")
+            st.markdown(f"**Volume:** {format_idr(market_stats['total_vol'])}")
+        # Top picks
+        buy_picks = [r for r in all_results if "BELI" in r["action"]][:3]
+        if buy_picks:
+            st.markdown("#### 🔥 Top 3 Picks")
+            for p in buy_picks:
+                st.markdown(f"**{p['symbol']}** — Score {p['score']}/100 · {p['change']:+.1f}%")
+        st.markdown("---")
+        # Bot status
+        st.markdown("#### 🤖 Status Bot")
+        st.markdown("✅ Telegram Bot: **Aktif 24/7**")
+        st.markdown("✅ Auto-refresh: **60 detik**")
+        st.markdown("---")
+        st.markdown(
+            f"""
+            <div style="text-align:center">
+                <a href="{TELEGRAM_COMMUNITY}" target="_blank" style="color:#3b82f6;font-weight:700;text-decoration:none">
+                    💬 Gabung Telegram Premium
+                </a>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+
 def render_market_stats(market_stats):
     if not market_stats:
         return
@@ -1394,8 +1499,14 @@ def main():
         </div>""",
         unsafe_allow_html=True,
     )
+    fg_data = fetch_fear_greed()
+    render_sidebar(market_stats, fg_data, all_results)
     render_market_mode_banner(market_stats)
-    render_market_stats(market_stats)
+    col_stats, col_fg = st.columns([3, 1])
+    with col_stats:
+        render_market_stats(market_stats)
+    with col_fg:
+        render_fear_greed(fg_data)
     render_fomo_alerts(tickers)
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔥 Rekomendasi Beli", "📊 Semua Aset", "🐕 Micin/Meme", "📈 Analisis Detail", "💬 Tanya AI Advisor (DeepSeek)"])
@@ -1435,6 +1546,20 @@ def main():
             "Konsultasikan kondisi portofolio, analisis koin, atau tanyakan pergerakan market Indodax hari ini secara cerdas bersama asisten AI khusus Kripto Mania."
         )
         
+        # Quick prompt buttons
+        quick_prompts = [
+            "🔥 Koin mana yang paling potensial naik hari ini?",
+            "💰 Berapa alokasi ideal untuk pemula modal 1 juta?",
+            "📊 Analisis BTC dan ETH untuk minggu ini",
+            "⚠️ Koin mana yang harus dihindari saat ini?",
+        ]
+        qp_cols = st.columns(2)
+        selected_prompt = None
+        for i, qp in enumerate(quick_prompts):
+            with qp_cols[i % 2]:
+                if st.button(qp, key=f"qp_{i}", use_container_width=True):
+                    selected_prompt = qp
+        
         # Ambil API key
         api_key = get_secret("DEEPSEEK_API_KEY", "")
         
@@ -1449,9 +1574,11 @@ def main():
             for message in st.session_state.messages:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
-                    
-            # Chat input
-            if prompt := st.chat_input("Tanyakan analisis market di sini... (contoh: Bagaimana outlook BTC hari ini? Koin apa yang bagus dibeli?)"):
+            
+            # Handle quick prompt or chat input
+            chat_input = st.chat_input("Tanyakan analisis market di sini...")
+            prompt = selected_prompt or chat_input
+            if prompt:
                 # Tampilkan pesan user
                 with st.chat_message("user"):
                     st.markdown(prompt)
