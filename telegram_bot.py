@@ -12,6 +12,7 @@ import os
 import time
 import requests
 import pandas as pd
+import json
 from datetime import datetime, timezone, timedelta
 from keep_alive import keep_alive
 
@@ -32,6 +33,10 @@ MICIN_COINS = {"DOGE", "PEPE", "SHIB", "BONK", "FLOKI", "LUNC", "BTT"}
 
 TELEGRAM_CHANNEL = "https://t.me/+VPlOcY2wFGA0NWU1"
 
+# === NOTIFICATION CONTROLS ===
+ENABLE_FOMO_ALERTS = False  # Set False untuk mematikan notifikasi FOMO/pumping. Set True untuk mengaktifkan.
+ENABLE_CONFLUENCE_ALERTS = True  # Set False untuk mematikan notifikasi real-time Confluence.
+
 # === STATE ===
 _last_sinyal_date = None
 _last_summary_date = None
@@ -39,6 +44,58 @@ _fomo_sent_symbols = {}
 _confluence_sent_symbols = {}  # track real-time confluence alerts
 _active_signals = {}  # track sinyal beli aktif untuk TP/SL monitor
 _daily_stats = {"tp_hit": 0, "sl_hit": 0, "signals_sent": 0}
+_last_fomo_alert_time = 0  # track last global FOMO alert to prevent spamming
+
+STATE_FILE = "bot_state.json"
+
+def load_bot_state():
+    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time
+    if not os.path.exists(STATE_FILE):
+        log("No state file found. Starting fresh.")
+        return
+    try:
+        with open(STATE_FILE, "r") as f:
+            data = json.load(f)
+        _last_sinyal_date = data.get("last_sinyal_date", _last_sinyal_date)
+        _last_summary_date = data.get("last_summary_date", _last_summary_date)
+        _fomo_sent_symbols = data.get("fomo_sent_symbols", _fomo_sent_symbols)
+        _confluence_sent_symbols = data.get("confluence_sent_symbols", _confluence_sent_symbols)
+        _active_signals = data.get("active_signals", _active_signals)
+        _daily_stats = data.get("daily_stats", _daily_stats)
+        _last_fomo_alert_time = data.get("last_fomo_alert_time", _last_fomo_alert_time)
+        
+        # Convert _active_signals hit back to set (JSON arrays become lists)
+        for sym in _active_signals:
+            if "hit" in _active_signals[sym] and isinstance(_active_signals[sym]["hit"], list):
+                _active_signals[sym]["hit"] = set(_active_signals[sym]["hit"])
+                
+        log("Bot state successfully loaded from bot_state.json")
+    except Exception as e:
+        log(f"Error loading bot state: {e}")
+
+def save_bot_state():
+    try:
+        # Convert set to list for JSON serialization
+        active_signals_copy = {}
+        for sym, sig in _active_signals.items():
+            sig_copy = sig.copy()
+            if "hit" in sig_copy and isinstance(sig_copy["hit"], set):
+                sig_copy["hit"] = list(sig_copy["hit"])
+            active_signals_copy[sym] = sig_copy
+            
+        data = {
+            "last_sinyal_date": _last_sinyal_date,
+            "last_summary_date": _last_summary_date,
+            "fomo_sent_symbols": _fomo_sent_symbols,
+            "confluence_sent_symbols": _confluence_sent_symbols,
+            "active_signals": active_signals_copy,
+            "daily_stats": _daily_stats,
+            "last_fomo_alert_time": _last_fomo_alert_time
+        }
+        with open(STATE_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        log(f"Error saving bot state: {e}")
 
 
 def log(msg):
@@ -620,10 +677,10 @@ def analyze_coin(symbol, data, candles):
     )
     score = int(clamp(round(base), 0, 100))
 
-    # Action
-    if score >= 80 and momentum > 1:
+    # Action (Raised thresholds to be much more selective and avoid noise)
+    if score >= 85 and momentum > 2.0:
         action, emoji = "BELI KUAT", "🟢"
-    elif score >= 65 and momentum > 0:
+    elif score >= 70 and momentum > 0.8:
         action, emoji = "CICIL BELI", "🟡"
     elif score >= 50:
         action, emoji = "WATCH", "⚪"
@@ -637,6 +694,11 @@ def analyze_coin(symbol, data, candles):
         if action in ("BELI KUAT", "CICIL BELI"):
             action = "WATCH" if confluence["confluence_passed"] >= 3 else "JANGAN BELI"
             emoji = "⚪" if confluence["confluence_passed"] >= 3 else "🔴"
+
+    # Super Selective Confluence Gate for BELI KUAT:
+    # Require 5/5 confluence for BELI KUAT. If only 4/5, demote to CICIL BELI.
+    if action == "BELI KUAT" and confluence["confluence_passed"] < 5:
+        action, emoji = "CICIL BELI", "🟡"
 
     # Anti-FOMO Filter: Jangan asal masuk jika sudah terlalu dekat harga tertinggi 24h
     if range_pos > 85 and change > 5:
@@ -864,19 +926,19 @@ def detect_fomo(all_coins):
     for sym, data in all_coins.items():
         change = data["change"]
         vol = data["vol_idr"]
-        # Cegah spam koin micin tak ber-volume: minimal 2 Miliar (kecuali Blue Chips)
-        if vol < 2_000_000_000 and sym not in BLUE_CHIPS:
+        # Cegah spam koin micin tak ber-volume: minimal 3 Miliar (kecuali Blue Chips)
+        if vol < 3_000_000_000 and sym not in BLUE_CHIPS:
             continue
         item = {
             "symbol": sym, "pair": data["pair"],
             "price": data["price"], "change": round(change, 2),
             "vol_idr": vol, "high": data["high"], "low": data["low"],
         }
-        if change > 15:
+        if change > 20:
             fomo_gila.append(item)
-        elif change > 8:
+        elif change > 12:
             fomo.append(item)
-        elif change > 5:
+        elif change > 8:
             pumping.append(item)
     for lst in [fomo_gila, fomo, pumping]:
         lst.sort(key=lambda x: x["change"], reverse=True)
@@ -910,9 +972,9 @@ def format_fomo_alert(fomo_gila, fomo, pumping, all_coins):
             lines.append(f"   [BELI]({link})")
             lines.append("")
 
-    _add_coins(fomo_gila, "FOMO GILA (>15%)")
-    _add_coins(fomo, "FOMO (>8%)")
-    _add_coins(pumping, "PUMPING (>5%)")
+    _add_coins(fomo_gila, "FOMO GILA (>20%)")
+    _add_coins(fomo, "FOMO (>12%)")
+    _add_coins(pumping, "PUMPING (>8%)")
 
     lines.append("------")
     lines.append("Hati-hati FOMO! Bisa koreksi kapan aja. DYOR.")
@@ -921,13 +983,21 @@ def format_fomo_alert(fomo_gila, fomo, pumping, all_coins):
 
 
 def check_fomo_and_alert(all_coins):
-    global _fomo_sent_symbols
+    if not ENABLE_FOMO_ALERTS:
+        return
+
+    global _fomo_sent_symbols, _last_fomo_alert_time
+    
+    now_ts = time.time()
+    # Cooldown global: maksimal 1 alert per 15 menit (900 detik)
+    if now_ts - _last_fomo_alert_time < 900:
+        return
+
     fomo_gila, fomo, pumping = detect_fomo(all_coins)
     total = len(fomo_gila) + len(fomo) + len(pumping)
     if total == 0:
         return
 
-    now_ts = time.time()
     new_alerts = {}
     for lst in [fomo_gila, fomo, pumping]:
         for coin in lst:
@@ -946,22 +1016,26 @@ def check_fomo_and_alert(all_coins):
     if not new_alerts:
         return
 
-    new_gila = [v for v in new_alerts.values() if v["change"] > 15]
-    new_fomo = [v for v in new_alerts.values() if 8 < v["change"] <= 15]
-    new_pump = [v for v in new_alerts.values() if 5 < v["change"] <= 8]
+    new_gila = [v for v in new_alerts.values() if v["change"] > 20]
+    new_fomo = [v for v in new_alerts.values() if 12 < v["change"] <= 20]
+    new_pump = [v for v in new_alerts.values() if 8 < v["change"] <= 12]
     for lst in [new_gila, new_fomo, new_pump]:
         lst.sort(key=lambda x: x["change"], reverse=True)
 
     msg = format_fomo_alert(new_gila, new_fomo, new_pump, all_coins)
     if msg:
-        send_message(msg, notify=True)
+        send_message(msg, notify=False)  # Completely silent for FOMO alerts
         log(f"FOMO ALERT terkirim! ({len(new_alerts)} koin)")
+        _last_fomo_alert_time = now_ts  # update last global alert time
         for sym, coin in new_alerts.items():
             coin["_sent_at"] = now_ts
             _fomo_sent_symbols[sym] = coin
 
 
 def check_realtime_confluence_alerts(all_coins):
+    if not ENABLE_CONFLUENCE_ALERTS:
+        return
+
     global _confluence_sent_symbols
     now_ts = time.time()
 
@@ -1020,7 +1094,9 @@ def check_realtime_confluence_alerts(all_coins):
                     f"💎 *Gabung Premium:* {TELEGRAM_CHANNEL}"
                 )
                 
-                send_message(msg, notify=True)
+                # Only notify (vibrate) for Strong Buy (BELI KUAT) to prevent phone vibration spam
+                is_strong = "BELI KUAT" in res["action"]
+                send_message(msg, notify=is_strong)
                 log(f"REAL-TIME CONFLUENCE ALERT TERKIRIM untuk {sym} ({res['confluence_label']})")
                 
                 # Masukkan ke list monitor TP/SL bot jika belum ada
@@ -1134,7 +1210,11 @@ if __name__ == "__main__":
     log(f"   Channel: {TELEGRAM_CHANNEL}")
     log("=" * 40)
 
-    send_message("*Bot Radar ULTRA SMART Aktif (24/7)*\nRSI, EMA, MACD, Bollinger, Supertrend, ADX, ML/KNN, Backtest, Agentic Verdict", notify=False)
+    # Load previously saved bot state to avoid duplicate alerts and preserve active trades
+    load_bot_state()
+
+    # Commented out to prevent duplicate spam upon process restarts
+    # send_message("*Bot Radar ULTRA SMART Aktif (24/7)*\nRSI, EMA, MACD, Bollinger, Supertrend, ADX, ML/KNN, Backtest, Agentic Verdict", notify=False)
 
     consecutive_errors = 0
     cycle_count = 0
@@ -1173,6 +1253,9 @@ if __name__ == "__main__":
 
             # 5. Daily summary (jam 21:00 WIB)
             send_daily_summary()
+
+            # Save state at the end of each successful cycle
+            save_bot_state()
 
             time.sleep(120)
 
