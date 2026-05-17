@@ -965,7 +965,263 @@ def format_price(value):
 
 
 # =============================================================================
-# MARKET ANALYSIS
+# TECHNICAL INDICATORS (dari telegram_bot.py asli)
+# =============================================================================
+def compute_rsi(close, period=14):
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
+    rs = gain / loss.replace(0, pd.NA)
+    return float((100 - (100 / (1 + rs))).fillna(50).iloc[-1])
+
+
+def compute_ema(close, span):
+    return close.ewm(span=span, adjust=False).mean()
+
+
+def compute_macd(close):
+    if len(close) < 15:
+        return "netral", 0
+    macd_line = compute_ema(close, 12) - compute_ema(close, 26)
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    hist = float(macd_line.iloc[-1] - signal_line.iloc[-1])
+    prev = float(macd_line.iloc[-2] - signal_line.iloc[-2]) if len(macd_line) > 1 else 0
+    if hist > 0 and prev <= 0:
+        return "bullish cross", hist
+    elif hist > 0:
+        return "bullish", hist
+    elif hist < 0 and prev >= 0:
+        return "bearish cross", hist
+    elif hist < 0:
+        return "bearish", hist
+    return "netral", hist
+
+
+def compute_bollinger(close):
+    if len(close) < 20:
+        return {"bb_signal": "netral", "bb_pct_b": 0.5}
+    mid = float(close.tail(20).mean())
+    std = float(close.tail(20).std())
+    upper = mid + 2 * std
+    lower = mid - 2 * std
+    last = float(close.iloc[-1])
+    pct_b = (last - lower) / (upper - lower) if upper > lower else 0.5
+    if pct_b < 0.15:
+        sig = "oversold"
+    elif pct_b > 0.85:
+        sig = "overbought"
+    else:
+        sig = "netral"
+    return {"bb_signal": sig, "bb_pct_b": round(pct_b, 2)}
+
+
+def compute_supertrend(candles):
+    if candles.empty or len(candles) < 30:
+        return "netral"
+    high = candles["high"].astype(float)
+    low = candles["low"].astype(float)
+    close = candles["close"].astype(float)
+    tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean()
+    ema_fast = close.ewm(span=10, adjust=False).mean()
+    ema_slow = close.ewm(span=30, adjust=False).mean()
+    floor = ((high + low) / 2) - (2.4 * atr)
+    if pd.notna(floor.iloc[-1]) and close.iloc[-1] > floor.iloc[-1] and ema_fast.iloc[-1] > ema_slow.iloc[-1]:
+        return "bullish"
+    elif pd.notna(floor.iloc[-1]):
+        return "bearish"
+    return "netral"
+
+
+def compute_volume_analysis(candles):
+    if candles.empty or len(candles) < 20:
+        return "normal", 1.0
+    vol = candles["volume"].astype(float)
+    avg = vol.tail(20).mean()
+    if avg <= 0:
+        return "normal", 1.0
+    ratio = float(vol.iloc[-1] / avg)
+    if ratio >= 1.8:
+        return "spike", ratio
+    elif ratio >= 1.15:
+        return "kuat", ratio
+    elif ratio >= 0.7:
+        return "normal", ratio
+    return "tipis", ratio
+
+
+def compute_adx(candles):
+    """ADX: ukur kekuatan tren (bukan arah)."""
+    if candles.empty or len(candles) < 28:
+        return {"adx": 25, "trend": "sideways"}
+    hi = candles["high"].astype(float)
+    lo = candles["low"].astype(float)
+    cl = candles["close"].astype(float)
+    tr = pd.concat([hi - lo, (hi - cl.shift(1)).abs(), (lo - cl.shift(1)).abs()], axis=1).max(axis=1)
+    up = hi - hi.shift(1)
+    dn = lo.shift(1) - lo
+    pdm = up.where((up > dn) & (up > 0), 0.0)
+    ndm = dn.where((dn > up) & (dn > 0), 0.0)
+    atr = tr.ewm(alpha=1/14, adjust=False).mean()
+    pdi = 100 * pdm.ewm(alpha=1/14, adjust=False).mean() / atr.replace(0, float('nan'))
+    ndi = 100 * ndm.ewm(alpha=1/14, adjust=False).mean() / atr.replace(0, float('nan'))
+    dx = 100 * abs(pdi - ndi) / (pdi + ndi).replace(0, float('nan'))
+    adx = float(dx.fillna(25).ewm(alpha=1/14, adjust=False).mean().iloc[-1])
+    pdi_v = float(pdi.fillna(0).iloc[-1])
+    ndi_v = float(ndi.fillna(0).iloc[-1])
+    if adx >= 25:
+        trend = "bullish_strong" if pdi_v > ndi_v and adx >= 40 else "bullish" if pdi_v > ndi_v else "bearish_strong" if adx >= 40 else "bearish"
+    else:
+        trend = "sideways"
+    return {"adx": round(adx, 1), "trend": trend}
+
+
+def compute_ml_forecast(candles):
+    """KNN sederhana: prediksi probabilitas naik dari pola historis."""
+    default = {"ml_prob": 50.0, "ml_label": "NO DATA", "ml_conf": "rendah"}
+    if candles.empty or len(candles) < 80:
+        return default
+    close = candles["close"].astype(float)
+    high = candles["high"].astype(float)
+    low = candles["low"].astype(float)
+    volume = candles["volume"].astype(float)
+    ret1 = close.pct_change(1) * 100
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rsi = 100 - (100 / (1 + gain / loss.replace(0, pd.NA)))
+    feat = pd.DataFrame({
+        "ret1": ret1, "ret3": close.pct_change(3)*100, "ret6": close.pct_change(6)*100,
+        "vol12": ret1.rolling(12).std(),
+        "ema_gap": (close.ewm(span=8,adjust=False).mean() - close.ewm(span=21,adjust=False).mean()) / close * 100,
+        "rsi": rsi,
+        "rng": (close - low.rolling(24).min()) / (high.rolling(24).max() - low.rolling(24).min()).replace(0, pd.NA) * 100,
+        "vr": volume / volume.rolling(24).mean().replace(0, pd.NA),
+    })
+    feat["future"] = close.shift(-6) / close * 100 - 100
+    feat = feat.replace([float('inf'), float('-inf')], pd.NA)
+    cols = ["ret1","ret3","ret6","vol12","ema_gap","rsi","rng","vr"]
+    current = feat[cols].dropna().tail(1).astype(float)
+    train = feat.dropna(subset=cols+["future"]).copy()
+    if current.empty or len(train) < 50:
+        return default
+    means = train[cols].mean()
+    stds = train[cols].std().replace(0,1).fillna(1)
+    tx = ((train[cols]-means)/stds).astype(float)
+    cx = ((current.iloc[0]-means)/stds).astype(float)
+    dist = tx.sub(cx, axis=1).pow(2).sum(axis=1).pow(0.5)
+    dist = pd.to_numeric(dist, errors='coerce').dropna()
+    if dist.empty:
+        return default
+    k = int(clamp(round(len(train)**0.5), 12, 35))
+    nearest = train.loc[dist.nsmallest(k).index]
+    w = 1 / (dist.loc[nearest.index] + 0.001)
+    prob = float(((nearest["future"] > 1.0).astype(float) * w).sum() / w.sum() * 100)
+    label = "BULLISH" if prob >= 62 else "BEARISH" if prob <= 42 else "NETRAL"
+    edge = abs(prob - 50)
+    conf = "tinggi" if len(train) >= 180 and edge >= 14 else "sedang" if len(train) >= 90 and edge >= 8 else "rendah"
+    return {"ml_prob": round(prob,1), "ml_label": label, "ml_conf": conf}
+
+
+def compute_backtest(candles):
+    """Test sinyal serupa di data historis: berhasil atau gagal?"""
+    default = {"bt_wr": 0, "bt_trades": 0, "bt_label": "DATA KURANG"}
+    if candles.empty or len(candles) < 90:
+        return default
+    close = candles["close"].astype(float)
+    high = candles["high"].astype(float)
+    low = candles["low"].astype(float)
+    volume = candles["volume"].astype(float)
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rsi = 100 - (100 / (1 + gain / loss.replace(0, pd.NA)))
+    ema8 = close.ewm(span=8, adjust=False).mean()
+    ema21 = close.ewm(span=21, adjust=False).mean()
+    vr = volume / volume.rolling(24).mean().replace(0, pd.NA)
+    sig = ((ema8>ema21) & rsi.between(42,72) & (vr>=0.75)).fillna(False)
+    outcomes = []
+    last_i = -6
+    for i in range(35, len(candles)-7):
+        if not bool(sig.iloc[i]) or i - last_i < 6:
+            continue
+        entry = float(close.iloc[i])
+        if entry <= 0: continue
+        tgt = entry * 1.026
+        stp = entry * 0.978
+        out = None
+        for j in range(i+1, i+7):
+            if float(low.iloc[j]) <= stp: out = -2.2; break
+            if float(high.iloc[j]) >= tgt: out = 2.6; break
+        if out is None:
+            out = float((close.iloc[i+6]-entry)/entry*100)
+        outcomes.append(out)
+        last_i = i
+    if len(outcomes) < 6:
+        return default
+    wins = [x for x in outcomes if x > 0]
+    wr = len(wins)/len(outcomes)*100
+    label = "TERUJI" if wr >= 58 and len(outcomes) >= 14 else "CUKUP" if wr >= 50 else "LEMAH"
+    return {"bt_wr": round(wr,1), "bt_trades": len(outcomes), "bt_label": label}
+
+
+def build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr):
+    """Komite bull/bear sederhana: approve, approve kecil, tunggu, atau tolak."""
+    bull = bear = 0
+    if score >= 75: bull += 18
+    elif score >= 65: bull += 10
+    else: bear += 8
+    if ml["ml_prob"] >= 62: bull += 12
+    elif ml["ml_prob"] <= 42: bear += 12
+    if bt["bt_trades"] >= 10 and bt["bt_wr"] >= 58: bull += 14
+    elif bt["bt_trades"] >= 10 and bt["bt_label"] == "LEMAH": bear += 16
+    if adx_data["trend"] in ("bullish_strong","bullish"): bull += 7
+    elif adx_data["trend"] in ("bearish_strong","bearish"): bear += 9
+    if supertrend == "bullish": bull += 7
+    elif supertrend == "bearish": bear += 9
+    if rsi >= 78: bear += 8
+    if vol_idr < 100_000_000: bear += 12
+    elif vol_idr >= 5_000_000_000: bull += 5
+    net = int(clamp(50 + bull - bear, 0, 100))
+    if risk_level == "TINGGI" or bear >= bull + 18:
+        return "TOLAK", net, 0
+    elif bear >= bull + 5 or net < 48:
+        return "TUNGGU", net, 0
+    elif risk_level == "SEDANG":
+        return "APPROVE KECIL", net, 0.55
+    return "APPROVE", net, 1.0
+
+
+# =============================================================================
+# CANDLE FETCHING
+# =============================================================================
+def fetch_candles(pair_id, tf="60", lookback_days=21):
+    """Ambil candle historis dari Indodax untuk indikator teknikal."""
+    end_ts = int(time.time())
+    start_ts = end_ts - lookback_days * 86400
+    symbol = pair_id.replace("_", "").upper()
+    url = "https://indodax.com/tradingview/history_v2"
+    try:
+        resp = requests.get(url, params={"from": start_ts, "to": end_ts, "tf": tf, "symbol": symbol}, timeout=8)
+        rows = resp.json()
+    except Exception:
+        return pd.DataFrame()
+    if not isinstance(rows, list) or not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    rename = {"Time": "time", "Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}
+    df = df.rename(columns=rename)
+    required = ["time", "open", "high", "low", "close", "volume"]
+    if not all(c in df.columns for c in required):
+        return pd.DataFrame()
+    for c in required:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["close"]).sort_values("time")
+    return df.tail(500).reset_index(drop=True)
+
+
+# =============================================================================
+# MARKET ANALYSIS (UPGRADED dengan indikator teknikal)
 # =============================================================================
 def compute_market_stats(tickers):
     """Compute overall market statistics.
@@ -984,7 +1240,6 @@ def compute_market_stats(tickers):
             price = float(info["last"])
             low = float(info.get("low", 0))
             vol = float(info.get("vol_idr", 0))
-            # Hitung perubahan dari low ke last
             if low > 0:
                 change = ((price - low) / low) * 100
             else:
@@ -1019,118 +1274,160 @@ def compute_market_stats(tickers):
     }
 
 
-def compute_coin_score(data, market_stats):
-    """Compute a buy score for a single coin."""
+def analyze_coin_advanced(symbol, data, candles, market_stats):
+    """Analisis lengkap satu koin menggunakan semua indikator teknikal."""
+    price = data["price"]
     change = data["change"]
     vol_idr = data["vol_idr"]
-    high = data["high"]
-    low = data["low"]
-    price = data["price"]
-    range_width = high - low
-    range_position = ((price - low) / range_width * 100) if range_width > 0 else 50
-    score = 50
-    score += clamp(change * 3, -25, 25)
-    vol_score = min(15, vol_idr / 500_000_000)
-    score += vol_score
-    if range_position > 85 and change > 5:
-        score -= 12
-    if range_position < 20 and change < -3:
-        score += 8
-    if vol_idr < 100_000_000:
-        score -= 10
-    if vol_idr > 5_000_000_000:
-        score += 5
-    if market_stats:
-        mode = market_stats["mode"]
-        adj = MARKET_MODE_RULES[mode]["score_adjustment"]
-        score += adj
-    score = int(clamp(score, 0, 100))
-    return score
+    high_24h = data["high"]
+    low_24h = data["low"]
+    range_w = high_24h - low_24h
+    range_pos = ((price - low_24h) / range_w * 100) if range_w > 0 else 50
 
+    # Defaults jika candle kosong
+    rsi = 50
+    ema_bias = "netral"
+    macd_signal = "netral"
+    bb = {"bb_signal": "netral", "bb_pct_b": 0.5}
+    supertrend = "netral"
+    vol_label, vol_ratio = "normal", 1.0
+    ema_trend_pct = 0
 
-def determine_action(score, change, vol_idr):
-    """Determine buy/sell action based on score."""
-    if score >= 80 and change > 1:
-        return "🟢 BELI KUAT", "🔥"
-    elif score >= 68 and change > 0:
-        return "🟡 CICIL BELI", "📈"
-    elif score >= 55:
-        return "⚪ WATCH", "⏸️"
-    elif score >= 40:
-        return "🔴 JANGAN BELI", "📉"
+    if not candles.empty and len(candles) >= 8:
+        close = candles["close"].astype(float)
+        rsi = compute_rsi(close) if len(close) >= 14 else 50
+        ema5 = compute_ema(close, 5).iloc[-1]
+        ema12 = compute_ema(close, 12).iloc[-1]
+        ema_trend_pct = ((ema5 - ema12) / ema12 * 100) if ema12 > 0 else 0
+        ema_bias = "bullish" if ema5 > ema12 else "bearish"
+        macd_signal, _ = compute_macd(close)
+        bb = compute_bollinger(close)
+        supertrend = compute_supertrend(candles)
+        vol_label, vol_ratio = compute_volume_analysis(candles)
+
+    # Advanced analysis
+    adx_data = compute_adx(candles)
+    ml = compute_ml_forecast(candles)
+    bt = compute_backtest(candles)
+
+    # --- SCORING (UPGRADED) ---
+    liquidity_bonus = min(16, vol_idr / 1_000_000_000)
+    fomo_penalty = 9 if range_pos > 88 and change > 8 else 0
+    micin_penalty = 6 if symbol in MICIN_SYMBOLS else 0
+
+    tech_score = 0
+    tech_score += clamp(ema_trend_pct * 3, -12, 12)
+    tech_score += 8 if macd_signal == "bullish cross" else 5 if macd_signal == "bullish" else -8 if macd_signal == "bearish cross" else -5 if macd_signal == "bearish" else 0
+    tech_score += 6 if 45 <= rsi <= 68 else -7 if rsi > 78 else -4 if rsi < 30 else 0
+    tech_score += 5 if supertrend == "bullish" else -6 if supertrend == "bearish" else 0
+    tech_score += 4 if vol_label in ("spike", "kuat") else -3 if vol_label == "tipis" else 0
+
+    bb_bonus = 7 if bb["bb_signal"] == "oversold" else -5 if bb["bb_signal"] == "overbought" else 0
+    adx_bonus = 5 if adx_data["trend"] in ("bullish_strong","bullish") else -5 if adx_data["trend"] in ("bearish_strong","bearish") else 0
+
+    # ML adjustment
+    ml_adj = (ml["ml_prob"] - 50) * 0.28
+    if ml["ml_conf"] == "rendah": ml_adj *= 0.45
+    elif ml["ml_conf"] == "sedang": ml_adj *= 0.75
+
+    # Backtest adjustment
+    bt_adj = 0
+    if bt["bt_trades"] >= 6:
+        bt_adj = (bt["bt_wr"] - 50) * 0.12
+
+    momentum = change
+    base = (
+        50
+        + momentum * 4.2
+        + liquidity_bonus
+        + tech_score * 0.65
+        + bb_bonus
+        + adx_bonus
+        + ml_adj
+        + bt_adj
+        - fomo_penalty
+        - micin_penalty
+    )
+    score = int(clamp(round(base), 0, 100))
+
+    # Action
+    if score >= 80 and momentum > 1:
+        action, emoji = "BELI KUAT", "🟢"
+    elif score >= 65 and momentum > 0:
+        action, emoji = "CICIL BELI", "🟡"
+    elif score >= 50:
+        action, emoji = "WATCH", "⚪"
+    elif score >= 35:
+        action, emoji = "JANGAN BELI", "🔴"
     else:
-        return "⛔ HINDARI", "💀"
+        action, emoji = "HINDARI", "⛔"
 
+    # Risk level
+    risk_pts = 0
+    if abs(change) >= 10: risk_pts += 2
+    elif abs(change) >= 5: risk_pts += 1
+    if vol_idr < 100_000_000: risk_pts += 2
+    elif vol_idr < 1_000_000_000: risk_pts += 1
+    if rsi > 78: risk_pts += 1
+    if macd_signal == "bearish cross": risk_pts += 1
+    if supertrend == "bearish": risk_pts += 1
+    if range_pos > 85: risk_pts += 1
+    if ml["ml_label"] == "BEARISH" and ml["ml_conf"] != "rendah": risk_pts += 1
+    if bt["bt_label"] == "LEMAH" and bt["bt_trades"] >= 10: risk_pts += 1
 
-def determine_risk_level(change, vol_idr):
-    if abs(change) >= 10 or vol_idr < 100_000_000:
-        return "TINGGI"
-    elif abs(change) >= 5 or vol_idr < 1_000_000_000:
-        return "SEDANG"
-    return "RENDAH"
+    risk_level = "TINGGI" if risk_pts >= 4 else "SEDANG" if risk_pts >= 2 else "RENDAH"
 
+    # Verdict
+    verdict, verdict_net, size_mult = build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr)
 
-def compute_allocation_pct(action, score, risk_level, market_mode):
-    if "BELI" not in action:
-        return 0
-    risk_mod = {"RENDAH": 1.0, "SEDANG": 0.65, "TINGGI": 0.35}[risk_level]
-    mode_mult = MARKET_MODE_RULES[market_mode]["allocation_multiplier"]
-    base = 7 * (score / 100) * risk_mod * mode_mult
-    return clamp(base, 1, 10)
-
-
-def compute_targets(price, change, score, risk_level):
-    gain_pct = clamp(3 + max(change, 0) * 0.85 + (score - 60) * 0.12, 2, 16)
-    stop_pct = clamp(2.6 + abs(change) * 0.35 + (1 if risk_level == "TINGGI" else 0), 2.5, 9)
-    target = price * (1 + gain_pct / 100)
+    # Dynamic TP/SL
+    gain_pct = clamp(3 + max(momentum, 0) * 0.75 + (score - 60) * 0.22, 2, 18)
+    stop_pct = clamp(2.6 + abs(momentum) * 0.35 + (1 if risk_level == "TINGGI" else 0), 2.5, 9)
     tp1 = price * (1 + gain_pct * 0.35 / 100)
     tp2 = price * (1 + gain_pct * 0.7 / 100)
+    target = price * (1 + gain_pct / 100)
     stop_loss = price * (1 - stop_pct / 100)
-    trailing_stop_pct = clamp(stop_pct * 0.55, 1.5, 5)
-    return target, tp1, tp2, stop_loss, trailing_stop_pct, gain_pct, stop_pct
+    trailing = clamp(stop_pct * 0.55, 1.5, 5)
+
+    # Allocation (adjusted by verdict)
+    risk_mod = {"RENDAH": 1.0, "SEDANG": 0.65, "TINGGI": 0.35}[risk_level]
+    alloc = clamp(7 * (score / 100) * risk_mod * size_mult, 0, 10) if "BELI" in action else 0
+
+    category = COIN_CATEGORIES.get(symbol, "Lainnya")
+    category_color = CATEGORY_COLORS.get(category, "#6b7280")
+
+    return {
+        "symbol": symbol, "pair": data["pair"],
+        "price": price, "change": change, "vol_idr": vol_idr,
+        "score": score, "action": action, "emoji": emoji,
+        "rsi": round(rsi, 1), "ema_bias": ema_bias, "macd_signal": macd_signal,
+        "bb_signal": bb["bb_signal"], "supertrend": supertrend,
+        "adx": adx_data["adx"], "adx_trend": adx_data["trend"],
+        "ml_prob": ml["ml_prob"], "ml_label": ml["ml_label"], "ml_conf": ml["ml_conf"],
+        "bt_wr": bt["bt_wr"], "bt_trades": bt["bt_trades"], "bt_label": bt["bt_label"],
+        "verdict": verdict, "verdict_net": verdict_net,
+        "vol_label": vol_label, "risk_level": risk_level,
+        "tp1": tp1, "tp2": tp2, "target": target, "stop_loss": stop_loss,
+        "trailing_stop_pct": round(trailing, 1), "allocation_pct": round(alloc, 1),
+        "range_pos": round(range_pos, 1),
+        "category": category, "category_color": category_color,
+    }
 
 
-def analyze_assets(assets_data, market_stats):
-    """Analyze all assets and return scored results."""
+def analyze_assets(assets_data, market_stats, tickers=None):
+    """Analyze all assets with advanced technical indicators."""
     results = []
     for symbol, data in assets_data.items():
-        score = compute_coin_score(data, market_stats)
-        action, emoji = determine_action(score, data["change"], data["vol_idr"])
-        risk_level = determine_risk_level(data["change"], data["vol_idr"])
-        market_mode = market_stats["mode"] if market_stats else "normal"
-        allocation_pct = compute_allocation_pct(action, score, risk_level, market_mode)
-        target, tp1, tp2, stop_loss, trailing_stop_pct, gain_pct, stop_pct = compute_targets(
-            data["price"], data["change"], score, risk_level
-        )
-        category = COIN_CATEGORIES.get(symbol, "Lainnya")
-        category_color = CATEGORY_COLORS.get(category, "#6b7280")
-        results.append({
-            "symbol": symbol,
-            "pair": data["pair"],
-            "price": data["price"],
-            "change": data["change"],
-            "vol_idr": data["vol_idr"],
-            "score": score,
-            "action": action,
-            "emoji": emoji,
-            "risk_level": risk_level,
-            "allocation_pct": allocation_pct,
-            "target": target,
-            "tp1": tp1,
-            "tp2": tp2,
-            "stop_loss": stop_loss,
-            "trailing_stop_pct": trailing_stop_pct,
-            "gain_pct": gain_pct,
-            "stop_pct": stop_pct,
-            "category": category,
-            "category_color": category_color,
-        })
-    priority = {
-        "🟢 BELI KUAT": 0, "🟡 CICIL BELI": 1, "⚪ WATCH": 2,
-        "🔴 JANGAN BELI": 3, "⛔ HINDARI": 4,
-    }
+        # Fetch candles untuk indikator teknikal
+        pair = data["pair"]
+        candles = fetch_candles(pair)
+        time.sleep(0.15)  # rate limit
+        result = analyze_coin_advanced(symbol, data, candles, market_stats)
+        results.append(result)
+    priority = {"BELI KUAT": 0, "CICIL BELI": 1, "WATCH": 2, "JANGAN BELI": 3, "HINDARI": 4}
     results.sort(key=lambda x: (priority.get(x["action"], 5), -x["score"]))
     return results
+
 
 
 # =============================================================================
