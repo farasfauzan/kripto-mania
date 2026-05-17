@@ -390,11 +390,17 @@ def _bot_detect_fomo(raw_tickers):
         if not pair.endswith("_idr"):
             continue
         try:
-            change = float(info.get("change", 0) or 0)
             price = float(info["last"])
+            low = float(info.get("low", 0))
             vol = float(info.get("vol_idr", 0))
+            # Indodax API tidak punya field 'change', hitung dari low ke last
+            if low > 0:
+                change = ((price - low) / low) * 100
+            else:
+                change = 0.0
         except (KeyError, ValueError):
             continue
+
         if vol < 100_000_000:
             continue
         item = {
@@ -444,15 +450,24 @@ def _telegram_bot_daemon():
                 for sym, pair in BOT_MAIN_ASSETS.items():
                     if pair in tickers:
                         try:
+                            info = tickers[pair]
+                            price = float(info["last"])
+                            low = float(info.get("low", 0))
+                            # Indodax API tidak punya field 'change', hitung dari low ke last
+                            if low > 0:
+                                change = ((price - low) / low) * 100
+                            else:
+                                change = 0.0
                             prices[sym] = {
-                                "price": float(tickers[pair]["last"]),
-                                "high": float(tickers[pair].get("high", 0)),
-                                "low": float(tickers[pair].get("low", 0)),
-                                "vol_idr": float(tickers[pair].get("vol_idr", 0)),
-                                "change": float(tickers[pair].get("change", 0) or 0),
+                                "price": price,
+                                "high": float(info.get("high", 0)),
+                                "low": low,
+                                "vol_idr": float(info.get("vol_idr", 0)),
+                                "change": round(change, 2),
                             }
                         except (KeyError, ValueError):
                             pass
+
                 if prices:
                     signals = _bot_generate_signal(prices)
                     msg = _bot_format_sinyal_harian(signals)
@@ -890,24 +905,39 @@ def fetch_all_ticker_data():
 
 
 def extract_asset_data(tickers, asset_dict):
-    """Extract price data for a given asset dictionary."""
+    """Extract price data for a given asset dictionary.
+    
+    Indodax API tidak menyediakan field 'change' secara langsung.
+    Kita hitung perubahan harga dari (last - low) / low * 100 sebagai
+    estimasi perubahan 24 jam.
+    """
     result = {}
     for symbol, (pair, _) in asset_dict.items():
         if pair in tickers:
             try:
                 info = tickers[pair]
+                price = float(info["last"])
+                high = float(info.get("high", 0))
+                low = float(info.get("low", 0))
+                vol_idr = float(info.get("vol_idr", 0))
+                # Hitung perubahan dari low ke last sebagai estimasi 24h change
+                if low > 0:
+                    change = ((price - low) / low) * 100
+                else:
+                    change = 0.0
                 result[symbol] = {
                     "symbol": symbol,
                     "pair": pair,
-                    "price": float(info["last"]),
-                    "high": float(info.get("high", 0)),
-                    "low": float(info.get("low", 0)),
-                    "vol_idr": float(info.get("vol_idr", 0)),
-                    "change": float(info.get("change", 0) or 0),
+                    "price": price,
+                    "high": high,
+                    "low": low,
+                    "vol_idr": vol_idr,
+                    "change": round(change, 2),
                 }
             except (KeyError, ValueError, TypeError):
                 continue
     return result
+
 
 
 def format_idr(value):
@@ -938,7 +968,11 @@ def format_price(value):
 # MARKET ANALYSIS
 # =============================================================================
 def compute_market_stats(tickers):
-    """Compute overall market statistics."""
+    """Compute overall market statistics.
+    
+    Indodax API tidak menyediakan field 'change'. Kita hitung
+    perubahan dari (last - low) / low * 100 sebagai estimasi.
+    """
     idr_pairs = {k: v for k, v in tickers.items() if k.endswith("_idr")}
     if not idr_pairs:
         return None
@@ -947,14 +981,21 @@ def compute_market_stats(tickers):
     green_count = 0
     for pair, info in idr_pairs.items():
         try:
-            change = float(info.get("change", 0) or 0)
+            price = float(info["last"])
+            low = float(info.get("low", 0))
             vol = float(info.get("vol_idr", 0))
+            # Hitung perubahan dari low ke last
+            if low > 0:
+                change = ((price - low) / low) * 100
+            else:
+                change = 0.0
             changes.append(change)
             volumes.append(vol)
             if change > 0:
                 green_count += 1
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, KeyError):
             continue
+
     if not changes:
         return None
     total = len(changes)
@@ -1192,15 +1233,15 @@ def render_rekomendasi_card(item, idx):
                     <span class="{'profit-badge' if item['change']>=0 else 'loss-badge'}">{change_sign}{item['change']:.2f}%</span>
                 </div>
             </div>
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:0.5rem;margin-top:0.8rem;text-align:center">
-                <div><span style="color:#888;font-size:0.7rem">SCORE</span><br><span style="font-weight:900;font-size:1.1rem;color:#10b981">{item['score']}/100</span></div>
-                <div><span style="color:#888;font-size:0.7rem">RISK</span><br><span style="font-weight:700;font-size:0.9rem;color={'#ef4444' if item['risk_level']=='TINGGI' else '#f59e0b' if item['risk_level']=='SEDANG' else '#22c55e'}">{item['risk_level']}</span></div>
-                <div><span style="color:#888;font-size:0.7rem">ALOKASI</span><br><span style="font-weight:900;font-size:1rem;color:#fbbf24">{item['allocation_pct']:.1f}%</span></div>
-                <div><span style="color:#888;font-size:0.7rem">TP1</span><br><span style="font-weight:700;font-size:0.85rem;color:#22c55e">{format_price(item['tp1'])}</span></div>
-                <div><span style="color:#888;font-size:0.7rem">TP2</span><br><span style="font-weight:700;font-size:0.85rem;color:#22c55e">{format_price(item['tp2'])}</span></div>
-                <div><span style="color:#888;font-size:0.7rem">TARGET</span><br><span style="font-weight:700;font-size:0.85rem;color:#22c55e">{format_price(item['target'])}</span></div>
-                <div><span style="color:#888;font-size:0.7rem">STOP LOSS</span><br><span style="font-weight:700;font-size:0.85rem;color:#ef4444">{format_price(item['stop_loss'])}</span></div>
-                <div><span style="color:#888;font-size:0.7rem">TRAILING</span><br><span style="font-weight:700;font-size:0.85rem;color="#f59e0b">{item['trailing_stop_pct']:.1f}%</span></div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:0.4rem;margin-top:0.8rem;text-align:center">
+                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Score</span><br><span style="font-weight:900;font-size:1.1rem;color:#10b981">{item['score']}/100</span></div>
+                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Risk</span><br><span style="font-weight:700;font-size:0.9rem;color:{'#ef4444' if item['risk_level']=='TINGGI' else '#f59e0b' if item['risk_level']=='SEDANG' else '#22c55e'}">{item['risk_level']}</span></div>
+                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Alokasi</span><br><span style="font-weight:900;font-size:1rem;color:#fbbf24">{item['allocation_pct']:.1f}%</span></div>
+                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">TP1</span><br><span style="font-weight:700;font-size:0.85rem;color:#22c55e">{format_price(item['tp1'])}</span></div>
+                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">TP2</span><br><span style="font-weight:700;font-size:0.85rem;color:#22c55e">{format_price(item['tp2'])}</span></div>
+                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Target</span><br><span style="font-weight:700;font-size:0.85rem;color:#22c55e">{format_price(item['target'])}</span></div>
+                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Stop Loss</span><br><span style="font-weight:700;font-size:0.85rem;color:#ef4444">{format_price(item['stop_loss'])}</span></div>
+                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Trailing</span><br><span style="font-weight:700;font-size:0.85rem;color:#f59e0b">{item['trailing_stop_pct']:.1f}%</span></div>
             </div>
             <div style="margin-top:0.8rem;text-align:center">
                 <a href="{buy_link}" target="_blank" class="buy-button-sm">🔥 Beli di Indodax</a>
@@ -1299,7 +1340,25 @@ def render_footer():
 # MAIN APP
 # =============================================================================
 def main():
+    # --- AUTO REFRESH ---
+    # Refresh otomatis setiap 60 detik
+    st.markdown(
+        f"""
+        <meta http-equiv="refresh" content="60">
+        <div style="display:none">autorefresh</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
     render_header()
+    
+    # --- REFRESH BUTTON & TIMER ---
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.button("🔄 Refresh Data Sekarang", use_container_width=True, type="primary"):
+            st.cache_data.clear()
+            st.rerun()
+    
     loading_placeholder = st.empty()
     loading_placeholder.markdown(loading_markup(), unsafe_allow_html=True)
     tickers, server_time, error = fetch_all_ticker_data()
@@ -1330,6 +1389,7 @@ def main():
             <div class="freshness-badge">
                 <span class="freshness-dot {freshness}"></span>
                 <span>{freshness_text} · {time_str}</span>
+                <span style="margin-left:8px;font-size:0.7rem;color:#666">Auto-refresh tiap 60 detik</span>
             </div>
         </div>""",
         unsafe_allow_html=True,
@@ -1337,6 +1397,7 @@ def main():
     render_market_mode_banner(market_stats)
     render_market_stats(market_stats)
     render_fomo_alerts(tickers)
+
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔥 Rekomendasi Beli", "📊 Semua Aset", "🐕 Micin/Meme", "📈 Analisis Detail", "💬 Tanya AI Advisor (DeepSeek)"])
     with tab1:
         render_rekomendasi_list(all_results, "🔥 Rekomendasi Beli Hari Ini", max_items=20)
