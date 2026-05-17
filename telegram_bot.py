@@ -632,7 +632,8 @@ def detect_fomo(all_coins):
     for sym, data in all_coins.items():
         change = data["change"]
         vol = data["vol_idr"]
-        if vol < 100_000_000:
+        # Cegah spam koin micin tak ber-volume: minimal 2 Miliar (kecuali Blue Chips)
+        if vol < 2_000_000_000 and sym not in BLUE_CHIPS:
             continue
         item = {
             "symbol": sym, "pair": data["pair"],
@@ -701,12 +702,14 @@ def check_fomo_and_alert(all_coins):
             sym = coin["symbol"]
             change = coin["change"]
             if sym in _fomo_sent_symbols:
-                if change >= _fomo_sent_symbols[sym]["change"] + 5.0:
+                # Agar tidak spam, butuh lonjakan tambahan +10% untuk alert ulang di hari yang sama
+                if change >= _fomo_sent_symbols[sym]["change"] + 10.0:
                     new_alerts[sym] = coin
             else:
                 new_alerts[sym] = coin
 
-    _fomo_sent_symbols = {k: v for k, v in _fomo_sent_symbols.items() if now_ts - v.get("_sent_at", 0) < 21600}
+    # Cooldown 12 jam (43200 detik) per koin
+    _fomo_sent_symbols = {k: v for k, v in _fomo_sent_symbols.items() if now_ts - v.get("_sent_at", 0) < 43200}
 
     if not new_alerts:
         return
