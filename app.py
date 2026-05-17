@@ -1,5 +1,6 @@
 import os
 import threading
+
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -1380,6 +1381,52 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     # Verdict
     verdict, verdict_net, size_mult = build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr)
 
+    # --- ENTRY ZONE & TWO STEPS AHEAD ---
+    # Entry Zone: harga ideal untuk entry berdasarkan support/resistance
+    entry_zone_low = price * 0.97  # -3% dari harga saat ini
+    entry_zone_high = price * 1.01  # +1% dari harga saat ini
+    entry_zone_label = "⬇️ Koreksi" if range_pos > 70 else "⬆️ Saat ini" if range_pos < 30 else "⚖️ Netral"
+    
+    # Support & Resistance levels
+    support_s1 = price * 0.95  # -5%
+    support_s2 = price * 0.90  # -10%
+    resistance_r1 = price * 1.05  # +5%
+    resistance_r2 = price * 1.10  # +10%
+    
+    # Two Steps Ahead scenarios
+    if "BELI" in action:
+        # Skenario bullish
+        step1_action = "🚀 Naik ke R1"
+        step1_price = resistance_r1
+        step1_gain = 5.0
+        step2_action = "🚀🚀 Tembus R1, lanjut ke R2"
+        step2_price = resistance_r2
+        step2_gain = 10.0
+        # Skenario bearish (jika gagal)
+        fail_action = "📉 Gagal, turun ke S1"
+        fail_price = support_s1
+        fail_loss = 5.0
+    elif "WATCH" in action:
+        step1_action = "⏳ Pantau support S1"
+        step1_price = support_s1
+        step1_gain = -5.0
+        step2_action = "⏳ Jika S1 bertahan, target R1"
+        step2_price = resistance_r1
+        step2_gain = 5.0
+        fail_action = "📉 Jika S1 jebol, turun ke S2"
+        fail_price = support_s2
+        fail_loss = 10.0
+    else:
+        step1_action = "⛔ Hindari dulu"
+        step1_price = 0
+        step1_gain = 0
+        step2_action = "⛔ Pantau dari jauh"
+        step2_price = 0
+        step2_gain = 0
+        fail_action = "⛔ Tidak direkomendasikan"
+        fail_price = 0
+        fail_loss = 0
+
     # Dynamic TP/SL
     gain_pct = clamp(3 + max(momentum, 0) * 0.75 + (score - 60) * 0.22, 2, 18)
     stop_pct = clamp(2.6 + abs(momentum) * 0.35 + (1 if risk_level == "TINGGI" else 0), 2.5, 9)
@@ -1411,22 +1458,79 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         "trailing_stop_pct": round(trailing, 1), "allocation_pct": round(alloc, 1),
         "range_pos": round(range_pos, 1),
         "category": category, "category_color": category_color,
+        # Entry Zone
+        "entry_zone_low": entry_zone_low,
+        "entry_zone_high": entry_zone_high,
+        "entry_zone_label": entry_zone_label,
+        # Two Steps Ahead
+        "step1_action": step1_action,
+        "step1_price": step1_price,
+        "step1_gain": step1_gain,
+        "step2_action": step2_action,
+        "step2_price": step2_price,
+        "step2_gain": step2_gain,
+        "fail_action": fail_action,
+        "fail_price": fail_price,
+        "fail_loss": fail_loss,
+        # Support & Resistance
+        "support_s1": support_s1,
+        "support_s2": support_s2,
+        "resistance_r1": resistance_r1,
+        "resistance_r2": resistance_r2,
     }
 
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_fetch_candles_parallel(pairs_list):
+    """Fetch candles for all pairs in parallel to save time (cache 5 menit)."""
+    from concurrent.futures import ThreadPoolExecutor
+    unique_pairs = list(set(pairs_list))
+    results_map = {}
+    
+    def fetch_one(p):
+        try:
+            return p, fetch_candles(p)
+        except Exception:
+            return p, pd.DataFrame()
+            
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        futures = [executor.submit(fetch_one, p) for p in unique_pairs]
+        for fut in futures:
+            p, df = fut.result()
+            results_map[p] = df
+            
+    return results_map
+
+
 def analyze_assets(assets_data, market_stats, tickers=None):
-    """Analyze all assets with advanced technical indicators."""
+    """Analyze all assets with advanced technical indicators in parallel."""
     results = []
-    for symbol, data in assets_data.items():
-        # Fetch candles untuk indikator teknikal
+    total = len(assets_data)
+    
+    if total > 0:
+        progress_bar = st.progress(0, text="🔍 Menganalisis aset...")
+    
+    # Fetch all candles in parallel to prevent 15-second loading delay
+    pairs_list = [data["pair"] for data in assets_data.values()]
+    candles_map = _cached_fetch_candles_parallel(pairs_list)
+    
+    for idx, (symbol, data) in enumerate(assets_data.items()):
         pair = data["pair"]
-        candles = fetch_candles(pair)
-        time.sleep(0.15)  # rate limit
+        candles = candles_map.get(pair, pd.DataFrame())
         result = analyze_coin_advanced(symbol, data, candles, market_stats)
         results.append(result)
+        if total > 0:
+            progress_bar.progress((idx + 1) / total, text=f"📊 {symbol} ({idx+1}/{total})")
+    
+    if total > 0:
+        progress_bar.empty()
+    
     priority = {"BELI KUAT": 0, "CICIL BELI": 1, "WATCH": 2, "JANGAN BELI": 3, "HINDARI": 4}
     results.sort(key=lambda x: (priority.get(x["action"], 5), -x["score"]))
     return results
+
+
 
 
 
@@ -1619,6 +1723,10 @@ def render_rekomendasi_card(item, idx):
     change_color = "#22c55e" if item["change"] >= 0 else "#ef4444"
     pair_upper = item["pair"].upper().replace("_", "")
     buy_link = f"https://indodax.com/market/{pair_upper}?ref=narwanpratanta"
+    
+    # Entry Zone display
+    entry_color = "#22c55e" if "Koreksi" in item.get("entry_zone_label", "") else "#f59e0b" if "Netral" in item.get("entry_zone_label", "") else "#3b82f6"
+    
     st.markdown(
         f"""
         <div class="rekomendasi-card" style="margin-bottom:0.8rem">
@@ -1645,6 +1753,33 @@ def render_rekomendasi_card(item, idx):
                 <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Stop Loss</span><br><span style="font-weight:700;font-size:0.85rem;color:#ef4444">{format_price(item['stop_loss'])}</span></div>
                 <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Trailing</span><br><span style="font-weight:700;font-size:0.85rem;color:#f59e0b">{item['trailing_stop_pct']:.1f}%</span></div>
             </div>
+            <!-- ENTRY ZONE -->
+            <div style="margin-top:0.6rem;padding:0.5rem;background:rgba(255,255,255,0.04);border-radius:12px;border:1px solid {entry_color}30">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.3rem">
+                    <span style="font-size:0.75rem;color:#aaa;text-transform:uppercase;letter-spacing:0.05em">🎯 Entry Zone</span>
+                    <span style="font-size:0.85rem;font-weight:700;color:{entry_color}">{item.get('entry_zone_label', '⚖️ Netral')}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-top:0.2rem">
+                    <span style="font-size:0.8rem;color:#22c55e">⬇️ {format_price(item.get('entry_zone_low', 0))}</span>
+                    <span style="font-size:0.8rem;color:#f59e0b">⟷</span>
+                    <span style="font-size:0.8rem;color:#ef4444">⬆️ {format_price(item.get('entry_zone_high', 0))}</span>
+                </div>
+            </div>
+            <!-- TWO STEPS AHEAD -->
+            <div style="margin-top:0.5rem;display:grid;grid-template-columns:1fr 1fr;gap:0.4rem">
+                <div style="background:rgba(34,197,94,0.08);border-radius:10px;padding:0.4rem;text-align:center;border:1px solid #22c55e20">
+                    <div style="font-size:0.65rem;color:#22c55e;font-weight:700">✅ SKENARIO BULLISH</div>
+                    <div style="font-size:0.75rem;color:#ccc;margin-top:0.15rem">{item.get('step1_action', '⏳')}</div>
+                    <div style="font-size:0.85rem;font-weight:800;color:#22c55e">{format_price(item.get('step1_price', 0))}</div>
+                    <div style="font-size:0.7rem;color:#22c55e">+{item.get('step1_gain', 0):.1f}%</div>
+                </div>
+                <div style="background:rgba(239,68,68,0.08);border-radius:10px;padding:0.4rem;text-align:center;border:1px solid #ef444420">
+                    <div style="font-size:0.65rem;color:#ef4444;font-weight:700">❌ SKENARIO BEARISH</div>
+                    <div style="font-size:0.75rem;color:#ccc;margin-top:0.15rem">{item.get('fail_action', '⛔')}</div>
+                    <div style="font-size:0.85rem;font-weight:800;color:#ef4444">{format_price(item.get('fail_price', 0))}</div>
+                    <div style="font-size:0.7rem;color:#ef4444">{item.get('fail_loss', 0):.1f}%</div>
+                </div>
+            </div>
             <div style="margin-top:0.8rem;text-align:center">
                 <a href="{buy_link}" target="_blank" class="buy-button-sm">🔥 Beli di Indodax</a>
             </div>
@@ -1652,6 +1787,7 @@ def render_rekomendasi_card(item, idx):
         """,
         unsafe_allow_html=True,
     )
+
 
 
 def render_rekomendasi_list(results, title, max_items=10):
@@ -1774,9 +1910,9 @@ def main():
     main_data = extract_asset_data(tickers, MAIN_ASSETS)
     micin_data = extract_asset_data(tickers, MICIN_ASSETS)
     all_data = {**main_data, **micin_data}
-    main_results = analyze_assets(main_data, market_stats)
-    micin_results = analyze_assets(micin_data, market_stats)
     all_results = analyze_assets(all_data, market_stats)
+    main_results = [r for r in all_results if r["symbol"] in MAIN_ASSETS]
+    micin_results = [r for r in all_results if r["symbol"] in MICIN_ASSETS]
     loading_placeholder.empty()
     if error:
         st.warning(error)
