@@ -18,6 +18,14 @@ NEWS_ENABLED = str(os.environ.get("ENABLE_NEWS_SENTIMENT", "true")).lower() in {
 NEWS_LOOKBACK_HOURS = int(os.environ.get("NEWS_LOOKBACK_HOURS", "36"))
 NEWS_TIMEOUT_SECONDS = float(os.environ.get("NEWS_TIMEOUT_SECONDS", "8"))
 NEWS_MAX_ITEMS = int(os.environ.get("NEWS_MAX_ITEMS", "50"))
+X_BEARER_TOKEN = os.environ.get("X_BEARER_TOKEN", "").strip()
+X_WHITELIST = os.environ.get(
+    "X_WHITELIST",
+    "WatcherGuru,tier10k,WuBlockchain,lookonchain,CoinDesk,TheBlock__,whale_alert",
+)
+X_MAX_RESULTS = int(os.environ.get("X_MAX_RESULTS", "20"))
+X_MIN_LIKE_COUNT = int(os.environ.get("X_MIN_LIKE_COUNT", "0"))
+X_SEARCH_URL = "https://api.x.com/2/tweets/search/recent"
 
 ASSET_KEYWORDS = {
     "BTC": ("btc", "bitcoin"),
@@ -64,6 +72,15 @@ def _configured_feeds():
         if url:
             feeds.append((f"Feed {idx}", url))
     return feeds or DEFAULT_NEWS_FEEDS
+
+
+def _configured_x_accounts():
+    accounts = []
+    for account in X_WHITELIST.split(","):
+        account = account.strip().lstrip("@")
+        if re.fullmatch(r"[A-Za-z0-9_]{1,15}", account):
+            accounts.append(account)
+    return accounts[:12]
 
 
 def _strip_html(value):
@@ -160,8 +177,86 @@ def fetch_news_articles(symbols=None):
                 "symbols": matched,
             })
 
+    articles.extend(fetch_x_articles(symbols=symbols))
+
     articles.sort(key=lambda a: (a.get("published") or "", abs(a.get("score", 0))), reverse=True)
     return articles[:NEWS_MAX_ITEMS]
+
+
+def fetch_x_articles(symbols=None):
+    if not NEWS_ENABLED or not X_BEARER_TOKEN:
+        return []
+    accounts = _configured_x_accounts()
+    if not accounts:
+        return []
+    wanted_symbols = [s for s in (symbols or ASSET_KEYWORDS.keys()) if s in ASSET_KEYWORDS]
+    asset_terms = []
+    for symbol in wanted_symbols[:16]:
+        asset_terms.append(symbol)
+        primary = ASSET_KEYWORDS.get(symbol, ())
+        if primary:
+            asset_terms.append(primary[0])
+    asset_terms = sorted(set(asset_terms))[:28]
+    account_query = " OR ".join(f"from:{account}" for account in accounts)
+    asset_query = " OR ".join(asset_terms) if asset_terms else "crypto OR bitcoin OR ethereum"
+    query = f"({account_query}) ({asset_query}) -is:retweet lang:en"
+    params = {
+        "query": query[:512],
+        "max_results": max(10, min(100, X_MAX_RESULTS)),
+        "tweet.fields": "created_at,public_metrics,lang",
+        "expansions": "author_id",
+        "user.fields": "username,name",
+    }
+    headers = {"Authorization": f"Bearer {X_BEARER_TOKEN}", "User-Agent": "KriptoMania/1.0"}
+    try:
+        resp = requests.get(X_SEARCH_URL, params=params, headers=headers, timeout=NEWS_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return []
+
+    users = {
+        user.get("id"): user
+        for user in data.get("includes", {}).get("users", [])
+        if isinstance(user, dict)
+    }
+    articles = []
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=NEWS_LOOKBACK_HOURS)
+    for tweet in data.get("data", []):
+        text = _strip_html(tweet.get("text", ""))
+        created = _parse_x_datetime(tweet.get("created_at"))
+        if created and created < cutoff:
+            continue
+        metrics = tweet.get("public_metrics") or {}
+        if int(metrics.get("like_count", 0) or 0) < X_MIN_LIKE_COUNT:
+            continue
+        score, keywords = _sentiment_score(text)
+        matched = _symbols_for_text(text, symbols)
+        user = users.get(tweet.get("author_id"), {})
+        username = user.get("username") or "X"
+        articles.append({
+            "source": f"X @{username}",
+            "title": text[:220],
+            "link": f"https://x.com/{username}/status/{tweet.get('id')}",
+            "summary": text[:240],
+            "published": created.isoformat() if created else None,
+            "score": score,
+            "label": _label(score),
+            "keywords": keywords,
+            "symbols": matched,
+            "engagement": int(metrics.get("like_count", 0) or 0) + int(metrics.get("retweet_count", 0) or 0),
+        })
+    return articles
+
+
+def _parse_x_datetime(value):
+    if not value:
+        return None
+    try:
+        value = str(value).replace("Z", "+00:00")
+        return datetime.fromisoformat(value).astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def build_news_profile(symbols=None):

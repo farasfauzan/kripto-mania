@@ -19,3 +19,8 @@ Set secrets berikut di Hugging Face Space Settings sebelum menjalankan bot:
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `DEEPSEEK_API_KEY` jika fitur AI Advisor digunakan
+- `X_BEARER_TOKEN` jika ingin mengaktifkan news check dari X API resmi
+
+Opsional untuk X news whitelist:
+
+- `X_WHITELIST=WatcherGuru,tier10k,WuBlockchain,lookonchain,CoinDesk,TheBlock__,whale_alert`
