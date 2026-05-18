@@ -13,6 +13,8 @@ test_signal.py
 
 # Bot runtime state
 bot_state.json
+signal_journal.json
+signal_journal.json.tmp
 
 # Local environments
 .env

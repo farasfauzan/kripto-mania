@@ -1,5 +1,6 @@
 import os
 import threading
+import json
 from textwrap import dedent
 
 import time
@@ -95,6 +96,10 @@ CATEGORY_ORDER = ["Layer1", "Layer2", "DeFi", "Meme", "AI", "Gaming", "RWA", "St
 
 INDODAX_REF = "https://indodax.com/ref/narwanpratanta/1"
 TELEGRAM_COMMUNITY = "https://t.me/+VPlOcY2wFGA0NWU1"
+SIGNAL_JOURNAL_FILE = os.environ.get("SIGNAL_JOURNAL_FILE", "signal_journal.json")
+SIGNAL_LEARNING_ENABLED = str(os.environ.get("ENABLE_SIGNAL_LEARNING", "true")).lower() in {"1", "true", "yes", "on"}
+SIGNAL_LEARNING_TTL_HOURS = int(os.environ.get("SIGNAL_LEARNING_TTL_HOURS", "72"))
+SIGNAL_LEARNING_DEDUPE_HOURS = int(os.environ.get("SIGNAL_LEARNING_DEDUPE_HOURS", "6"))
 
 DONATION_WALLETS = {
     "BTC": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
@@ -1101,6 +1106,61 @@ st.markdown(
     }
     .check-ok { color: #047857; }
     .check-no { color: #94a3b8; }
+    .learning-panel {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+        background: #ffffff;
+        border: 1px solid #bfdbfe;
+        border-left: 5px solid #2563eb;
+        border-radius: 8px;
+        padding: 0.9rem 1rem;
+        margin: 0.8rem 0 1rem;
+        box-shadow: 0 12px 34px rgba(15, 23, 42, 0.06);
+    }
+    .learning-title {
+        color: #0f172a;
+        font-size: 1rem;
+        font-weight: 900;
+        margin-top: 0.18rem;
+    }
+    .learning-note {
+        color: #64748b;
+        font-size: 0.84rem;
+        font-weight: 700;
+        margin-top: 0.25rem;
+    }
+    .learning-stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(76px, 1fr));
+        gap: 0.5rem;
+        min-width: min(360px, 100%);
+    }
+    .learning-stats div {
+        background: #eff6ff;
+        border: 1px solid #dbeafe;
+        border-radius: 8px;
+        padding: 0.55rem 0.65rem;
+        text-align: center;
+    }
+    .learning-stats span {
+        display: block;
+        color: #1d4ed8;
+        font-size: 1.05rem;
+        font-weight: 900;
+        line-height: 1.1;
+    }
+    .learning-stats small {
+        display: block;
+        color: #64748b;
+        font-size: 0.66rem;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-top: 0.18rem;
+    }
     .buy-button-sm {
         border-radius: 8px !important;
         padding: 0.62rem 1rem !important;
@@ -2099,6 +2159,216 @@ def _cached_fetch_candles_parallel(pairs_list):
     return results_map
 
 
+def _empty_learning_journal():
+    return {"version": 1, "signals": [], "updated_at": None}
+
+
+def load_learning_journal():
+    if not SIGNAL_LEARNING_ENABLED or not os.path.exists(SIGNAL_JOURNAL_FILE):
+        return _empty_learning_journal()
+    try:
+        with open(SIGNAL_JOURNAL_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return _empty_learning_journal()
+        data.setdefault("version", 1)
+        data.setdefault("signals", [])
+        data.setdefault("updated_at", None)
+        return data
+    except (OSError, ValueError, TypeError):
+        return _empty_learning_journal()
+
+
+def save_learning_journal(journal):
+    if not SIGNAL_LEARNING_ENABLED:
+        return
+    try:
+        journal["signals"] = journal.get("signals", [])[-500:]
+        journal["updated_at"] = datetime.now(BOT_WIB).isoformat()
+        tmp_path = f"{SIGNAL_JOURNAL_FILE}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(journal, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, SIGNAL_JOURNAL_FILE)
+    except OSError:
+        pass
+
+
+def _parse_iso_datetime(value):
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def build_learning_profile(journal):
+    signals = journal.get("signals", [])
+    closed = [s for s in signals if s.get("status") in {"TARGET", "TP", "SL", "EXPIRED"}]
+    wins = [s for s in closed if s.get("outcome") == "WIN"]
+    losses = [s for s in closed if s.get("outcome") == "LOSS"]
+    active = [s for s in signals if s.get("status") == "OPEN"]
+
+    by_symbol = {}
+    for sig in closed:
+        symbol = sig.get("symbol")
+        if not symbol:
+            continue
+        stats = by_symbol.setdefault(symbol, {"closed": 0, "wins": 0, "losses": 0, "max_gain_sum": 0.0})
+        stats["closed"] += 1
+        stats["wins"] += 1 if sig.get("outcome") == "WIN" else 0
+        stats["losses"] += 1 if sig.get("outcome") == "LOSS" else 0
+        stats["max_gain_sum"] += float(sig.get("max_gain_pct", 0) or 0)
+
+    for stats in by_symbol.values():
+        stats["winrate"] = round(stats["wins"] / stats["closed"] * 100, 1) if stats["closed"] else 0.0
+        stats["avg_max_gain"] = round(stats["max_gain_sum"] / stats["closed"], 2) if stats["closed"] else 0.0
+
+    winrate = round(len(wins) / len(closed) * 100, 1) if closed else None
+    best_symbols = sorted(
+        ((sym, stats) for sym, stats in by_symbol.items() if stats["closed"] >= 2),
+        key=lambda item: (item[1]["winrate"], item[1]["closed"]),
+        reverse=True,
+    )[:3]
+
+    return {
+        "enabled": SIGNAL_LEARNING_ENABLED,
+        "total_signals": len(signals),
+        "closed": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "active": len(active),
+        "winrate": winrate,
+        "by_symbol": by_symbol,
+        "best_symbols": best_symbols,
+        "updated_at": journal.get("updated_at"),
+    }
+
+
+def apply_learning_adjustments(results, profile):
+    by_symbol = profile.get("by_symbol", {})
+    for item in results:
+        stats = by_symbol.get(item.get("symbol"), {})
+        closed = stats.get("closed", 0)
+        adjustment = 0
+        note = "Mengumpulkan data"
+        if closed >= 3:
+            winrate = stats.get("winrate", 0)
+            if winrate >= 70:
+                adjustment = 5
+                note = f"Riwayat kuat ({winrate:.0f}% WR)"
+            elif winrate >= 58:
+                adjustment = 2
+                note = f"Riwayat positif ({winrate:.0f}% WR)"
+            elif winrate <= 38:
+                adjustment = -6
+                note = f"Riwayat lemah ({winrate:.0f}% WR)"
+            elif winrate <= 48:
+                adjustment = -3
+                note = f"Riwayat hati-hati ({winrate:.0f}% WR)"
+            else:
+                note = f"Riwayat netral ({winrate:.0f}% WR)"
+
+        original_score = int(item.get("score", 0))
+        item["learning_adjustment"] = adjustment
+        item["learning_note"] = note
+        item["learning_trades"] = closed
+        if adjustment:
+            item["score"] = int(clamp(original_score + adjustment, 0, 100))
+            if item.get("allocation_pct", 0) > 0:
+                item["allocation_pct"] = round(clamp(item["allocation_pct"] * (1 + adjustment / 25), 0, 10), 1)
+    return results
+
+
+def update_learning_journal(results):
+    journal = load_learning_journal()
+    if not SIGNAL_LEARNING_ENABLED:
+        return build_learning_profile(journal)
+
+    now = datetime.now(BOT_WIB)
+    changed = False
+    price_map = {item["symbol"]: float(item.get("price", 0) or 0) for item in results}
+
+    for sig in journal.get("signals", []):
+        if sig.get("status") != "OPEN":
+            continue
+        symbol = sig.get("symbol")
+        price = price_map.get(symbol)
+        if not price:
+            continue
+        entry = float(sig.get("entry", price) or price)
+        sig["last_price"] = price
+        sig["max_price"] = max(float(sig.get("max_price", entry) or entry), price)
+        sig["min_price"] = min(float(sig.get("min_price", entry) or entry), price)
+        sig["max_gain_pct"] = round((sig["max_price"] - entry) / entry * 100, 2) if entry > 0 else 0
+        sig["max_drawdown_pct"] = round((sig["min_price"] - entry) / entry * 100, 2) if entry > 0 else 0
+
+        opened_at = _parse_iso_datetime(sig.get("opened_at")) or now
+        age_hours = (now - opened_at).total_seconds() / 3600
+        stop_loss = float(sig.get("stop_loss", 0) or 0)
+        tp1 = float(sig.get("tp1", 0) or 0)
+        target = float(sig.get("target", 0) or 0)
+
+        if tp1 > 0 and price >= tp1:
+            sig["tp1_hit"] = True
+        if target > 0 and price >= target:
+            sig["status"] = "TARGET"
+            sig["outcome"] = "WIN"
+            sig["closed_at"] = now.isoformat()
+            changed = True
+        elif stop_loss > 0 and price <= stop_loss:
+            sig["status"] = "SL"
+            sig["outcome"] = "WIN" if sig.get("tp1_hit") else "LOSS"
+            sig["closed_at"] = now.isoformat()
+            changed = True
+        elif age_hours >= SIGNAL_LEARNING_TTL_HOURS:
+            sig["status"] = "TP" if sig.get("tp1_hit") else "EXPIRED"
+            sig["outcome"] = "WIN" if sig.get("tp1_hit") else "LOSS"
+            sig["closed_at"] = now.isoformat()
+            changed = True
+
+    open_symbols = {s.get("symbol") for s in journal.get("signals", []) if s.get("status") == "OPEN"}
+    for item in results:
+        if not (
+            is_entry_action(item.get("action", ""))
+            and item.get("allocation_pct", 0) > 0
+            and item.get("confluence_passed", 0) >= 4
+        ):
+            continue
+        symbol = item["symbol"]
+        if symbol in open_symbols:
+            continue
+        last_same = next((s for s in reversed(journal.get("signals", [])) if s.get("symbol") == symbol), None)
+        if last_same:
+            opened_at = _parse_iso_datetime(last_same.get("opened_at"))
+            if opened_at and (now - opened_at).total_seconds() < SIGNAL_LEARNING_DEDUPE_HOURS * 3600:
+                continue
+        journal["signals"].append({
+            "symbol": symbol,
+            "pair": item.get("pair"),
+            "action": item.get("action"),
+            "entry": float(item.get("price", 0) or 0),
+            "score": int(item.get("score", 0) or 0),
+            "allocation_pct": float(item.get("allocation_pct", 0) or 0),
+            "tp1": float(item.get("tp1", 0) or 0),
+            "tp2": float(item.get("tp2", 0) or 0),
+            "target": float(item.get("target", 0) or 0),
+            "stop_loss": float(item.get("stop_loss", 0) or 0),
+            "opened_at": now.isoformat(),
+            "status": "OPEN",
+            "outcome": None,
+            "tp1_hit": False,
+            "max_price": float(item.get("price", 0) or 0),
+            "min_price": float(item.get("price", 0) or 0),
+            "max_gain_pct": 0.0,
+            "max_drawdown_pct": 0.0,
+        })
+        open_symbols.add(symbol)
+        changed = True
+
+    if changed:
+        save_learning_journal(journal)
+    return build_learning_profile(journal)
+
+
 def analyze_assets(assets_data, market_stats, tickers=None):
     """Analyze all assets with advanced technical indicators in parallel."""
     results = []
@@ -2126,6 +2396,37 @@ def analyze_assets(assets_data, market_stats, tickers=None):
     results.sort(key=lambda x: (priority.get(x["action"], 5), -x["score"]))
     return results
 
+
+def render_learning_panel(profile):
+    if not profile.get("enabled"):
+        return
+    winrate = profile.get("winrate")
+    winrate_text = f"{winrate:.1f}%" if winrate is not None else "Belum ada"
+    best_symbols = profile.get("best_symbols", [])
+    if best_symbols:
+        best_text = " · ".join(
+            f"{sym} {stats['winrate']:.0f}%/{stats['closed']}x"
+            for sym, stats in best_symbols
+        )
+    else:
+        best_text = "Mengumpulkan data sinyal valid"
+    st.markdown(
+        f"""
+        <div class="learning-panel">
+            <div>
+                <div class="section-label">Learning engine</div>
+                <div class="learning-title">Web mulai belajar dari hasil sinyal</div>
+                <div class="learning-note">{best_text}</div>
+            </div>
+            <div class="learning-stats">
+                <div><span>{profile.get('active', 0)}</span><small>Aktif</small></div>
+                <div><span>{profile.get('closed', 0)}</span><small>Selesai</small></div>
+                <div><span>{winrate_text}</span><small>Winrate</small></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 
@@ -2420,6 +2721,11 @@ def render_rekomendasi_card(item, idx):
     fail_action = clean_ui_text(item.get("fail_action", "Tidak direkomendasikan"))
     confluence_label = item.get("confluence_label", "INVALID 0/5")
     confluence_checks = item.get("confluence_checks", {})
+    learning_adjustment = int(item.get("learning_adjustment", 0) or 0)
+    learning_note = item.get("learning_note", "Mengumpulkan data")
+    learning_trades = int(item.get("learning_trades", 0) or 0)
+    learning_color = "#047857" if learning_adjustment > 0 else "#b91c1c" if learning_adjustment < 0 else "#64748b"
+    learning_delta = f"{learning_adjustment:+d}" if learning_adjustment else "0"
 
     check_rows = ""
     for label, ok in confluence_checks.items():
@@ -2456,6 +2762,7 @@ def render_rekomendasi_card(item, idx):
                 <div class="metric-chip"><span class="metric-label">Volume</span><span class="metric-value">{format_idr(item['vol_idr'])}</span></div>
                 <div class="metric-chip"><span class="metric-label">RSI</span><span class="metric-value">{item['rsi']}</span></div>
                 <div class="metric-chip"><span class="metric-label">ML</span><span class="metric-value">{item['ml_label']} {item['ml_prob']}%</span></div>
+                <div class="metric-chip"><span class="metric-label">Learning</span><span class="metric-value" style="color:{learning_color}">{learning_delta} · {learning_trades}x</span></div>
             </div>
 
             <div class="metrics-grid">
@@ -2496,6 +2803,13 @@ def render_rekomendasi_card(item, idx):
                     <span class="section-strong">{confluence_label}</span>
                 </div>
                 <div class="check-list">{check_rows}</div>
+            </div>
+
+            <div class="card-section">
+                <div class="section-row">
+                    <span class="section-label">Learning note</span>
+                    <span class="section-strong" style="color:{learning_color}">{learning_note}</span>
+                </div>
             </div>
 
             <div style="margin-top:0.8rem;text-align:right">
@@ -2795,6 +3109,10 @@ def main():
     micin_data = extract_asset_data(tickers, prices_24h, MICIN_ASSETS)
     all_data = {**main_data, **micin_data}
     all_results = analyze_assets(all_data, market_stats)
+    learning_profile = update_learning_journal(all_results)
+    all_results = apply_learning_adjustments(all_results, learning_profile)
+    priority = {"BELI KUAT": 0, "CICIL BELI": 1, "WATCH": 2, "JANGAN BELI": 3, "HINDARI": 4}
+    all_results.sort(key=lambda x: (priority.get(x["action"], 5), -x["score"]))
     main_results = [r for r in all_results if r["symbol"] in MAIN_ASSETS]
     micin_results = [r for r in all_results if r["symbol"] in MICIN_ASSETS]
     loading_placeholder.empty()
@@ -2826,6 +3144,7 @@ def main():
         render_market_stats(market_stats)
     with col_fg:
         render_fear_greed(fg_data)
+    render_learning_panel(learning_profile)
     render_fomo_alerts(tickers, prices_24h)
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["Rekomendasi Beli", "Semua Aset", "Micin/Meme", "Analisis Detail", "Tanya AI Advisor"])

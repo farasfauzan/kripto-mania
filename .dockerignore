@@ -11,4 +11,6 @@ env
 venv
 ENV
 bot_state.json
+signal_journal.json
+signal_journal.json.tmp
 test_signal.py
