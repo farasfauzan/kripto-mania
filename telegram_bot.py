@@ -15,6 +15,7 @@ import pandas as pd
 import json
 from datetime import datetime, timezone, timedelta
 from keep_alive import keep_alive
+from learning_engine import apply_learning_adjustments, record_signal, train_from_prices
 
 # === CONFIG ===
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -133,6 +134,21 @@ def is_entry_action(action):
     """Check if action is a genuine entry signal (not 'JANGAN BELI')."""
     action = str(action or "").upper()
     return "BELI KUAT" in action or "CICIL BELI" in action
+
+
+def apply_bot_learning(result):
+    """Adjust score/allocation from historical signal outcomes."""
+    apply_learning_adjustments([result])
+    return result
+
+
+def record_bot_learning_signal(result, pair=None, source="bot"):
+    payload = dict(result)
+    payload["pair"] = pair or payload.get("pair")
+    payload["target"] = payload.get("target", payload.get("tp3"))
+    payload["allocation_pct"] = payload.get("allocation_pct", payload.get("alloc_pct", 0))
+    payload["source"] = source
+    return record_signal(payload, is_entry_action)
 
 
 # =============================================================================
@@ -899,7 +915,7 @@ def send_sinyal_harian(all_coins):
             continue
         candles = fetch_candles(pair)
         time.sleep(0.3)  # rate limit
-        result = analyze_coin(sym, all_coins[sym], candles)
+        result = apply_bot_learning(analyze_coin(sym, all_coins[sym], candles))
         signals.append(result)
 
     if not signals:
@@ -947,6 +963,7 @@ def send_sinyal_harian(all_coins):
                 'entry': s['price'], 'tp1': s['tp1'], 'tp2': s['tp2'], 'tp3': s['tp3'],
                 'sl': s['stop_loss'], 'hit': set(), 'time': datetime.now(WIB).isoformat(),
             }
+            record_bot_learning_signal(s, MAIN_ASSETS[s["symbol"]], source="daily")
         else:
             lines.append(f"   [PANTAU DI INDODAX]({link})")
         lines.append("")
@@ -1109,7 +1126,7 @@ def check_realtime_confluence_alerts(all_coins):
             if candles.empty:
                 continue
 
-            res = analyze_coin(sym, all_coins[sym], candles)
+            res = apply_bot_learning(analyze_coin(sym, all_coins[sym], candles))
 
             # Filtering to prevent noise / unwanted risk
             if res["score"] < MIN_ALERT_SCORE:
@@ -1181,6 +1198,7 @@ def check_realtime_confluence_alerts(all_coins):
                     'sl': res['stop_loss'], 'hit': set(), 'time': datetime.now(WIB).isoformat(),
                 }
                 _daily_stats['signals_sent'] += 1
+                record_bot_learning_signal(res, pair, source="realtime")
             
             # Catat ke cache agar tidak spam
             _confluence_sent_symbols[sym] = {
@@ -1323,9 +1341,12 @@ if __name__ == "__main__":
             consecutive_errors = 0
             coin_count = len(all_coins)
             now = datetime.now(WIB)
+            learning_profile = train_from_prices(all_coins)
 
             if cycle_count % 10 == 1:
-                log(f"Heartbeat -- {coin_count} koin | {now.strftime('%H:%M WIB')}")
+                wr = learning_profile.get("winrate")
+                wr_text = f"{wr:.1f}%" if wr is not None else "belum ada"
+                log(f"Heartbeat -- {coin_count} koin | {now.strftime('%H:%M WIB')} | Learning WR: {wr_text}")
 
             # 1. Sinyal harian (jam 8-9 pagi)
             if should_send_sinyal():
