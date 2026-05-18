@@ -1,0 +1,14 @@
+.git
+.gitignore
+.streamlit
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+env
+venv
+ENV
+bot_state.json
+test_signal.py

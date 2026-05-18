@@ -14,4 +14,4 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 7860
 
 # Run bot daemon in background, and Streamlit app in foreground
-CMD ["sh", "-c", "python telegram_bot.py & streamlit run app.py --server.port 7860 --server.address 0.0.0.0"]
+CMD ["sh", "-c", "python telegram_bot.py & exec streamlit run app.py --server.port 7860 --server.address 0.0.0.0"]
