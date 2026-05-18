@@ -443,7 +443,22 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
     @import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css');
-    * { font-family: 'Plus Jakarta Sans', sans-serif !important; }
+    body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stSidebar"], p, div, button, input, textarea, label {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .material-icons, .material-symbols-rounded, .material-symbols-outlined,
+    [class*="material-icons"], [class*="material-symbols"] {
+        font-family: 'Material Symbols Rounded', 'Material Icons' !important;
+        font-weight: normal !important;
+        font-style: normal !important;
+        letter-spacing: normal !important;
+        text-transform: none !important;
+        white-space: nowrap !important;
+        word-wrap: normal !important;
+        direction: ltr !important;
+        -webkit-font-feature-settings: 'liga' !important;
+        -webkit-font-smoothing: antialiased !important;
+    }
     .stApp {
         background: linear-gradient(180deg, #f8fafc 0%, #eef4ff 48%, #e8f7ef 100%);
         color: #0f172a;
@@ -577,7 +592,13 @@ st.markdown(
         padding: 1rem;
         text-align: center;
     }
-    .stat-value { font-size: 1.5rem; font-weight: 900; }
+    .stat-value {
+        font-size: clamp(1.05rem, 1.8vw, 1.5rem);
+        font-weight: 900;
+        white-space: nowrap;
+        overflow-wrap: normal;
+        line-height: 1.15;
+    }
     .stat-label {
         font-size: 0.75rem;
         color: #888;
@@ -759,6 +780,371 @@ st.markdown(
         .price-tag { font-size: 1.5rem; }
         .buy-button { padding: 12px 28px; font-size: 1rem; }
         .rekomendasi-hero { padding: 1.5rem 1rem; }
+    }
+    /* Premium clean dashboard layer */
+    .stApp {
+        background:
+            radial-gradient(circle at top left, rgba(34, 197, 94, 0.10), transparent 30rem),
+            radial-gradient(circle at top right, rgba(59, 130, 246, 0.10), transparent 28rem),
+            #f6f8fb !important;
+    }
+    .block-container {
+        max-width: 1240px;
+        padding-top: 1.1rem !important;
+        padding-bottom: 2rem !important;
+    }
+    .app-shell-header {
+        background: rgba(255, 255, 255, 0.84);
+        border: 1px solid #dbe7f3;
+        border-radius: 8px;
+        padding: 1.35rem 1.4rem;
+        margin-bottom: 0.8rem;
+        box-shadow: 0 18px 50px rgba(15, 23, 42, 0.08);
+    }
+    .app-brand-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+    .app-kicker {
+        color: #047857;
+        font-size: 0.74rem;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        margin-bottom: 0.25rem;
+    }
+    .app-title {
+        color: #0f172a;
+        font-size: 2.25rem;
+        line-height: 1.05;
+        font-weight: 900;
+        margin: 0;
+    }
+    .app-subtitle {
+        color: #64748b;
+        font-size: 0.96rem;
+        font-weight: 600;
+        margin: 0.45rem 0 0;
+        max-width: 720px;
+    }
+    .quick-links {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+    .quick-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 36px;
+        border-radius: 8px;
+        padding: 0.48rem 0.78rem;
+        background: #ffffff;
+        border: 1px solid #dbe7f3;
+        color: #0f766e !important;
+        font-size: 0.8rem;
+        font-weight: 800;
+        text-decoration: none !important;
+    }
+    .quick-link.primary {
+        background: #0f766e;
+        border-color: #0f766e;
+        color: #ffffff !important;
+    }
+    .mode-banner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.8rem;
+        flex-wrap: wrap;
+        background: #ffffff;
+        border: 1px solid var(--mode-color);
+        border-left: 5px solid var(--mode-color);
+        border-radius: 8px;
+        padding: 0.9rem 1rem;
+        margin: 0.65rem 0 1rem;
+        box-shadow: 0 12px 34px rgba(15, 23, 42, 0.06);
+    }
+    .mode-title {
+        color: var(--mode-color);
+        font-weight: 900;
+        font-size: 0.98rem;
+    }
+    .mode-desc {
+        color: #64748b;
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+    .stat-card {
+        background: #ffffff !important;
+        border: 1px solid #dbe7f3 !important;
+        border-radius: 8px !important;
+        padding: 0.95rem 0.8rem !important;
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+    }
+    .stat-label {
+        color: #64748b !important;
+        letter-spacing: 0.08em !important;
+    }
+    .rekomendasi-hero {
+        background: #0f172a !important;
+        border: 1px solid #1e293b !important;
+        border-radius: 8px !important;
+        padding: 1.1rem 1.2rem !important;
+        text-align: left !important;
+        margin: 1rem 0 0.75rem !important;
+    }
+    .rekomendasi-hero::before { display: none !important; }
+    .hero-title {
+        color: #ffffff;
+        font-size: 1.35rem;
+        line-height: 1.2;
+        margin: 0;
+        font-weight: 900;
+    }
+    .hero-meta {
+        color: #a7f3d0;
+        margin: 0.25rem 0 0;
+        font-weight: 700;
+        font-size: 0.9rem;
+    }
+    .rekomendasi-card {
+        background: #ffffff !important;
+        border: 1px solid #dbe7f3 !important;
+        border-radius: 8px !important;
+        padding: 1rem !important;
+        text-align: left !important;
+        box-shadow: 0 14px 38px rgba(15, 23, 42, 0.07);
+    }
+    .rekomendasi-card:hover {
+        border-color: #10b981 !important;
+        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.10) !important;
+        transform: translateY(-2px) !important;
+    }
+    .coin-card-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+    .coin-left {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        min-width: 220px;
+    }
+    .coin-avatar {
+        width: 44px;
+        height: 44px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        background: #ecfdf5;
+        border: 1px solid #bbf7d0;
+        color: #047857;
+        font-weight: 900;
+        font-size: 0.9rem;
+    }
+    .coin-symbol {
+        color: #0f172a;
+        font-weight: 900;
+        font-size: 1.24rem;
+        line-height: 1;
+    }
+    .coin-category {
+        color: #64748b;
+        font-size: 0.78rem;
+        font-weight: 700;
+        margin-top: 0.2rem;
+    }
+    .coin-price-wrap {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.55rem;
+        flex-wrap: wrap;
+    }
+    .price-tag {
+        color: #0f172a !important;
+        background: none !important;
+        -webkit-text-fill-color: initial !important;
+        font-size: 1.55rem !important;
+        line-height: 1.05;
+        font-weight: 900;
+    }
+    .profit-badge, .loss-badge, .neutral-badge {
+        border-radius: 8px !important;
+        padding: 0.35rem 0.55rem !important;
+        box-shadow: none !important;
+        font-size: 0.8rem !important;
+    }
+    .signal-pill {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 8px;
+        padding: 0.4rem 0.62rem;
+        font-size: 0.78rem;
+        font-weight: 900;
+        margin-top: 0.6rem;
+    }
+    .signal-buy { color: #047857; background: #ecfdf5; border: 1px solid #bbf7d0; }
+    .signal-watch { color: #b45309; background: #fffbeb; border: 1px solid #fde68a; }
+    .signal-avoid { color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; }
+    .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+        gap: 0.5rem;
+        margin-top: 0.85rem;
+    }
+    .metric-chip {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 0.58rem 0.65rem;
+        min-height: 64px;
+    }
+    .metric-label {
+        color: #64748b;
+        display: block;
+        font-size: 0.66rem;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+    .metric-value {
+        color: #0f172a;
+        display: block;
+        font-size: 0.95rem;
+        font-weight: 900;
+        margin-top: 0.22rem;
+        word-break: break-word;
+    }
+    .card-section {
+        margin-top: 0.72rem;
+        padding: 0.72rem;
+        border-radius: 8px;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+    }
+    .section-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.7rem;
+        flex-wrap: wrap;
+    }
+    .section-label {
+        color: #64748b;
+        font-size: 0.68rem;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+    .section-strong {
+        color: #0f172a;
+        font-size: 0.86rem;
+        font-weight: 900;
+    }
+    .scenario-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.55rem;
+        margin-top: 0.72rem;
+    }
+    .scenario-box {
+        border-radius: 8px;
+        padding: 0.7rem;
+        border: 1px solid;
+        min-height: 108px;
+    }
+    .scenario-title {
+        font-size: 0.68rem;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+    .scenario-action {
+        color: #334155;
+        font-size: 0.8rem;
+        font-weight: 700;
+        margin-top: 0.35rem;
+        min-height: 34px;
+    }
+    .scenario-price {
+        font-size: 0.95rem;
+        font-weight: 900;
+        margin-top: 0.25rem;
+    }
+    .check-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 0.35rem;
+        margin-top: 0.45rem;
+    }
+    .check-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.5rem;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 0.38rem 0.48rem;
+        font-size: 0.75rem;
+        font-weight: 800;
+    }
+    .check-ok { color: #047857; }
+    .check-no { color: #94a3b8; }
+    .buy-button-sm {
+        border-radius: 8px !important;
+        padding: 0.62rem 1rem !important;
+        background: #047857 !important;
+        box-shadow: none !important;
+    }
+    .buy-button-sm.neutral {
+        background: #f8fafc !important;
+        border: 1px solid #cbd5e1 !important;
+        color: #334155 !important;
+    }
+    .freshness-badge {
+        background: #ffffff !important;
+        color: #475569 !important;
+        border: 1px solid #dbe7f3 !important;
+        border-radius: 8px !important;
+        box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+    }
+    div.stButton > button[kind="primary"] {
+        background: #047857 !important;
+        border: 1px solid #047857 !important;
+        color: #ffffff !important;
+        border-radius: 8px !important;
+        font-weight: 900 !important;
+        min-height: 42px;
+        box-shadow: 0 12px 30px rgba(4, 120, 87, 0.18);
+    }
+    div.stButton > button[kind="primary"]:hover {
+        background: #065f46 !important;
+        border-color: #065f46 !important;
+    }
+    .fomo-card {
+        background: #ffffff !important;
+        border-radius: 8px !important;
+        border-width: 1px !important;
+        box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
+    }
+    @media (max-width: 768px) {
+        .app-title { font-size: 1.65rem; }
+        .app-shell-header { padding: 1rem; }
+        .quick-links { justify-content: flex-start; }
+        .coin-price-wrap { justify-content: flex-start; }
+        .scenario-grid { grid-template-columns: 1fr; }
+        .price-tag { font-size: 1.25rem !important; }
     }
     button[title="View fullscreen"] { display: none !important; }
     </style>
@@ -1750,18 +2136,20 @@ def analyze_assets(assets_data, market_stats, tickers=None):
 def render_header():
     st.markdown(
         f"""
-        <div style="text-align:center;margin-bottom:0.5rem">
-            <h1 style="font-size:2.8rem;font-weight:900;background:linear-gradient(135deg,#10b981,#3b82f6,#f59e0b);
-                       -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">
-                💰 Rekomendasi Beli Crypto
-            </h1>
-            <p style="color:#64748b;font-size:1.1rem;font-weight:500;margin-top:-0.3rem">
-                Analisis Real-time dari Indodax — <strong>Bukan Saran Keuangan</strong>
-            </p>
-            <p style="font-size:0.85rem;color:#94a3b8">
-                🔗 <a href="{INDODAX_REF}" target="_blank" style="color:#10b981;font-weight:600">Daftar Indodax via Referral</a>
-                &nbsp;·&nbsp; 💬 <a href="{TELEGRAM_COMMUNITY}" target="_blank" style="color:#3b82f6;font-weight:600">Gabung Telegram Premium</a>
-            </p>
+        <div class="app-shell-header">
+            <div class="app-brand-row">
+                <div>
+                    <div class="app-kicker">Indodax market radar</div>
+                    <h1 class="app-title">Rekomendasi Beli Crypto</h1>
+                    <p class="app-subtitle">
+                        Dashboard real-time untuk membaca momentum, risiko, entry zone, dan target. Informasi ini bukan saran keuangan.
+                    </p>
+                </div>
+                <div class="quick-links">
+                    <a class="quick-link primary" href="{INDODAX_REF}" target="_blank">Daftar Indodax</a>
+                    <a class="quick-link" href="{TELEGRAM_COMMUNITY}" target="_blank">Telegram Premium</a>
+                </div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1775,10 +2163,12 @@ def render_market_mode_banner(market_stats):
     rules = MARKET_MODE_RULES[mode]
     st.markdown(
         f"""
-        <div style="background:{rules['color']}15;border:2px solid {rules['color']};border-radius:16px;
-                    padding:1rem 1.5rem;margin:0.5rem 0 1rem 0;text-align:center">
-            <span style="font-size:1.3rem;font-weight:900;color:{rules['color']}">{rules['label']}</span>
-            <span style="color:#64748b;font-size:0.95rem;margin-left:0.5rem">— {rules['description']}</span>
+        <div class="mode-banner" style="--mode-color:{rules['color']}">
+            <div>
+                <div class="section-label">Mode pasar</div>
+                <div class="mode-title">{rules['label']}</div>
+            </div>
+            <div class="mode-desc">{rules['description']}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1813,6 +2203,24 @@ def render_fear_greed(fg_data):
         color, emoji = "#16a34a", "🤑"
     st.markdown(
         f"""
+        <div style="background:#ffffff;border:1px solid #dbe7f3;border-radius:8px;padding:0.9rem 1rem;
+                    margin:0.5rem 0;box-shadow:0 10px 26px rgba(15,23,42,0.06)">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:0.8rem">
+                <div>
+                    <div class="section-label">Fear & Greed Index</div>
+                    <div style="color:{color};font-size:1.85rem;font-weight:900;line-height:1">{val}</div>
+                </div>
+                <div style="color:{color};font-size:0.85rem;font-weight:900;text-transform:uppercase;text-align:right">{label}</div>
+            </div>
+            <div style="margin-top:0.65rem;background:#e2e8f0;border-radius:999px;height:8px;overflow:hidden">
+                <div style="width:{val}%;height:100%;background:linear-gradient(90deg,#ef4444,#f97316,#eab308,#22c55e);border-radius:999px"></div>
+            </div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+    return
+    st.markdown(
+        f"""
         <div style="background:linear-gradient(135deg,#0f172a,#1e293b);border-radius:16px;padding:1rem 1.5rem;
                     margin:0.5rem 0;text-align:center;border:1px solid {color}40">
             <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.3rem">
@@ -1834,6 +2242,42 @@ def render_fear_greed(fg_data):
 def render_sidebar(market_stats, fg_data, all_results):
     """Render sidebar with referral CTA, market summary, and bot status."""
     with st.sidebar:
+        st.markdown(
+            f"""
+            <div style="padding:0.8rem 0 0.4rem">
+                <div style="color:#0f172a;font-size:1.15rem;font-weight:900">Kripto Mania</div>
+                <div style="color:#64748b;font-size:0.78rem;font-weight:700;margin-top:0.15rem">Trading dashboard</div>
+            </div>
+            <div style="background:#ecfdf5;border:1px solid #bbf7d0;border-radius:8px;padding:0.9rem;margin:0.7rem 0">
+                <div style="color:#065f46;font-size:0.95rem;font-weight:900">Mulai trading di Indodax</div>
+                <div style="color:#047857;font-size:0.75rem;font-weight:700;margin:0.25rem 0 0.65rem">Gunakan link referral resmi dashboard.</div>
+                <a href="{INDODAX_REF}" target="_blank" style="display:inline-flex;align-items:center;justify-content:center;background:#047857;color:white;
+                   font-weight:900;padding:0.48rem 0.8rem;border-radius:8px;text-decoration:none;font-size:0.82rem">Daftar sekarang</a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if fg_data:
+            render_fear_greed(fg_data)
+        st.markdown("#### Ringkasan Market")
+        if market_stats:
+            mode_rules = MARKET_MODE_RULES[market_stats['mode']]
+            st.markdown(f"**Status:** {mode_rules['label']}")
+            st.markdown(f"**Hijau/Merah:** {market_stats['green_count']}/{market_stats['red_count']}")
+            st.markdown(f"**Volume:** {format_idr(market_stats['total_vol'])}")
+        buy_picks = [r for r in all_results if is_entry_action(r.get("action", ""))][:3]
+        if buy_picks:
+            st.markdown("#### Top Picks")
+            for p in buy_picks:
+                st.markdown(f"**{p['symbol']}** · Score {p['score']}/100 · {p['change']:+.1f}%")
+        st.markdown("#### Status")
+        st.markdown("Telegram Bot: **Aktif**" if BOT_ENABLED else "Telegram Bot: **Nonaktif**")
+        st.markdown("Auto-refresh: **60 detik**")
+        st.markdown(
+            f"""<a href="{TELEGRAM_COMMUNITY}" target="_blank" style="color:#2563eb;font-weight:900;text-decoration:none">Gabung Telegram Premium</a>""",
+            unsafe_allow_html=True,
+        )
+        return
         st.markdown(
             f"""
             <div style="text-align:center;padding:1rem 0">
@@ -1936,6 +2380,132 @@ def render_rekomendasi_card(item, idx):
     change_color = "#22c55e" if item["change"] >= 0 else "#ef4444"
     pair_upper = item["pair"].upper().replace("_", "")
     buy_link = f"https://indodax.com/market/{pair_upper}?ref=narwanpratanta"
+
+    def clean_ui_text(value):
+        text = str(value or "")
+        for token in ("🟢", "🟡", "⚪", "🔴", "⛔", "⬇️", "⬆️", "⚖️", "🚀", "📉", "⏳", "✅", "❌", "🔥"):
+            text = text.replace(token, "")
+        return " ".join(text.split())
+
+    def visible_price(value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return "-"
+        return format_price(value) if value > 0 else "-"
+
+    action_text = clean_ui_text(item.get("action", ""))
+    is_buy_signal = (
+        is_entry_action(item.get("action", "")) and
+        item.get("allocation_pct", 0) > 0 and
+        item.get("confluence_passed", 0) >= 4 and
+        item.get("verdict", "") not in ("TOLAK", "TUNGGU")
+    )
+    if is_buy_signal:
+        cta_text = "Entry Valid" if item.get("confluence_passed", 0) == 5 else "Entry Kecil"
+        cta_class = "buy-button-sm"
+        signal_class = "signal-buy"
+    elif "WATCH" in str(item.get("action", "")):
+        cta_text = "Pantau di Indodax"
+        cta_class = "buy-button-sm neutral"
+        signal_class = "signal-watch"
+    else:
+        cta_text = "Pantau di Indodax"
+        cta_class = "buy-button-sm neutral"
+        signal_class = "signal-avoid"
+
+    risk_color = "#b91c1c" if item["risk_level"] == "TINGGI" else "#b45309" if item["risk_level"] == "SEDANG" else "#047857"
+    entry_label = clean_ui_text(item.get("entry_zone_label", "Netral"))
+    step_action = clean_ui_text(item.get("step1_action", "Pantau"))
+    fail_action = clean_ui_text(item.get("fail_action", "Tidak direkomendasikan"))
+    confluence_label = item.get("confluence_label", "INVALID 0/5")
+    confluence_checks = item.get("confluence_checks", {})
+
+    check_rows = ""
+    for label, ok in confluence_checks.items():
+        row_class = "check-ok" if ok else "check-no"
+        status = "Valid" if ok else "Belum"
+        check_rows += (
+            f'<div class="check-row {row_class}">'
+            f'<span>{label}</span><span>{status}</span>'
+            f'</div>'
+        )
+
+    st.markdown(
+        dedent(f"""
+        <div class="rekomendasi-card" style="margin-bottom:0.8rem">
+            <div class="coin-card-head">
+                <div class="coin-left">
+                    <div class="coin-avatar">{item['symbol'][:3]}</div>
+                    <div>
+                        <div class="coin-symbol">{item['symbol']}</div>
+                        <div class="coin-category">{item['category']} · {pair_upper}</div>
+                        <span class="signal-pill {signal_class}">{action_text}</span>
+                    </div>
+                </div>
+                <div class="coin-price-wrap">
+                    <span class="price-tag">{format_price(item['price'])}</span>
+                    <span class="{'profit-badge' if item['change'] >= 0 else 'loss-badge'}">{change_sign}{item['change']:.2f}%</span>
+                </div>
+            </div>
+
+            <div class="metrics-grid">
+                <div class="metric-chip"><span class="metric-label">Score</span><span class="metric-value" style="color:#047857">{item['score']}/100</span></div>
+                <div class="metric-chip"><span class="metric-label">Risk</span><span class="metric-value" style="color:{risk_color}">{item['risk_level']}</span></div>
+                <div class="metric-chip"><span class="metric-label">Alokasi</span><span class="metric-value" style="color:#b45309">{item['allocation_pct']:.1f}%</span></div>
+                <div class="metric-chip"><span class="metric-label">Volume</span><span class="metric-value">{format_idr(item['vol_idr'])}</span></div>
+                <div class="metric-chip"><span class="metric-label">RSI</span><span class="metric-value">{item['rsi']}</span></div>
+                <div class="metric-chip"><span class="metric-label">ML</span><span class="metric-value">{item['ml_label']} {item['ml_prob']}%</span></div>
+            </div>
+
+            <div class="metrics-grid">
+                <div class="metric-chip"><span class="metric-label">TP1</span><span class="metric-value" style="color:#047857">{format_price(item['tp1'])}</span></div>
+                <div class="metric-chip"><span class="metric-label">TP2</span><span class="metric-value" style="color:#047857">{format_price(item['tp2'])}</span></div>
+                <div class="metric-chip"><span class="metric-label">Target</span><span class="metric-value" style="color:#047857">{format_price(item['target'])}</span></div>
+                <div class="metric-chip"><span class="metric-label">Stop Loss</span><span class="metric-value" style="color:#b91c1c">{format_price(item['stop_loss'])}</span></div>
+            </div>
+
+            <div class="card-section">
+                <div class="section-row">
+                    <span class="section-label">Entry zone</span>
+                    <span class="section-strong">{entry_label}</span>
+                </div>
+                <div class="section-row" style="margin-top:0.35rem">
+                    <span style="color:#047857;font-weight:800">{format_price(item.get('entry_zone_low', 0))}</span>
+                    <span style="color:#64748b;font-weight:800">sampai</span>
+                    <span style="color:#b91c1c;font-weight:800">{format_price(item.get('entry_zone_high', 0))}</span>
+                </div>
+            </div>
+
+            <div class="scenario-grid">
+                <div class="scenario-box" style="background:#ecfdf5;border-color:#bbf7d0">
+                    <div class="scenario-title" style="color:#047857">Skenario naik/pantau</div>
+                    <div class="scenario-action">{step_action}</div>
+                    <div class="scenario-price" style="color:#047857">{visible_price(item.get('step1_price', 0))}</div>
+                </div>
+                <div class="scenario-box" style="background:#fef2f2;border-color:#fecaca">
+                    <div class="scenario-title" style="color:#b91c1c">Skenario gagal</div>
+                    <div class="scenario-action">{fail_action}</div>
+                    <div class="scenario-price" style="color:#b91c1c">{visible_price(item.get('fail_price', 0))}</div>
+                </div>
+            </div>
+
+            <div class="card-section">
+                <div class="section-row">
+                    <span class="section-label">Confluence gate</span>
+                    <span class="section-strong">{confluence_label}</span>
+                </div>
+                <div class="check-list">{check_rows}</div>
+            </div>
+
+            <div style="margin-top:0.8rem;text-align:right">
+                <a href="{buy_link}" target="_blank" class="{cta_class}">{cta_text}</a>
+            </div>
+        </div>
+        """).strip().replace("\n", ""),
+        unsafe_allow_html=True,
+    )
+    return
     
     # Entry Zone display
     entry_color = "#22c55e" if "Koreksi" in item.get("entry_zone_label", "") else "#f59e0b" if "Netral" in item.get("entry_zone_label", "") else "#3b82f6"
@@ -2101,10 +2671,8 @@ def render_rekomendasi_list(results, title, max_items=10):
     watch_results = [r for r in results if "WATCH" in r["action"]]
     st.markdown(
         f"""<div class="rekomendasi-hero">
-            <h2 style="color:white;font-size:1.8rem;margin:0;position:relative;z-index:1">{title}</h2>
-            <p style="color:#6ee7b7;margin:0.3rem 0 0 0;position:relative;z-index:1">
-                {len(buy_results)} rekomendasi beli · {len(watch_results)} pantauan
-            </p>
+            <h2 class="hero-title">{title}</h2>
+            <p class="hero-meta">{len(buy_results)} rekomendasi beli · {len(watch_results)} pantauan</p>
         </div>""",
         unsafe_allow_html=True,
     )
@@ -2199,7 +2767,7 @@ def main():
     # --- REFRESH BUTTON & TIMER ---
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        if st.button("🔄 Refresh Data Sekarang", use_container_width=True, type="primary"):
+        if st.button("Refresh Data Sekarang", use_container_width=True, type="primary"):
             st.cache_data.clear()
             st.rerun()
     
@@ -2260,15 +2828,15 @@ def main():
         render_fear_greed(fg_data)
     render_fomo_alerts(tickers, prices_24h)
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔥 Rekomendasi Beli", "📊 Semua Aset", "🐕 Micin/Meme", "📈 Analisis Detail", "💬 Tanya AI Advisor (DeepSeek)"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Rekomendasi Beli", "Semua Aset", "Micin/Meme", "Analisis Detail", "Tanya AI Advisor"])
     with tab1:
-        render_rekomendasi_list(all_results, "🔥 Rekomendasi Beli Hari Ini", max_items=20)
+        render_rekomendasi_list(all_results, "Rekomendasi Beli Hari Ini", max_items=20)
     with tab2:
-        render_rekomendasi_list(main_results, "📊 Main Assets", max_items=15)
+        render_rekomendasi_list(main_results, "Main Assets", max_items=15)
     with tab3:
-        render_rekomendasi_list(micin_results, "🐕 Micin / Meme Coin", max_items=15)
+        render_rekomendasi_list(micin_results, "Micin / Meme Coin", max_items=15)
     with tab4:
-        st.markdown("## 📈 Analisis Detail Semua Aset")
+        st.markdown("## Analisis Detail Semua Aset")
         if all_results:
             df_data = []
             for r in all_results:
@@ -2292,17 +2860,17 @@ def main():
         else:
             st.info("Belum ada data.")
     with tab5:
-        st.markdown("## 💬 Tanya AI Market Advisor (DeepSeek)")
+        st.markdown("## Tanya AI Market Advisor")
         st.markdown(
             "Konsultasikan kondisi portofolio, analisis koin, atau tanyakan pergerakan market Indodax hari ini secara cerdas bersama asisten AI khusus Kripto Mania."
         )
         
         # Quick prompt buttons
         quick_prompts = [
-            "🔥 Koin mana yang paling potensial naik hari ini?",
-            "💰 Berapa alokasi ideal untuk pemula modal 1 juta?",
-            "📊 Analisis BTC dan ETH untuk minggu ini",
-            "⚠️ Koin mana yang harus dihindari saat ini?",
+            "Koin mana yang paling potensial naik hari ini?",
+            "Berapa alokasi ideal untuk pemula modal 1 juta?",
+            "Analisis BTC dan ETH untuk minggu ini",
+            "Koin mana yang harus dihindari saat ini?",
         ]
         qp_cols = st.columns(2)
         selected_prompt = None
