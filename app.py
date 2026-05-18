@@ -10,6 +10,7 @@ import pandas as pd
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+from news_engine import apply_news_adjustments, build_news_profile
 
 # =============================================================================
 # CONFIG & CONSTANTS
@@ -1161,6 +1162,42 @@ st.markdown(
         text-transform: uppercase;
         margin-top: 0.18rem;
     }
+    .news-panel {
+        background: #ffffff;
+        border: 1px solid #fed7aa;
+        border-left: 5px solid #f97316;
+        border-radius: 8px;
+        padding: 0.9rem 1rem;
+        margin: 0.8rem 0 1rem;
+        box-shadow: 0 12px 34px rgba(15, 23, 42, 0.06);
+    }
+    .news-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 0.5rem;
+        margin-top: 0.65rem;
+    }
+    .news-headline {
+        display: block;
+        color: #0f172a !important;
+        background: #fff7ed;
+        border: 1px solid #fed7aa;
+        border-radius: 8px;
+        padding: 0.55rem 0.65rem;
+        font-size: 0.8rem;
+        font-weight: 800;
+        text-decoration: none !important;
+        line-height: 1.35;
+    }
+    .news-headline span {
+        display: block;
+        color: #c2410c;
+        font-size: 0.65rem;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 0.16rem;
+    }
     .buy-button-sm {
         border-radius: 8px !important;
         padding: 0.62rem 1rem !important;
@@ -1278,6 +1315,11 @@ def fetch_all_ticker_data():
     if shared_tickers:
         return shared_tickers, {}, shared_at, "⚠️ Data dari cache (API timeout)"
     return {}, {}, datetime.now(), "❌ Gagal ambil data"
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_cached_news_profile(symbols):
+    return build_news_profile(symbols=list(symbols))
 
 
 def calculate_24h_change(price, pair, prices_24h):
@@ -2506,6 +2548,42 @@ def render_learning_panel(profile):
     )
 
 
+def render_news_panel(profile):
+    if not profile.get("enabled"):
+        return
+    articles = profile.get("articles", [])
+    label = profile.get("global_label", "NO DATA")
+    score = profile.get("global_score", 0)
+    color = "#047857" if score > 0 else "#b91c1c" if score < 0 else "#64748b"
+    top_items = articles[:3]
+    headlines = ""
+    for article in top_items:
+        title = article.get("title", "-")
+        source = article.get("source", "News")
+        link = article.get("link", "#")
+        headlines += (
+            f'<a href="{link}" target="_blank" class="news-headline">'
+            f'<span>{source}</span>{title}</a>'
+        )
+    if not headlines:
+        headlines = '<div class="learning-note">Belum ada headline terbaru yang terbaca.</div>'
+    st.markdown(
+        f"""
+        <div class="news-panel">
+            <div class="section-row">
+                <div>
+                    <div class="section-label">News sentiment</div>
+                    <div class="learning-title">RSS market news check</div>
+                </div>
+                <div style="color:{color};font-weight:900;text-align:right">{label}<br><span style="font-size:0.78rem">Score {score:+.2f}</span></div>
+            </div>
+            <div class="news-list">{headlines}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 
 
 # =============================================================================
@@ -2807,6 +2885,11 @@ def render_rekomendasi_card(item, idx):
     mtf_label = item.get("mtf_label", "MIXED")
     mtf_color = "#047857" if mtf_adjustment > 0 else "#b91c1c" if mtf_adjustment < 0 else "#64748b"
     mtf_detail = f"4H {item.get('mtf_4h', 'NO DATA')} · 1D {item.get('mtf_1d', 'NO DATA')}"
+    news_adjustment = int(item.get("news_adjustment", 0) or 0)
+    news_label = item.get("news_label", "NO DATA")
+    news_color = "#047857" if news_adjustment > 0 else "#b91c1c" if news_adjustment < 0 else "#64748b"
+    news_delta = f"{news_adjustment:+d}" if news_adjustment else "0"
+    news_headline = item.get("news_headline") or "Tidak ada headline spesifik coin"
 
     check_rows = ""
     for label, ok in confluence_checks.items():
@@ -2844,6 +2927,7 @@ def render_rekomendasi_card(item, idx):
                 <div class="metric-chip"><span class="metric-label">RSI</span><span class="metric-value">{item['rsi']}</span></div>
                 <div class="metric-chip"><span class="metric-label">ML</span><span class="metric-value">{item['ml_label']} {item['ml_prob']}%</span></div>
                 <div class="metric-chip"><span class="metric-label">MTF</span><span class="metric-value" style="color:{mtf_color}">{mtf_label}</span></div>
+                <div class="metric-chip"><span class="metric-label">News</span><span class="metric-value" style="color:{news_color}">{news_label} {news_delta}</span></div>
                 <div class="metric-chip"><span class="metric-label">Learning</span><span class="metric-value" style="color:{learning_color}">{learning_delta} · {learning_trades}x</span></div>
             </div>
 
@@ -2895,6 +2979,10 @@ def render_rekomendasi_card(item, idx):
                 <div class="section-row" style="margin-top:0.35rem">
                     <span class="section-label">Multi-timeframe</span>
                     <span class="section-strong" style="color:{mtf_color}">{mtf_detail}</span>
+                </div>
+                <div class="section-row" style="margin-top:0.35rem">
+                    <span class="section-label">News check</span>
+                    <span class="section-strong" style="color:{news_color}">{news_headline}</span>
                 </div>
             </div>
 
@@ -3195,6 +3283,8 @@ def main():
     micin_data = extract_asset_data(tickers, prices_24h, MICIN_ASSETS)
     all_data = {**main_data, **micin_data}
     all_results = analyze_assets(all_data, market_stats)
+    news_profile = fetch_cached_news_profile(tuple(sorted(all_data.keys())))
+    all_results = apply_news_adjustments(all_results, news_profile)
     learning_profile = update_learning_journal(all_results)
     all_results = apply_learning_adjustments(all_results, learning_profile)
     priority = {"BELI KUAT": 0, "CICIL BELI": 1, "WATCH": 2, "JANGAN BELI": 3, "HINDARI": 4}
@@ -3230,6 +3320,7 @@ def main():
         render_market_stats(market_stats)
     with col_fg:
         render_fear_greed(fg_data)
+    render_news_panel(news_profile)
     render_learning_panel(learning_profile)
     render_fomo_alerts(tickers, prices_24h)
 

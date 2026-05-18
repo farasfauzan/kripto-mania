@@ -16,6 +16,7 @@ import json
 from datetime import datetime, timezone, timedelta
 from keep_alive import keep_alive
 from learning_engine import apply_learning_adjustments, record_signal, train_from_prices
+from news_engine import apply_news_adjustments, build_news_profile
 
 # === CONFIG ===
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -51,6 +52,7 @@ CONFLUENCE_MAX_ALERTS_PER_CYCLE = int(os.environ.get("CONFLUENCE_MAX_ALERTS_PER_
 
 MESSAGE_DUPLICATE_TTL_SEC = int(os.environ.get("MESSAGE_DUPLICATE_TTL_SEC", str(12 * 3600)))
 ACTIVE_SIGNAL_TTL_SEC = int(os.environ.get("ACTIVE_SIGNAL_TTL_SEC", str(72 * 3600)))
+NEWS_REFRESH_SECONDS = int(os.environ.get("NEWS_REFRESH_SECONDS", "900"))
 
 MIN_ALERT_SCORE = int(os.environ.get("MIN_ALERT_SCORE", "78"))
 MIN_ALERT_VOLUME_IDR = float(os.environ.get("MIN_ALERT_VOLUME_IDR", "1000000000"))
@@ -65,6 +67,8 @@ _active_signals = {}  # track sinyal beli aktif untuk TP/SL monitor
 _daily_stats = {"tp_hit": 0, "sl_hit": 0, "signals_sent": 0}
 _last_fomo_alert_time = 0  # track last global FOMO alert to prevent spamming
 _message_fingerprints = {}  # Anti-duplicate message fingerprint cache
+_last_news_profile = None
+_last_news_profile_at = 0
 
 STATE_FILE = "bot_state.json"
 
@@ -138,6 +142,21 @@ def is_entry_action(action):
 
 def apply_bot_learning(result):
     """Adjust score/allocation from historical signal outcomes."""
+    apply_learning_adjustments([result])
+    return result
+
+
+def get_bot_news_profile(force=False):
+    global _last_news_profile, _last_news_profile_at
+    now_ts = time.time()
+    if force or _last_news_profile is None or now_ts - _last_news_profile_at >= NEWS_REFRESH_SECONDS:
+        _last_news_profile = build_news_profile(symbols=list(MAIN_ASSETS.keys()) + list(MICIN_COINS))
+        _last_news_profile_at = now_ts
+    return _last_news_profile
+
+
+def apply_bot_intelligence(result):
+    apply_news_adjustments([result], get_bot_news_profile())
     apply_learning_adjustments([result])
     return result
 
@@ -992,7 +1011,7 @@ def send_sinyal_harian(all_coins):
             continue
         candles = fetch_candles(pair)
         time.sleep(0.3)  # rate limit
-        result = apply_bot_learning(analyze_coin(sym, all_coins[sym], candles))
+        result = apply_bot_intelligence(analyze_coin(sym, all_coins[sym], candles))
         signals.append(result)
 
     if not signals:
@@ -1026,6 +1045,7 @@ def send_sinyal_harian(all_coins):
         lines.append(f"   Supertrend: {s['supertrend']} | BB: {s['bb_signal']}")
         lines.append(f"   ADX: {s['adx']} ({s['adx_trend']})")
         lines.append(f"   MTF: {s['mtf_label']} | 4H {s['mtf_4h']} | 1D {s['mtf_1d']}")
+        lines.append(f"   News: {s.get('news_label', 'NO DATA')} ({s.get('news_adjustment', 0):+d})")
         lines.append(f"   ML: {s['ml_label']} ({s['ml_prob']}%, {s['ml_conf']})")
         if s['bt_trades'] >= 6:
             lines.append(f"   Backtest: {s['bt_label']} (WR {s['bt_wr']}%, {s['bt_trades']} trades)")
@@ -1204,7 +1224,7 @@ def check_realtime_confluence_alerts(all_coins):
             if candles.empty:
                 continue
 
-            res = apply_bot_learning(analyze_coin(sym, all_coins[sym], candles))
+            res = apply_bot_intelligence(analyze_coin(sym, all_coins[sym], candles))
 
             # Filtering to prevent noise / unwanted risk
             if res["score"] < MIN_ALERT_SCORE:
@@ -1251,6 +1271,7 @@ def check_realtime_confluence_alerts(all_coins):
                 f"💵 Harga: {format_idr(res['price'])} ({ch_sign}{res['change']:.2f}%)\n"
                 f"🛡️ Confluence: *{res['confluence_label']}* ({res['confluence_strength']})\n\n"
                 f"🧭 MTF: *{res['mtf_label']}* | 4H {res['mtf_4h']} | 1D {res['mtf_1d']}\n"
+                f"📰 News: *{res.get('news_label', 'NO DATA')}* ({res.get('news_adjustment', 0):+d})\n"
                 f"✅ *Status Gerbang Konfluensi:*\n"
                 f"{valid_checks_text}\n\n"
                 f"🧠 ML Forecast: *{res['ml_label']}* ({res['ml_prob']}%, {res['ml_conf']})\n"
@@ -1421,11 +1442,12 @@ if __name__ == "__main__":
             coin_count = len(all_coins)
             now = datetime.now(WIB)
             learning_profile = train_from_prices(all_coins)
+            news_profile = get_bot_news_profile()
 
             if cycle_count % 10 == 1:
                 wr = learning_profile.get("winrate")
                 wr_text = f"{wr:.1f}%" if wr is not None else "belum ada"
-                log(f"Heartbeat -- {coin_count} koin | {now.strftime('%H:%M WIB')} | Learning WR: {wr_text}")
+                log(f"Heartbeat -- {coin_count} koin | {now.strftime('%H:%M WIB')} | Learning WR: {wr_text} | News: {news_profile.get('global_label', 'NO DATA')}")
 
             # 1. Sinyal harian (jam 8-9 pagi)
             if should_send_sinyal():
