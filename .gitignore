@@ -11,6 +11,9 @@ __pycache__/
 # Temporary test scripts
 test_signal.py
 
+# Bot runtime state
+bot_state.json
+
 # Local environments
 .env
 .venv

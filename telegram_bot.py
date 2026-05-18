@@ -16,9 +16,9 @@ import json
 from datetime import datetime, timezone, timedelta
 from keep_alive import keep_alive
 
-# === CONFIG (env var > hardcoded fallback) ===
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8947452796:AAEyKOPuOa_JmjDfTUTybhz5H3Puec_7yYs")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-1003878919874")
+# === CONFIG ===
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 INDODAX_REF = "narwanpratanta"
 WIB = timezone(timedelta(hours=7))
 
@@ -1296,6 +1296,8 @@ if __name__ == "__main__":
     log("   Daily summary: 21:00 WIB")
     log(f"   Channel: {TELEGRAM_CHANNEL}")
     log("=" * 40)
+    if not BOT_TOKEN or not CHAT_ID:
+        log("WARNING: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID belum diset di environment.")
 
     # Load previously saved bot state to avoid duplicate alerts and preserve active trades
     load_bot_state()
