@@ -33,9 +33,27 @@ MICIN_COINS = {"DOGE", "PEPE", "SHIB", "BONK", "FLOKI", "LUNC", "BTT"}
 
 TELEGRAM_CHANNEL = "https://t.me/+VPlOcY2wFGA0NWU1"
 
-# === NOTIFICATION CONTROLS ===
-ENABLE_FOMO_ALERTS = False  # Set False untuk mematikan notifikasi FOMO/pumping. Set True untuk mengaktifkan.
-ENABLE_CONFLUENCE_ALERTS = True  # Set False untuk mematikan notifikasi real-time Confluence.
+def env_bool(name, default=False):
+    return str(os.environ.get(name, str(default))).lower() in {"1","true","yes","on"}
+
+ENABLE_FOMO_ALERTS = env_bool("ENABLE_FOMO_ALERTS", False)
+ENABLE_CONFLUENCE_ALERTS = env_bool("ENABLE_CONFLUENCE_ALERTS", True)
+
+# === ANTI-SPAM CONTROL ===
+LOOP_SLEEP_SECONDS = int(os.environ.get("LOOP_SLEEP_SECONDS", "180"))
+
+FOMO_GLOBAL_COOLDOWN_SEC = int(os.environ.get("FOMO_GLOBAL_COOLDOWN_SEC", str(6 * 3600)))
+FOMO_SYMBOL_COOLDOWN_SEC = int(os.environ.get("FOMO_SYMBOL_COOLDOWN_SEC", str(24 * 3600)))
+
+CONFLUENCE_SYMBOL_COOLDOWN_SEC = int(os.environ.get("CONFLUENCE_SYMBOL_COOLDOWN_SEC", str(24 * 3600)))
+CONFLUENCE_MAX_ALERTS_PER_CYCLE = int(os.environ.get("CONFLUENCE_MAX_ALERTS_PER_CYCLE", "1"))
+
+MESSAGE_DUPLICATE_TTL_SEC = int(os.environ.get("MESSAGE_DUPLICATE_TTL_SEC", str(12 * 3600)))
+ACTIVE_SIGNAL_TTL_SEC = int(os.environ.get("ACTIVE_SIGNAL_TTL_SEC", str(72 * 3600)))
+
+MIN_ALERT_SCORE = int(os.environ.get("MIN_ALERT_SCORE", "78"))
+MIN_ALERT_VOLUME_IDR = float(os.environ.get("MIN_ALERT_VOLUME_IDR", "1000000000"))
+MAX_ALERT_RANGE_POS = float(os.environ.get("MAX_ALERT_RANGE_POS", "82"))
 
 # === STATE ===
 _last_sinyal_date = None
@@ -45,11 +63,12 @@ _confluence_sent_symbols = {}  # track real-time confluence alerts
 _active_signals = {}  # track sinyal beli aktif untuk TP/SL monitor
 _daily_stats = {"tp_hit": 0, "sl_hit": 0, "signals_sent": 0}
 _last_fomo_alert_time = 0  # track last global FOMO alert to prevent spamming
+_message_fingerprints = {}  # Anti-duplicate message fingerprint cache
 
 STATE_FILE = "bot_state.json"
 
 def load_bot_state():
-    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time
+    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time, _message_fingerprints
     if not os.path.exists(STATE_FILE):
         log("No state file found. Starting fresh.")
         return
@@ -63,6 +82,7 @@ def load_bot_state():
         _active_signals = data.get("active_signals", _active_signals)
         _daily_stats = data.get("daily_stats", _daily_stats)
         _last_fomo_alert_time = data.get("last_fomo_alert_time", _last_fomo_alert_time)
+        _message_fingerprints = data.get("message_fingerprints", _message_fingerprints)
         
         # Convert _active_signals hit back to set (JSON arrays become lists)
         for sym in _active_signals:
@@ -74,6 +94,7 @@ def load_bot_state():
         log(f"Error loading bot state: {e}")
 
 def save_bot_state():
+    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time, _message_fingerprints
     try:
         # Convert set to list for JSON serialization
         active_signals_copy = {}
@@ -90,7 +111,8 @@ def save_bot_state():
             "confluence_sent_symbols": _confluence_sent_symbols,
             "active_signals": active_signals_copy,
             "daily_stats": _daily_stats,
-            "last_fomo_alert_time": _last_fomo_alert_time
+            "last_fomo_alert_time": _last_fomo_alert_time,
+            "message_fingerprints": _message_fingerprints
         }
         with open(STATE_FILE, "w") as f:
             json.dump(data, f, indent=4)
@@ -790,7 +812,37 @@ def format_idr(value):
     return f"Rp{value:,.2f}"
 
 
-def send_message(text, notify=False):
+import hashlib
+import re
+
+def _message_fingerprint(text):
+    normalized = re.sub(r"\d+(?:[.,]\d+)?", "#", str(text))
+    normalized = re.sub(r"\s+", " ", normalized).strip().lower()
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def send_message(text, notify=False, force=False):
+    global _message_fingerprints
+
+    if not BOT_TOKEN or not CHAT_ID:
+        return False
+
+    now_ts = time.time()
+
+    if not force:
+        fp = _message_fingerprint(text)
+
+        # cleanup cache
+        _message_fingerprints = {
+            k: v for k, v in _message_fingerprints.items()
+            if now_ts - v < MESSAGE_DUPLICATE_TTL_SEC
+        }
+
+        if fp in _message_fingerprints:
+            return False
+
+        _message_fingerprints[fp] = now_ts
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     # Split panjang
     chunks = [text] if len(text) <= 4096 else _split_text(text)
@@ -989,8 +1041,8 @@ def check_fomo_and_alert(all_coins):
     global _fomo_sent_symbols, _last_fomo_alert_time
     
     now_ts = time.time()
-    # Cooldown global: maksimal 1 alert per 15 menit (900 detik)
-    if now_ts - _last_fomo_alert_time < 900:
+    # Cooldown global
+    if now_ts - _last_fomo_alert_time < FOMO_GLOBAL_COOLDOWN_SEC:
         return
 
     fomo_gila, fomo, pumping = detect_fomo(all_coins)
@@ -1010,8 +1062,8 @@ def check_fomo_and_alert(all_coins):
             else:
                 new_alerts[sym] = coin
 
-    # Cooldown 12 jam (43200 detik) per koin
-    _fomo_sent_symbols = {k: v for k, v in _fomo_sent_symbols.items() if now_ts - v.get("_sent_at", 0) < 43200}
+    # Cooldown per koin
+    _fomo_sent_symbols = {k: v for k, v in _fomo_sent_symbols.items() if now_ts - v.get("_sent_at", 0) < FOMO_SYMBOL_COOLDOWN_SEC}
 
     if not new_alerts:
         return
@@ -1038,15 +1090,16 @@ def check_realtime_confluence_alerts(all_coins):
 
     global _confluence_sent_symbols
     now_ts = time.time()
+    sent = 0
 
-    # Bersihkan cache alert yang sudah lebih dari 12 jam (43200 detik)
-    _confluence_sent_symbols = {k: v for k, v in _confluence_sent_symbols.items() if now_ts - v["sent_at"] < 43200}
+    # Bersihkan cache alert
+    _confluence_sent_symbols = {k: v for k, v in _confluence_sent_symbols.items() if now_ts - v["sent_at"] < CONFLUENCE_SYMBOL_COOLDOWN_SEC}
 
     for sym, pair in MAIN_ASSETS.items():
         if sym not in all_coins:
             continue
 
-        # Hindari spam: jika baru dikirim dalam 12 jam terakhir, lewati
+        # Hindari spam: jika baru dikirim dalam cooldown terakhir, lewati
         if sym in _confluence_sent_symbols:
             continue
 
@@ -1057,61 +1110,87 @@ def check_realtime_confluence_alerts(all_coins):
                 continue
 
             res = analyze_coin(sym, all_coins[sym], candles)
-            
-            # Cek apakah masuk kriteria 4/5 atau 5/5 dengan aksi BELI
-            if is_entry_action(res["action"]) and res["confluence_passed"] >= 4:
-                # Kirim alert instan!
-                pair_url = pair.upper().replace("_", "")
-                link = f"https://indodax.com/market/{pair_url}?ref={INDODAX_REF}"
-                ch_sign = "+" if res["change"] >= 0 else ""
-                
-                # Buat daftar checklist confluence
-                valid_checks = []
-                for name, ok in res["confluence_checks"].items():
-                    if ok:
-                        valid_checks.append(f"   🟢 {name}: VALID")
-                    else:
-                        valid_checks.append(f"   🔴 {name}: TIDAK")
-                valid_checks_text = "\n".join(valid_checks)
 
-                msg = (
-                    f"🚨 *SINYAL MASUK INSTAN (CONFLUENCE {res['confluence_passed']}/5)* 🚨\n"
-                    f"🔥 *{sym}* — {res['action']} (Score: {res['score']}/100)\n"
-                    f"──────────────────────\n"
-                    f"💵 Harga: {format_idr(res['price'])} ({ch_sign}{res['change']:.2f}%)\n"
-                    f"🛡️ Confluence: *{res['confluence_label']}* ({res['confluence_strength']})\n\n"
-                    f"✅ *Status Gerbang Konfluensi:*\n"
-                    f"{valid_checks_text}\n\n"
-                    f"🧠 ML Forecast: *{res['ml_label']}* ({res['ml_prob']}%, {res['ml_conf']})\n"
-                    f"📊 Backtest: *{res['bt_label']}* (WR {res['bt_wr']}%, {res['bt_trades']} trades)\n"
-                    f"──────────────────────\n"
-                    f"🎯 TP1 / TP2 / TP3: {format_idr(res['tp1'])} / {format_idr(res['tp2'])} / {format_idr(res['tp3'])}\n"
-                    f"🛑 Stop Loss: {format_idr(res['stop_loss'])} | Trailing: {res['trailing_pct']}%\n"
-                    f"💰 Alokasi Modal: *{res['alloc_pct']}%*\n\n"
-                    f"[🔥 EKSEKUSI DI INDODAX]({link})\n"
-                    f"──────────────────────\n"
-                    f"⚠️ *Bukan saran keuangan. Selalu gunakan uang dingin (DYOR).* \n"
-                    f"💎 *Gabung Premium:* {TELEGRAM_CHANNEL}"
-                )
-                
-                # Only notify (vibrate) for Strong Buy (BELI KUAT) to prevent phone vibration spam
-                is_strong = "BELI KUAT" in res["action"]
-                send_message(msg, notify=is_strong)
-                log(f"REAL-TIME CONFLUENCE ALERT TERKIRIM untuk {sym} ({res['confluence_label']})")
-                
-                # Masukkan ke list monitor TP/SL bot jika belum ada
-                if sym not in _active_signals:
-                    _active_signals[sym] = {
-                        'entry': res['price'], 'tp1': res['tp1'], 'tp2': res['tp2'], 'tp3': res['tp3'],
-                        'sl': res['stop_loss'], 'hit': set(), 'time': datetime.now(WIB).isoformat(),
-                    }
-                    _daily_stats['signals_sent'] += 1
-                
-                # Catat ke cache agar tidak spam
-                _confluence_sent_symbols[sym] = {
-                    "sent_at": now_ts,
-                    "price": res["price"],
+            # Filtering to prevent noise / unwanted risk
+            if res["score"] < MIN_ALERT_SCORE:
+                continue
+
+            if res["vol_idr"] < MIN_ALERT_VOLUME_IDR:
+                continue
+
+            if res["range_pos"] > MAX_ALERT_RANGE_POS:
+                continue
+
+            if res["risk_level"] == "TINGGI":
+                continue
+
+            # Tighten confluence logic
+            strong = res["confluence_passed"] >= 5
+            smart = (
+                res["confluence_passed"] >= 4 and
+                res["ml_label"] == "BULLISH" and
+                res["bt_label"] != "LEMAH"
+            )
+
+            if not is_entry_action(res["action"]) or not (strong or smart):
+                continue
+            
+            # Kirim alert instan!
+            pair_url = pair.upper().replace("_", "")
+            link = f"https://indodax.com/market/{pair_url}?ref={INDODAX_REF}"
+            ch_sign = "+" if res["change"] >= 0 else ""
+            
+            # Buat daftar checklist confluence
+            valid_checks = []
+            for name, ok in res["confluence_checks"].items():
+                if ok:
+                    valid_checks.append(f"   🟢 {name}: VALID")
+                else:
+                    valid_checks.append(f"   🔴 {name}: TIDAK")
+            valid_checks_text = "\n".join(valid_checks)
+
+            msg = (
+                f"🚨 *SINYAL MASUK INSTAN (CONFLUENCE {res['confluence_passed']}/5)* 🚨\n"
+                f"🔥 *{sym}* — {res['action']} (Score: {res['score']}/100)\n"
+                f"──────────────────────\n"
+                f"💵 Harga: {format_idr(res['price'])} ({ch_sign}{res['change']:.2f}%)\n"
+                f"🛡️ Confluence: *{res['confluence_label']}* ({res['confluence_strength']})\n\n"
+                f"✅ *Status Gerbang Konfluensi:*\n"
+                f"{valid_checks_text}\n\n"
+                f"🧠 ML Forecast: *{res['ml_label']}* ({res['ml_prob']}%, {res['ml_conf']})\n"
+                f"📊 Backtest: *{res['bt_label']}* (WR {res['bt_wr']}%, {res['bt_trades']} trades)\n"
+                f"──────────────────────\n"
+                f"🎯 TP1 / TP2 / TP3: {format_idr(res['tp1'])} / {format_idr(res['tp2'])} / {format_idr(res['tp3'])}\n"
+                f"🛑 Stop Loss: {format_idr(res['stop_loss'])} | Trailing: {res['trailing_pct']}%\n"
+                f"💰 Alokasi Modal: *{res['alloc_pct']}%*\n\n"
+                f"[🔥 EKSEKUSI DI INDODAX]({link})\n"
+                f"──────────────────────\n"
+                f"⚠️ *Bukan saran keuangan. Selalu gunakan uang dingin (DYOR).* \n"
+                f"💎 *Gabung Premium:* {TELEGRAM_CHANNEL}"
+            )
+            
+            # Only notify (vibrate) for Strong Buy (BELI KUAT) to prevent phone vibration spam
+            is_strong = "BELI KUAT" in res["action"]
+            send_message(msg, notify=is_strong)
+            log(f"REAL-TIME CONFLUENCE ALERT TERKIRIM untuk {sym} ({res['confluence_label']})")
+            
+            # Masukkan ke list monitor TP/SL bot jika belum ada
+            if sym not in _active_signals:
+                _active_signals[sym] = {
+                    'entry': res['price'], 'tp1': res['tp1'], 'tp2': res['tp2'], 'tp3': res['tp3'],
+                    'sl': res['stop_loss'], 'hit': set(), 'time': datetime.now(WIB).isoformat(),
                 }
+                _daily_stats['signals_sent'] += 1
+            
+            # Catat ke cache agar tidak spam
+            _confluence_sent_symbols[sym] = {
+                "sent_at": now_ts,
+                "price": res["price"],
+            }
+
+            sent += 1
+            if sent >= CONFLUENCE_MAX_ALERTS_PER_CYCLE:
+                break
         except Exception as e:
             log(f"Gagal memproses real-time alert untuk {sym}: {e}")
 
@@ -1133,6 +1212,14 @@ def check_tp_sl_alerts(all_coins):
     for sym, sig in _active_signals.items():
         if sym not in all_coins:
             continue
+
+        # Clean old signal tracking if it exceeds ACTIVE_SIGNAL_TTL_SEC
+        now_ts = time.time()
+        created_ts = datetime.fromisoformat(sig["time"]).timestamp()
+        if now_ts - created_ts > ACTIVE_SIGNAL_TTL_SEC:
+            to_remove.append(sym)
+            continue
+
         price = all_coins[sym]["price"]
         entry = sig["entry"]
         pnl_pct = (price - entry) / entry * 100
@@ -1140,23 +1227,23 @@ def check_tp_sl_alerts(all_coins):
         if price <= sig["sl"] and "SL" not in sig["hit"]:
             sig["hit"].add("SL")
             _daily_stats["sl_hit"] += 1
-            send_message(f"*STOP LOSS HIT*\n{sym} kena SL di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nPotong rugi, disiplin!", notify=True)
+            send_message(f"*STOP LOSS HIT*\n{sym} kena SL di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nPotong rugi, disiplin!", notify=True, force=True)
             to_remove.append(sym)
             continue
 
         if price >= sig["tp3"] and "TP3" not in sig["hit"]:
             sig["hit"].add("TP3")
             _daily_stats["tp_hit"] += 1
-            send_message(f"*TARGET HIT - TP3*\n{sym} capai TP3 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nSelamat! Take profit semua.", notify=True)
+            send_message(f"*TARGET HIT - TP3*\n{sym} capai TP3 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nSelamat! Take profit semua.", notify=True, force=True)
             to_remove.append(sym)
         elif price >= sig["tp2"] and "TP2" not in sig["hit"]:
             sig["hit"].add("TP2")
             _daily_stats["tp_hit"] += 1
-            send_message(f"*TARGET HIT - TP2*\n{sym} capai TP2 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nJual 30%, sisanya trailing.", notify=True)
+            send_message(f"*TARGET HIT - TP2*\n{sym} capai TP2 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nJual 30%, sisanya trailing.", notify=True, force=True)
         elif price >= sig["tp1"] and "TP1" not in sig["hit"]:
             sig["hit"].add("TP1")
             _daily_stats["tp_hit"] += 1
-            send_message(f"*TARGET HIT - TP1*\n{sym} capai TP1 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nJual 30%, pantau TP2.", notify=True)
+            send_message(f"*TARGET HIT - TP1*\n{sym} capai TP1 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nJual 30%, pantau TP2.", notify=True, force=True)
 
     for sym in to_remove:
         del _active_signals[sym]
@@ -1257,7 +1344,7 @@ if __name__ == "__main__":
             # Save state at the end of each successful cycle
             save_bot_state()
 
-            time.sleep(120)
+            time.sleep(LOOP_SLEEP_SECONDS)
 
         except KeyboardInterrupt:
             log("Shutdown by user.")
