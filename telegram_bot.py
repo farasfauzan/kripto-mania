@@ -218,6 +218,71 @@ def compute_ema(close, span):
     return close.ewm(span=span, adjust=False).mean()
 
 
+def _candles_with_datetime_index(candles):
+    if candles.empty or "time" not in candles.columns:
+        return pd.DataFrame()
+    df = candles.copy()
+    t = pd.to_numeric(df["time"], errors="coerce")
+    if t.dropna().empty:
+        return pd.DataFrame()
+    unit = "ms" if float(t.dropna().median()) > 1_000_000_000_000 else "s"
+    df["_dt"] = pd.to_datetime(t, unit=unit, errors="coerce", utc=True)
+    return df.dropna(subset=["_dt"]).set_index("_dt").sort_index()
+
+
+def _resample_candles(candles, rule):
+    df = _candles_with_datetime_index(candles)
+    if df.empty:
+        return pd.DataFrame()
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    return df.resample(rule).agg(agg).dropna(subset=["close"]).reset_index(drop=True)
+
+
+def _timeframe_bias(candles):
+    if candles.empty or len(candles) < 12:
+        return "NO DATA", 0
+    close = candles["close"].astype(float)
+    ema_fast = compute_ema(close, 5).iloc[-1]
+    ema_slow = compute_ema(close, 13).iloc[-1]
+    lookback = min(6, len(close) - 1)
+    momentum = (close.iloc[-1] / close.iloc[-1 - lookback] - 1) * 100 if lookback > 0 and close.iloc[-1 - lookback] > 0 else 0
+    gap = (ema_fast - ema_slow) / ema_slow * 100 if ema_slow > 0 else 0
+    if gap > 0.15 and momentum > 0:
+        return "BULLISH", 2
+    if gap > 0 and momentum > -0.6:
+        return "BULLISH BIAS", 1
+    if gap < -0.15 and momentum < 0:
+        return "BEARISH", -2
+    if gap < 0 and momentum < 0.6:
+        return "BEARISH BIAS", -1
+    return "SIDEWAYS", 0
+
+
+def compute_multi_timeframe_confirmation(candles):
+    h4 = _resample_candles(candles, "4h")
+    d1 = _resample_candles(candles, "1D")
+    h4_label, h4_score = _timeframe_bias(h4)
+    d1_label, d1_score = _timeframe_bias(d1)
+    total = h4_score + d1_score
+    if total >= 3:
+        label, adjustment = "ALIGN BULLISH", 7
+    elif total == 2:
+        label, adjustment = "BULLISH BIAS", 4
+    elif total <= -3:
+        label, adjustment = "ALIGN BEARISH", -8
+    elif total == -2:
+        label, adjustment = "BEARISH BIAS", -5
+    else:
+        label, adjustment = "MIXED", 0
+    return {
+        "mtf_label": label,
+        "mtf_4h": h4_label,
+        "mtf_1d": d1_label,
+        "mtf_score": total,
+        "mtf_adjustment": adjustment,
+    }
+
+
 def compute_macd(close):
     if len(close) < 15:
         return "netral", 0
@@ -672,6 +737,7 @@ def analyze_coin(symbol, data, candles):
     ml = compute_ml_forecast(candles)
     bt = compute_backtest(candles)
     confluence = compute_confluence_signal(candles)
+    mtf = compute_multi_timeframe_confirmation(candles)
 
     # --- SCORING ---
     liquidity_bonus = min(16, vol_idr / 1_000_000_000)
@@ -710,6 +776,7 @@ def analyze_coin(symbol, data, candles):
         + adx_bonus
         + ml_adj
         + bt_adj
+        + mtf["mtf_adjustment"]
         - fomo_penalty
         - micin_penalty
     )
@@ -743,6 +810,11 @@ def analyze_coin(symbol, data, candles):
         if action in ("BELI KUAT", "CICIL BELI"):
             action = "WATCH"
             emoji = "⚪"
+
+    # Multi-timeframe guard: jangan agresif jika 4H/1D kompak bearish.
+    if mtf["mtf_adjustment"] <= -5 and action in ("BELI KUAT", "CICIL BELI"):
+        action = "WATCH"
+        emoji = "⚪"
 
     # Risk level
     risk_pts = 0
@@ -789,6 +861,11 @@ def analyze_coin(symbol, data, candles):
         "tp1": tp1, "tp2": tp2, "tp3": tp3, "stop_loss": sl,
         "trailing_pct": round(trailing, 1), "alloc_pct": round(alloc, 1),
         "range_pos": round(range_pos, 1),
+        "mtf_label": mtf["mtf_label"],
+        "mtf_4h": mtf["mtf_4h"],
+        "mtf_1d": mtf["mtf_1d"],
+        "mtf_score": mtf["mtf_score"],
+        "mtf_adjustment": mtf["mtf_adjustment"],
         # Confluence
         "confluence_passed": confluence["confluence_passed"],
         "confluence_total": confluence["confluence_total"],
@@ -948,6 +1025,7 @@ def send_sinyal_harian(all_coins):
         lines.append(f"   RSI: {s['rsi']} | EMA: {s['ema_bias']} | MACD: {s['macd_signal']}")
         lines.append(f"   Supertrend: {s['supertrend']} | BB: {s['bb_signal']}")
         lines.append(f"   ADX: {s['adx']} ({s['adx_trend']})")
+        lines.append(f"   MTF: {s['mtf_label']} | 4H {s['mtf_4h']} | 1D {s['mtf_1d']}")
         lines.append(f"   ML: {s['ml_label']} ({s['ml_prob']}%, {s['ml_conf']})")
         if s['bt_trades'] >= 6:
             lines.append(f"   Backtest: {s['bt_label']} (WR {s['bt_wr']}%, {s['bt_trades']} trades)")
@@ -1172,6 +1250,7 @@ def check_realtime_confluence_alerts(all_coins):
                 f"──────────────────────\n"
                 f"💵 Harga: {format_idr(res['price'])} ({ch_sign}{res['change']:.2f}%)\n"
                 f"🛡️ Confluence: *{res['confluence_label']}* ({res['confluence_strength']})\n\n"
+                f"🧭 MTF: *{res['mtf_label']}* | 4H {res['mtf_4h']} | 1D {res['mtf_1d']}\n"
                 f"✅ *Status Gerbang Konfluensi:*\n"
                 f"{valid_checks_text}\n\n"
                 f"🧠 ML Forecast: *{res['ml_label']}* ({res['ml_prob']}%, {res['ml_conf']})\n"

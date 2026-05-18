@@ -1370,6 +1370,71 @@ def compute_ema(close, span):
     return close.ewm(span=span, adjust=False).mean()
 
 
+def _candles_with_datetime_index(candles):
+    if candles.empty or "time" not in candles.columns:
+        return pd.DataFrame()
+    df = candles.copy()
+    t = pd.to_numeric(df["time"], errors="coerce")
+    if t.dropna().empty:
+        return pd.DataFrame()
+    unit = "ms" if float(t.dropna().median()) > 1_000_000_000_000 else "s"
+    df["_dt"] = pd.to_datetime(t, unit=unit, errors="coerce", utc=True)
+    return df.dropna(subset=["_dt"]).set_index("_dt").sort_index()
+
+
+def _resample_candles(candles, rule):
+    df = _candles_with_datetime_index(candles)
+    if df.empty:
+        return pd.DataFrame()
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    return df.resample(rule).agg(agg).dropna(subset=["close"]).reset_index(drop=True)
+
+
+def _timeframe_bias(candles):
+    if candles.empty or len(candles) < 12:
+        return "NO DATA", 0
+    close = candles["close"].astype(float)
+    ema_fast = compute_ema(close, 5).iloc[-1]
+    ema_slow = compute_ema(close, 13).iloc[-1]
+    lookback = min(6, len(close) - 1)
+    momentum = (close.iloc[-1] / close.iloc[-1 - lookback] - 1) * 100 if lookback > 0 and close.iloc[-1 - lookback] > 0 else 0
+    gap = (ema_fast - ema_slow) / ema_slow * 100 if ema_slow > 0 else 0
+    if gap > 0.15 and momentum > 0:
+        return "BULLISH", 2
+    if gap > 0 and momentum > -0.6:
+        return "BULLISH BIAS", 1
+    if gap < -0.15 and momentum < 0:
+        return "BEARISH", -2
+    if gap < 0 and momentum < 0.6:
+        return "BEARISH BIAS", -1
+    return "SIDEWAYS", 0
+
+
+def compute_multi_timeframe_confirmation(candles):
+    h4 = _resample_candles(candles, "4h")
+    d1 = _resample_candles(candles, "1D")
+    h4_label, h4_score = _timeframe_bias(h4)
+    d1_label, d1_score = _timeframe_bias(d1)
+    total = h4_score + d1_score
+    if total >= 3:
+        label, adjustment = "ALIGN BULLISH", 7
+    elif total == 2:
+        label, adjustment = "BULLISH BIAS", 4
+    elif total <= -3:
+        label, adjustment = "ALIGN BEARISH", -8
+    elif total == -2:
+        label, adjustment = "BEARISH BIAS", -5
+    else:
+        label, adjustment = "MIXED", 0
+    return {
+        "mtf_label": label,
+        "mtf_4h": h4_label,
+        "mtf_1d": d1_label,
+        "mtf_score": total,
+        "mtf_adjustment": adjustment,
+    }
+
+
 def compute_macd(close):
     if len(close) < 15:
         return "netral", 0
@@ -1924,6 +1989,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     ml = compute_ml_forecast(candles)
     bt = compute_backtest(candles)
     confluence = compute_confluence_signal(candles)
+    mtf = compute_multi_timeframe_confirmation(candles)
 
     # --- SCORING (UPGRADED) ---
     liquidity_bonus = min(16, vol_idr / 1_000_000_000)
@@ -1962,6 +2028,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         + adx_bonus
         + ml_adj
         + bt_adj
+        + mtf["mtf_adjustment"]
         - fomo_penalty
         - micin_penalty
         + mode_rules.get("score_adjustment", 0)
@@ -1991,6 +2058,11 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         if action in ("BELI KUAT", "CICIL BELI"):
             action = "WATCH"
             emoji = "⚪"
+
+    # Multi-timeframe guard: jangan agresif jika 4H/1D kompak bearish.
+    if mtf["mtf_adjustment"] <= -5 and action in ("BELI KUAT", "CICIL BELI"):
+        action = "WATCH"
+        emoji = "⚪"
 
     # Risk level
     risk_pts = 0
@@ -2107,6 +2179,11 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         "tp1": tp1, "tp2": tp2, "target": target, "stop_loss": stop_loss,
         "trailing_stop_pct": round(trailing, 1), "allocation_pct": round(alloc, 1),
         "range_pos": round(range_pos, 1),
+        "mtf_label": mtf["mtf_label"],
+        "mtf_4h": mtf["mtf_4h"],
+        "mtf_1d": mtf["mtf_1d"],
+        "mtf_score": mtf["mtf_score"],
+        "mtf_adjustment": mtf["mtf_adjustment"],
         "category": category, "category_color": category_color,
         # Entry Zone
         "entry_zone_low": entry_zone_low,
@@ -2726,6 +2803,10 @@ def render_rekomendasi_card(item, idx):
     learning_trades = int(item.get("learning_trades", 0) or 0)
     learning_color = "#047857" if learning_adjustment > 0 else "#b91c1c" if learning_adjustment < 0 else "#64748b"
     learning_delta = f"{learning_adjustment:+d}" if learning_adjustment else "0"
+    mtf_adjustment = int(item.get("mtf_adjustment", 0) or 0)
+    mtf_label = item.get("mtf_label", "MIXED")
+    mtf_color = "#047857" if mtf_adjustment > 0 else "#b91c1c" if mtf_adjustment < 0 else "#64748b"
+    mtf_detail = f"4H {item.get('mtf_4h', 'NO DATA')} · 1D {item.get('mtf_1d', 'NO DATA')}"
 
     check_rows = ""
     for label, ok in confluence_checks.items():
@@ -2762,6 +2843,7 @@ def render_rekomendasi_card(item, idx):
                 <div class="metric-chip"><span class="metric-label">Volume</span><span class="metric-value">{format_idr(item['vol_idr'])}</span></div>
                 <div class="metric-chip"><span class="metric-label">RSI</span><span class="metric-value">{item['rsi']}</span></div>
                 <div class="metric-chip"><span class="metric-label">ML</span><span class="metric-value">{item['ml_label']} {item['ml_prob']}%</span></div>
+                <div class="metric-chip"><span class="metric-label">MTF</span><span class="metric-value" style="color:{mtf_color}">{mtf_label}</span></div>
                 <div class="metric-chip"><span class="metric-label">Learning</span><span class="metric-value" style="color:{learning_color}">{learning_delta} · {learning_trades}x</span></div>
             </div>
 
@@ -2809,6 +2891,10 @@ def render_rekomendasi_card(item, idx):
                 <div class="section-row">
                     <span class="section-label">Learning note</span>
                     <span class="section-strong" style="color:{learning_color}">{learning_note}</span>
+                </div>
+                <div class="section-row" style="margin-top:0.35rem">
+                    <span class="section-label">Multi-timeframe</span>
+                    <span class="section-strong" style="color:{mtf_color}">{mtf_detail}</span>
                 </div>
             </div>
 
