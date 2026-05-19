@@ -1369,7 +1369,10 @@ def check_tp_sl_alerts(all_coins):
 
         # Clean old signal tracking if it exceeds ACTIVE_SIGNAL_TTL_SEC
         now_ts = time.time()
-        created_ts = datetime.fromisoformat(sig["time"]).timestamp()
+        _sig_dt = datetime.fromisoformat(sig["time"])
+        if _sig_dt.tzinfo is None:
+            _sig_dt = _sig_dt.replace(tzinfo=WIB)
+        created_ts = _sig_dt.timestamp()
         if now_ts - created_ts > ACTIVE_SIGNAL_TTL_SEC:
             to_remove.append(sym)
             continue

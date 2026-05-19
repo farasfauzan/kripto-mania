@@ -55,25 +55,24 @@ COIN_CATEGORIES = {
     "EOS": "Layer1", "NEO": "Layer1", "VET": "Layer1", "IOTA": "Layer1", "QTUM": "Layer1",
     "ONT": "Layer1", "ICX": "Layer1", "NANO": "Layer1", "HNT": "Layer1", "FLOW": "Layer1",
     "CKB": "Layer1", "ONE": "Layer1", "TON": "Layer1", "XRP": "Layer1",
-    "MATIC": "Layer2", "ARB": "Layer2", "OP": "Layer2", "IMX": "Layer2", "LRC": "Layer2",
+    "MATIC": "Layer2", "ARB": "Layer2", "OP": "Layer2", "LRC": "Layer2",
     "MANTA": "Layer2", "STRK": "Layer2", "METIS": "Layer2", "SKL": "Layer2", "CELO": "Layer2",
     "BOBA": "Layer2", "ZKSYNC": "Layer2", "SCROLL": "Layer2", "LINEA": "Layer2", "BLAST": "Layer2",
     "MODE": "Layer2", "ZORA": "Layer2", "FUEL": "Layer2", "ALT": "Layer1", "ALTLAYER": "Layer1",
-    "LINK": "DeFi", "UNI": "DeFi", "AAVE": "DeFi", "MKR": "DeFi", "CRV": "DeFi",
-    "COMP": "DeFi", "SUSHI": "DeFi", "SNX": "DeFi", "YFI": "DeFi", "1INCH": "DeFi",
+    "LINK": "DeFi", "UNI": "DeFi", "AAVE": "DeFi", "CRV": "DeFi",
+    "COMP": "DeFi", "SUSHI": "DeFi", "YFI": "DeFi", "1INCH": "DeFi",
     "BAL": "DeFi", "CAKE": "DeFi", "GMX": "DeFi", "DYDX": "DeFi", "LDO": "DeFi",
-    "FXS": "DeFi", "CVX": "DeFi", "STG": "DeFi", "PENDLE": "DeFi", "JUP": "DeFi",
+    "FXS": "DeFi", "CVX": "DeFi", "STG": "DeFi", "JUP": "DeFi",
     "RAY": "DeFi", "ORCA": "DeFi", "VELO": "DeFi", "JOE": "DeFi", "ZRX": "DeFi",
     "RUNE": "DeFi", "THORCHAIN": "DeFi", "BAND": "DeFi", "UMA": "DeFi", "REN": "DeFi",
-    "API3": "DeFi", "AKT": "DeFi", "RSR": "DeFi", "OCEAN": "DeFi", "FET": "DeFi",
-    "AGIX": "DeFi", "CTSI": "DeFi", "RLC": "DeFi", "CELR": "DeFi", "BNT": "DeFi",
-    "KNC": "DeFi", "BADGER": "DeFi", "PERP": "DeFi", "IDEX": "DeFi", "INJ": "DeFi",
+    "API3": "DeFi", "RSR": "DeFi", "CTSI": "DeFi", "RLC": "DeFi", "CELR": "DeFi", "BNT": "DeFi",
+    "KNC": "DeFi", "BADGER": "DeFi", "PERP": "DeFi", "IDEX": "DeFi",
     "GNS": "DeFi", "PEPE": "Meme", "FLOKI": "Meme", "WIF": "Meme", "BONK": "Meme",
     "BOME": "Meme", "POPCAT": "Meme", "MEW": "Meme", "MYRO": "Meme", "SLERF": "Meme",
     "SAMO": "Meme", "TOSHI": "Meme", "MOG": "Meme", "PONKE": "Meme", "PUMP": "Meme",
     "FWOG": "Meme", "GIGA": "Meme", "MICHI": "Meme", "MOTHER": "Meme", "TURBO": "Meme",
     "FET": "AI", "RNDR": "AI", "TAO": "AI", "GRT": "AI", "AKT": "AI",
-    "WLD": "AI", "AGIX": "AI", "OCEAN": "AI", "PRIME": "AI", "AIOZ": "AI",
+    "WLD": "AI", "AGIX": "AI", "OCEAN": "AI", "AIOZ": "AI",
     "ARKM": "AI", "AITECH": "AI", "PAAL": "AI", "AGI": "AI", "OLAS": "AI",
     "NMR": "AI", "CTXC": "AI", "MDT": "AI", "VAI": "AI", "VIRTUALS": "AI",
     "AI": "AI", "AIXBT": "AI", "NFP": "AI", "CGPT": "AI", "IDX": "AI",
@@ -2511,7 +2510,7 @@ def analyze_assets(assets_data, market_stats, tickers=None):
     
     # Fetch all candles in parallel to prevent 15-second loading delay
     pairs_list = [data["pair"] for data in assets_data.values()]
-    candles_map = _cached_fetch_candles_parallel(pairs_list)
+    candles_map = _cached_fetch_candles_parallel(tuple(pairs_list))
     
     for idx, (symbol, data) in enumerate(assets_data.items()):
         pair = data["pair"]
@@ -2687,25 +2686,6 @@ def render_fear_greed(fg_data):
         </div>""",
         unsafe_allow_html=True,
     )
-    return
-    st.markdown(
-        f"""
-        <div style="background:linear-gradient(135deg,#0f172a,#1e293b);border-radius:16px;padding:1rem 1.5rem;
-                    margin:0.5rem 0;text-align:center;border:1px solid {color}40">
-            <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.3rem">
-                Fear & Greed Index
-            </div>
-            <div style="font-size:2.5rem;font-weight:900;color:{color}">{emoji} {val}</div>
-            <div style="font-size:0.9rem;font-weight:700;color:{color};text-transform:uppercase">{label}</div>
-            <div style="margin-top:0.5rem;background:#334155;border-radius:8px;height:8px;overflow:hidden">
-                <div style="width:{val}%;height:100%;background:linear-gradient(90deg,#ef4444,#f97316,#eab308,#22c55e);border-radius:8px"></div>
-            </div>
-            <div style="display:flex;justify-content:space-between;font-size:0.6rem;color:#64748b;margin-top:0.2rem">
-                <span>Extreme Fear</span><span>Extreme Greed</span>
-            </div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
 
 
 def render_sidebar(market_stats, fg_data, all_results):
@@ -2744,64 +2724,6 @@ def render_sidebar(market_stats, fg_data, all_results):
         st.markdown("Auto-refresh: **60 detik**")
         st.markdown(
             f"""<a href="{TELEGRAM_COMMUNITY}" target="_blank" style="color:#2563eb;font-weight:900;text-decoration:none">Gabung Telegram Premium</a>""",
-            unsafe_allow_html=True,
-        )
-        return
-        st.markdown(
-            f"""
-            <div style="text-align:center;padding:1rem 0">
-                <div style="font-size:1.5rem;font-weight:900;background:linear-gradient(135deg,#10b981,#3b82f6);
-                            -webkit-background-clip:text;-webkit-text-fill-color:transparent">💰 Kripto Mania</div>
-                <div style="color:#64748b;font-size:0.8rem;margin-top:0.3rem">Dashboard Trading Premium</div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
-        st.markdown("---")
-        # Referral CTA — prominent
-        st.markdown(
-            f"""
-            <div style="background:linear-gradient(135deg,#059669,#10b981);border-radius:12px;padding:1rem;
-                        text-align:center;margin-bottom:1rem">
-                <div style="font-size:1.1rem;font-weight:800;color:white">🚀 Mulai Trading Sekarang!</div>
-                <div style="font-size:0.75rem;color:#d1fae5;margin:0.3rem 0">Daftar Indodax gratis & dapatkan bonus</div>
-                <a href="{INDODAX_REF}" target="_blank" style="display:inline-block;background:white;color:#059669;
-                   font-weight:800;padding:0.5rem 1.5rem;border-radius:8px;text-decoration:none;margin-top:0.3rem;
-                   font-size:0.9rem">Daftar Sekarang →</a>
-            </div>""",
-            unsafe_allow_html=True,
-        )
-        # Fear & Greed in sidebar
-        if fg_data:
-            render_fear_greed(fg_data)
-        # Market summary
-        st.markdown("#### 📊 Ringkasan Market")
-        if market_stats:
-            mode_rules = MARKET_MODE_RULES[market_stats['mode']]
-            st.markdown(f"**Status:** {mode_rules['label']}")
-            st.markdown(f"**Hijau/Merah:** {market_stats['green_count']}/{market_stats['red_count']}")
-            st.markdown(f"**Volume:** {format_idr(market_stats['total_vol'])}")
-        # Top picks
-        buy_picks = [r for r in all_results if is_entry_action(r.get("action", ""))][:3]
-        if buy_picks:
-            st.markdown("#### 🔥 Top 3 Picks")
-            for p in buy_picks:
-                st.markdown(f"**{p['symbol']}** — Score {p['score']}/100 · {p['change']:+.1f}%")
-        st.markdown("---")
-        # Bot status
-        st.markdown("#### 🤖 Status Bot")
-        if BOT_ENABLED:
-            st.markdown("✅ Telegram Bot: **Aktif 24/7**")
-        else:
-            st.markdown("⚪ Telegram Bot: **Nonaktif**")
-        st.markdown("✅ Auto-refresh: **60 detik**")
-        st.markdown("---")
-        st.markdown(
-            f"""
-            <div style="text-align:center">
-                <a href="{TELEGRAM_COMMUNITY}" target="_blank" style="color:#3b82f6;font-weight:700;text-decoration:none">
-                    💬 Gabung Telegram Premium
-                </a>
-            </div>""",
             unsafe_allow_html=True,
         )
 
@@ -3006,164 +2928,6 @@ def render_rekomendasi_card(item, idx):
         """).strip().replace("\n", ""),
         unsafe_allow_html=True,
     )
-    return
-    
-    # Entry Zone display
-    entry_color = "#22c55e" if "Koreksi" in item.get("entry_zone_label", "") else "#f59e0b" if "Netral" in item.get("entry_zone_label", "") else "#3b82f6"
-    
-    # Tentukan teks tombol dan CSS class berdasarkan status rekomendasi
-    is_buy_signal = (
-        is_entry_action(item.get("action", "")) and
-        item.get("allocation_pct", 0) > 0 and
-        item.get("confluence_passed", 0) >= 4 and
-        item.get("verdict", "") not in ("TOLAK", "TUNGGU")
-    )
-
-    if is_buy_signal:
-        if item.get("confluence_passed", 0) == 5:
-            cta_text = "🔥 Entry Valid"
-        else:
-            cta_text = "🟡 Entry Kecil"
-        cta_class = "buy-button-sm"
-    else:
-        cta_text = "👀 Pantau di Indodax"
-        cta_class = "buy-button-sm neutral"
-        
-    # Scenario UI: jangan tampilkan "Skenario Bullish" untuk JANGAN BELI/HINDARI
-    action_text = str(item.get("action", ""))
-    entry_action = is_entry_action(action_text)
-    
-    if entry_action:
-        left_scenario_title = "✅ SKENARIO BULLISH"
-        left_scenario_color = "#22c55e"
-        left_scenario_bg = "rgba(34,197,94,0.08)"
-        left_scenario_border = "#22c55e20"
-    elif "WATCH" in action_text:
-        left_scenario_title = "👀 RENCANA PANTAU"
-        left_scenario_color = "#f59e0b"
-        left_scenario_bg = "rgba(245,158,11,0.08)"
-        left_scenario_border = "#f59e0b25"
-    else:
-        left_scenario_title = "⛔ STATUS"
-        left_scenario_color = "#94a3b8"
-        left_scenario_bg = "rgba(148,163,184,0.08)"
-        left_scenario_border = "#94a3b825"
-    
-    def scenario_price(value):
-        try:
-            value = float(value)
-            return format_price(value) if value > 0 else "-"
-        except (TypeError, ValueError):
-            return "-"
-    
-    def scenario_pct(value, force_plus=False):
-        try:
-            value = float(value)
-            if value == 0:
-                return "-"
-            return f"{value:+.1f}%" if force_plus else f"{value:.1f}%"
-        except (TypeError, ValueError):
-            return "-"
-    
-    step1_price_text = scenario_price(item.get("step1_price", 0))
-    step1_gain_text = scenario_pct(item.get("step1_gain", 0), force_plus=True)
-    fail_price_text = scenario_price(item.get("fail_price", 0))
-    fail_loss_text = scenario_pct(item.get("fail_loss", 0))
-    
-    # Confluence checklist HTML
-    confluence_passed = item.get("confluence_passed", 0)
-    confluence_label = item.get("confluence_label", "INVALID 0/5")
-    confluence_strength = item.get("confluence_strength", "TOLAK")
-    confluence_checks = item.get("confluence_checks", {})
-    
-    if confluence_label.startswith("VALID 5/5") or confluence_label.startswith("VALID 4/5"):
-        conf_color = "#10b981"
-    elif confluence_label.startswith("VALID 3/5"):
-        conf_color = "#f59e0b"
-    else:
-        conf_color = "#ef4444"
-    
-    checklist_html = ""
-    for label, ok in confluence_checks.items():
-        icon = "🟢" if ok else "🔴"
-        style = "color:#22c55e;font-weight:700" if ok else "color:#94a3b8"
-        checklist_html += (
-            f'<div style="display:flex;justify-content:space-between;font-size:0.75rem;padding:0.15rem 0.3rem">'
-            f'<span style="{style}">{icon} {label}</span>'
-            f'<span style="font-weight:bold;{style}">{"VALID" if ok else "TOLAK"}</span>'
-            f'</div>'
-        )
-        
-    st.markdown(
-        dedent(f"""
-        <div class="rekomendasi-card" style="margin-bottom:0.8rem">
-            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem">
-                <div style="display:flex;align-items:center;gap:0.6rem">
-                    <span style="font-size:1.8rem">{item['emoji']}</span>
-                    <div>
-                        <span style="font-size:1.3rem;font-weight:900;color:white">{item['symbol']}</span>
-                        <span style="font-size:0.7rem;color:#666;margin-left:0.4rem">{item['category']}</span>
-                    </div>
-                </div>
-                <div style="display:flex;align-items:center;gap:0.8rem;flex-wrap:wrap">
-                    <span class="price-tag">{format_price(item['price'])}</span>
-                    <span class="{'profit-badge' if item['change']>=0 else 'loss-badge'}">{change_sign}{item['change']:.2f}%</span>
-                </div>
-            </div>
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:0.4rem;margin-top:0.8rem;text-align:center">
-                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Score</span><br><span style="font-weight:900;font-size:1.1rem;color:#10b981">{item['score']}/100</span></div>
-                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Risk</span><br><span style="font-weight:700;font-size:0.9rem;color:{'#ef4444' if item['risk_level']=='TINGGI' else '#f59e0b' if item['risk_level']=='SEDANG' else '#22c55e'}">{item['risk_level']}</span></div>
-                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Alokasi</span><br><span style="font-weight:900;font-size:1rem;color:#fbbf24">{item['allocation_pct']:.1f}%</span></div>
-                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">TP1</span><br><span style="font-weight:700;font-size:0.85rem;color:#22c55e">{format_price(item['tp1'])}</span></div>
-                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">TP2</span><br><span style="font-weight:700;font-size:0.85rem;color:#22c55e">{format_price(item['tp2'])}</span></div>
-                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Target</span><br><span style="font-weight:700;font-size:0.85rem;color:#22c55e">{format_price(item['target'])}</span></div>
-                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Stop Loss</span><br><span style="font-weight:700;font-size:0.85rem;color:#ef4444">{format_price(item['stop_loss'])}</span></div>
-                <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:0.5rem 0.3rem"><span style="color:#aaa;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em">Trailing</span><br><span style="font-weight:700;font-size:0.85rem;color:#f59e0b">{item['trailing_stop_pct']:.1f}%</span></div>
-            </div>
-            <!-- ENTRY ZONE -->
-            <div style="margin-top:0.6rem;padding:0.5rem;background:rgba(255,255,255,0.04);border-radius:12px;border:1px solid {entry_color}30">
-                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.3rem">
-                    <span style="font-size:0.75rem;color:#aaa;text-transform:uppercase;letter-spacing:0.05em">🎯 Entry Zone</span>
-                    <span style="font-size:0.85rem;font-weight:700;color:{entry_color}">{item.get('entry_zone_label', '⚖️ Netral')}</span>
-                </div>
-                <div style="display:flex;justify-content:space-between;margin-top:0.2rem">
-                    <span style="font-size:0.8rem;color:#22c55e">⬇️ {format_price(item.get('entry_zone_low', 0))}</span>
-                    <span style="font-size:0.8rem;color:#f59e0b">⟷</span>
-                    <span style="font-size:0.8rem;color:#ef4444">⬆️ {format_price(item.get('entry_zone_high', 0))}</span>
-                </div>
-            </div>
-            <!-- TWO STEPS AHEAD -->
-            <div style="margin-top:0.5rem;display:grid;grid-template-columns:1fr 1fr;gap:0.4rem">
-                <div style="background:{left_scenario_bg};border-radius:10px;padding:0.4rem;text-align:center;border:1px solid {left_scenario_border}">
-                    <div style="font-size:0.65rem;color:{left_scenario_color};font-weight:700">{left_scenario_title}</div>
-                    <div style="font-size:0.75rem;color:#ccc;margin-top:0.15rem">{item.get('step1_action', '⏳')}</div>
-                    <div style="font-size:0.85rem;font-weight:800;color:{left_scenario_color}">{step1_price_text}</div>
-                    <div style="font-size:0.7rem;color:{left_scenario_color}">{step1_gain_text}</div>
-                </div>
-                <div style="background:rgba(239,68,68,0.08);border-radius:10px;padding:0.4rem;text-align:center;border:1px solid #ef444420">
-                    <div style="font-size:0.65rem;color:#ef4444;font-weight:700">❌ SKENARIO BEARISH</div>
-                    <div style="font-size:0.75rem;color:#ccc;margin-top:0.15rem">{item.get('fail_action', '⛔')}</div>
-                    <div style="font-size:0.85rem;font-weight:800;color:#ef4444">{fail_price_text}</div>
-                    <div style="font-size:0.7rem;color:#ef4444">{fail_loss_text}</div>
-                </div>
-            </div>
-            <!-- CONFLUENCE GATE CHECKLIST -->
-            <div style="margin-top:0.6rem;padding:0.5rem;background:rgba(255,255,255,0.03);border-radius:12px;border:1px solid {conf_color}30">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem">
-                    <span style="font-size:0.75rem;color:#aaa;text-transform:uppercase;letter-spacing:0.05em">🛡️ Confluence Gate</span>
-                    <span style="font-size:0.8rem;font-weight:900;color:{conf_color};background:{conf_color}15;padding:0.15rem 0.5rem;border-radius:6px">{confluence_label}</span>
-                </div>
-                <div style="display:flex;flex-direction:column;gap:0.15rem;background:rgba(0,0,0,0.15);border-radius:8px;padding:0.3rem">
-                    {checklist_html}
-                </div>
-            </div>
-            <div style="margin-top:0.8rem;text-align:center">
-                <a href="{buy_link}" target="_blank" class="{cta_class}">{cta_text}</a>
-            </div>
-        </div>
-        """).strip(),
-        unsafe_allow_html=True,
-    )
 
 
 
@@ -3279,7 +3043,7 @@ def render_footer():
                 <p>⚠️ <strong>Bukan Saran Keuangan.</strong> Semua analisis bersifat informatif. Lakukan riset sendiri sebelum bertransaksi.</p>
                 <p>🔗 <a href="{INDODAX_REF}" target="_blank" style="color:#10b981">Daftar Indodax</a>
                  · 💬 <a href="{TELEGRAM_COMMUNITY}" target="_blank" style="color:#3b82f6">Telegram Premium</a></p>
-                <p>© 2025 Rekomendasi Beli Crypto · Data dari Indodax</p>
+                <p>© 2025–2026 Rekomendasi Beli Crypto · Data dari Indodax</p>
             </div>
             """,
             unsafe_allow_html=True,
