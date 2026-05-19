@@ -38,13 +38,13 @@ TELEGRAM_CHANNEL = "https://t.me/+VPlOcY2wFGA0NWU1"
 def env_bool(name, default=False):
     return str(os.environ.get(name, str(default))).lower() in {"1","true","yes","on"}
 
-ENABLE_FOMO_ALERTS = env_bool("ENABLE_FOMO_ALERTS", False)
+ENABLE_FOMO_ALERTS = env_bool("ENABLE_FOMO_ALERTS", True)
 ENABLE_CONFLUENCE_ALERTS = env_bool("ENABLE_CONFLUENCE_ALERTS", True)
 
 # === ANTI-SPAM CONTROL ===
 LOOP_SLEEP_SECONDS = int(os.environ.get("LOOP_SLEEP_SECONDS", "180"))
 
-FOMO_GLOBAL_COOLDOWN_SEC = int(os.environ.get("FOMO_GLOBAL_COOLDOWN_SEC", str(6 * 3600)))
+FOMO_GLOBAL_COOLDOWN_SEC = int(os.environ.get("FOMO_GLOBAL_COOLDOWN_SEC", "1800"))
 FOMO_SYMBOL_COOLDOWN_SEC = int(os.environ.get("FOMO_SYMBOL_COOLDOWN_SEC", str(24 * 3600)))
 
 CONFLUENCE_SYMBOL_COOLDOWN_SEC = int(os.environ.get("CONFLUENCE_SYMBOL_COOLDOWN_SEC", str(24 * 3600)))
@@ -1105,9 +1105,19 @@ def detect_fomo(all_coins):
     for sym, data in all_coins.items():
         change = data["change"]
         vol = data["vol_idr"]
-        # Cegah spam koin micin tak ber-volume: minimal 3 Miliar (kecuali Blue Chips)
-        if vol < 3_000_000_000 and sym not in BLUE_CHIPS:
-            continue
+        # Batas volume dinamis berdasarkan persentase kenaikan harga (kecuali Blue Chips)
+        if sym not in BLUE_CHIPS:
+            if change > 30:
+                min_vol = 1_000_000_000  # Kejadian sangat luar biasa -> minimal 1 Miliar
+            elif change > 20:
+                min_vol = 1_500_000_000  # Luar biasa -> minimal 1.5 Miliar
+            elif change > 12:
+                min_vol = 2_000_000_000  # Signifikan -> minimal 2 Miliar
+            else:
+                min_vol = 3_000_000_000  # Normal pumping -> minimal 3 Miliar
+            if vol < min_vol:
+                continue
+
         item = {
             "symbol": sym, "pair": data["pair"],
             "price": data["price"], "change": round(change, 2),
@@ -1128,35 +1138,49 @@ def format_fomo_alert(fomo_gila, fomo, pumping, all_coins):
     if not fomo_gila and not fomo and not pumping:
         return None
 
-    lines = ["*FOMO ALERT -- KOIN NAIK TAJAM!*", "------", ""]
+    lines = ["🚨 *PUNCAK FOMO -- PUMP DETECTED!* 🚨", "──────────────────────", ""]
 
     def _add_coins(lst, label):
         if not lst:
             return
-        lines.append(f"*{label}:*")
-        for coin in lst[:5]:
+        lines.append(f"🔥 *{label}:*")
+        for coin in lst[:3]:  # Batasi 3 teratas per kategori agar pesan tidak terlalu panjang
+            sym = coin["symbol"]
             pair_url = coin["pair"].upper().replace("_", "")
             link = f"https://indodax.com/market/{pair_url}?ref={INDODAX_REF}"
 
-            # Quick RSI check untuk warning
             warning = ""
             rp = coin["high"] - coin["low"]
             if rp > 0:
                 pos = (coin["price"] - coin["low"]) / rp * 100
-                if pos > 90:
-                    warning = " (DEKAT PUNCAK)"
+                if pos > 85:
+                    warning = " ⚠️ *DEKAT PUNCAK (RAWAN KOREKSI)*"
 
-            lines.append(f"   {coin['symbol']} -- *+{coin['change']}%*{warning}")
-            lines.append(f"   {format_idr(coin['price'])} | Vol: {format_idr(coin['vol_idr'])}")
-            lines.append(f"   [BELI]({link})")
+            lines.append(f"📈 *{sym}* -- *+{coin['change']}%*{warning}")
+            lines.append(f"   Harga: {format_idr(coin['price'])} | Vol: {format_idr(coin['vol_idr'])}")
+            
+            # Dynamic Technical Intelligence
+            try:
+                candles = fetch_candles(coin["pair"])
+                if not candles.empty:
+                    ticker_info = all_coins.get(sym, coin)
+                    res = apply_bot_intelligence(analyze_coin(sym, ticker_info, candles))
+                    lines.append(f"   🧠 Intel Score: *{res['score']}/100* | Sinyal: *{res['action']}*")
+                    lines.append(f"   📊 RSI: {res['rsi']} | EMA: {res['ema_bias']} | ST: *{res['supertrend']}*")
+                    lines.append(f"   🤖 ML Predict: *{res['ml_label']}* ({res['ml_prob']}%)")
+                    lines.append(f"   🎯 Target TP1: {format_idr(res['tp1'])} | SL: {format_idr(res['stop_loss'])}")
+            except Exception as e:
+                log(f"Dynamic analysis failed for {sym}: {e}")
+                
+            lines.append(f"   🔗 [Masuk Market Indodax]({link})")
             lines.append("")
 
     _add_coins(fomo_gila, "FOMO GILA (>20%)")
     _add_coins(fomo, "FOMO (>12%)")
     _add_coins(pumping, "PUMPING (>8%)")
 
-    lines.append("------")
-    lines.append("Hati-hati FOMO! Bisa koreksi kapan aja. DYOR.")
+    lines.append("──────────────────────")
+    lines.append("⚠️ *Himbauan:* Selalu DYOR dan jangan FOMO secara asal. Gunakan stop loss!")
     lines.append(f"Gabung: {TELEGRAM_CHANNEL}")
     return "\n".join(lines)
 
