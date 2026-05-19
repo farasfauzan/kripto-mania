@@ -3184,44 +3184,81 @@ def render_rekomendasi_list(results, title, max_items=10):
         render_rekomendasi_card(item, i)
 
 
-def render_fomo_alerts(tickers, prices_24h):
+def render_fomo_alerts(tickers, prices_24h, market_stats, news_profile, learning_profile):
     fomo_gila, fomo, pumping = _bot_detect_fomo(tickers, prices_24h)
     if not fomo_gila and not fomo and not pumping:
         return
+        
     st.markdown("## 🚨 FOMO Alert")
-    if fomo_gila:
-        st.markdown("### 🚀 FOMO Gila (>15%)")
-        cols = st.columns(min(len(fomo_gila), 4))
-        for i, coin in enumerate(fomo_gila[:4]):
+    
+    # Inisialisasi session state jika belum ada
+    if "fomo_analyzed_symbol" not in st.session_state:
+        st.session_state["fomo_analyzed_symbol"] = None
+        st.session_state["fomo_analyzed_coin_data"] = None
+        
+    def _render_section(coin_list, title, color):
+        if not coin_list:
+            return
+        st.markdown(f"### {title}")
+        cols = st.columns(min(len(coin_list), 4))
+        for i, coin in enumerate(coin_list[:4]):
             with cols[i]:
                 pair_upper = coin["pair"].upper().replace("_", "")
                 link = f"https://indodax.com/market/{pair_upper}?ref=narwanpratanta"
                 st.markdown(
-                    f"""<div class="fomo-card" style="border-color:#ef4444;background:#ef444410">
-                        <div style="font-size:1.5rem;font-weight:900;color:#ef4444">+{coin['change']}%</div>
-                        <div style="font-weight:800;font-size:1.1rem">{coin['symbol']}</div>
-                        <div style="font-size:0.85rem;color:#888">{format_price(coin['price'])}</div>
-                        <div style="font-size:0.75rem;color:#666">Vol: {format_idr(coin['vol_idr'])}</div>
-                        <a href="{link}" target="_blank" style="display:inline-block;margin-top:0.4rem;background:#ef4444;color:white;padding:4px 14px;border-radius:8px;text-decoration:none;font-weight:700;font-size:0.8rem">⚠️ Pantau</a>
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-    if fomo:
-        st.markdown("### 🔥 FOMO (>8%)")
-        cols = st.columns(min(len(fomo), 4))
-        for i, coin in enumerate(fomo[:4]):
-            with cols[i]:
-                pair_upper = coin["pair"].upper().replace("_", "")
-                link = f"https://indodax.com/market/{pair_upper}?ref=narwanpratanta"
-                st.markdown(
-                    f"""<div class="fomo-card" style="border-color:#f59e0b;background:#f59e0b10">
-                        <div style="font-size:1.3rem;font-weight:900;color:#f59e0b">+{coin['change']}%</div>
-                        <div style="font-weight:800;font-size:1rem">{coin['symbol']}</div>
+                    f"""<div class="fomo-card" style="border-color:{color};background:{color}10;margin-bottom:0.5rem;padding:0.75rem;border-radius:10px;border:1px solid">
+                        <div style="font-size:1.4rem;font-weight:900;color:{color}">+{coin['change']}%</div>
+                        <div style="font-weight:800;font-size:1.05rem">{coin['symbol']}</div>
                         <div style="font-size:0.8rem;color:#888">{format_price(coin['price'])}</div>
-                        <a href="{link}" target="_blank" style="display:inline-block;margin-top:0.3rem;background:#f59e0b;color:white;padding:3px 12px;border-radius:8px;text-decoration:none;font-weight:700;font-size:0.75rem">⚠️ Pantau</a>
+                        <div style="font-size:0.7rem;color:#666;margin-bottom:0.4rem">Vol: {format_idr(coin['vol_idr'])}</div>
                     </div>""",
                     unsafe_allow_html=True,
                 )
+                
+                # Sisi tombol streamlit
+                btn_cols = st.columns(2)
+                with btn_cols[0]:
+                    st.link_button("🌐 Pantau", link, use_container_width=True)
+                with btn_cols[1]:
+                    if st.button("🔍 Analisis", key=f"fomo_btn_{coin['symbol']}", use_container_width=True):
+                        st.session_state["fomo_analyzed_symbol"] = coin["symbol"]
+                        st.session_state["fomo_analyzed_coin_data"] = coin
+
+    _render_section(fomo_gila, "🚀 FOMO Gila (>15%)", "#ef4444")
+    _render_section(fomo, "🔥 FOMO (>8%)", "#f59e0b")
+    _render_section(pumping, "📈 PUMPING (>5%)", "#10b981")
+    
+    # Tampilkan kartu analisis instan jika dipilih
+    analyzed_sym = st.session_state.get("fomo_analyzed_symbol")
+    if analyzed_sym:
+        st.markdown(f"### 🧠 Analisis Instan Koin Pump: {analyzed_sym}")
+        coin = st.session_state.get("fomo_analyzed_coin_data")
+        if coin:
+            with st.spinner(f"Sedang menarik candle dan menganalisis {analyzed_sym}..."):
+                candles = fetch_candles(coin["pair"])
+                if not candles.empty:
+                    data = {
+                        "symbol": analyzed_sym,
+                        "pair": coin["pair"],
+                        "price": coin["price"],
+                        "high": coin["price"],  # default fallback
+                        "low": coin["price"],   # default fallback
+                        "vol_idr": coin["vol_idr"],
+                        "change": coin["change"]
+                    }
+                    # Ambil high/low 24h riil jika tersedia
+                    raw_info = tickers.get(coin["pair"], {})
+                    data["high"] = float(raw_info.get("high", coin["price"]))
+                    data["low"] = float(raw_info.get("low", coin["price"]))
+                    
+                    res = analyze_coin_advanced(analyzed_sym, data, candles, market_stats)
+                    # Apply news and learning
+                    adj_results = apply_news_adjustments([res], news_profile)
+                    adj_results = apply_learning_adjustments(adj_results, learning_profile)
+                    
+                    render_rekomendasi_card(adj_results[0], 999)
+                else:
+                    st.error(f"Gagal memuat candle untuk {analyzed_sym}. Silakan coba lagi.")
 
 
 def render_donation():
@@ -3335,9 +3372,9 @@ def main():
         render_fear_greed(fg_data)
     render_news_panel(news_profile)
     render_learning_panel(learning_profile)
-    render_fomo_alerts(tickers, prices_24h)
+    render_fomo_alerts(tickers, prices_24h, market_stats, news_profile, learning_profile)
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Rekomendasi Beli", "Semua Aset", "Micin/Meme", "Analisis Detail", "Tanya AI Advisor"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Rekomendasi Beli", "Semua Aset", "Micin/Meme", "Analisis Detail", "Scan Koin Lain", "Tanya AI Advisor"])
     with tab1:
         render_rekomendasi_list(all_results, "Rekomendasi Beli Hari Ini", max_items=20)
     with tab2:
@@ -3369,6 +3406,58 @@ def main():
         else:
             st.info("Belum ada data.")
     with tab5:
+        st.markdown("## 🔍 Scan Aset Indodax Secara Mandiri")
+        st.markdown("Pilih koin apa saja dari 500+ aset yang tersedia di Indodax untuk dianalisis indikator teknikal, prediksi ML, dan analisis confluence secara real-time.")
+        
+        # Ambil daftar semua koin berpasangan IDR
+        idr_pairs = sorted([pair.replace("_idr", "").upper() for pair in tickers.keys() if pair.endswith("_idr")])
+        
+        col_select, col_btn = st.columns([3, 1])
+        with col_select:
+            selected_sym = st.selectbox("Pilih Koin untuk Di-scan:", idr_pairs, index=idr_pairs.index("BTC") if "BTC" in idr_pairs else 0)
+        with col_btn:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            run_scan = st.button("Jalankan Analisis Cerdas", use_container_width=True, type="primary", key="btn_run_scan")
+            
+        if run_scan:
+            with st.spinner(f"Sedang menarik candle dan menganalisis koin {selected_sym}..."):
+                pair = f"{selected_sym.lower()}_idr"
+                if pair in tickers:
+                    info = tickers[pair]
+                    price = float(info["last"])
+                    high = float(info.get("high", price))
+                    low = float(info.get("low", price))
+                    vol_idr = float(info.get("vol_idr", 0))
+                    change = calculate_24h_change(price, pair, prices_24h)
+                    
+                    data = {
+                        "symbol": selected_sym,
+                        "pair": pair,
+                        "price": price,
+                        "high": high,
+                        "low": low,
+                        "vol_idr": vol_idr,
+                        "change": change
+                    }
+                    
+                    # Fetch candles
+                    candles = fetch_candles(pair)
+                    if not candles.empty:
+                        # Analyze
+                        res = analyze_coin_advanced(selected_sym, data, candles, market_stats)
+                        
+                        # Apply news and learning adjustments
+                        adj_results = apply_news_adjustments([res], news_profile)
+                        adj_results = apply_learning_adjustments(adj_results, learning_profile)
+                        scanned_res = adj_results[0]
+                        
+                        st.markdown("### 📊 Hasil Analisis Real-Time")
+                        render_rekomendasi_card(scanned_res, 888)
+                    else:
+                        st.error(f"Gagal mengambil data candle historis untuk {selected_sym}. Silakan coba lagi.")
+                else:
+                    st.error(f"Koin {selected_sym} tidak terdaftar di Indodax.")
+    with tab6:
         st.markdown("## Tanya AI Market Advisor")
         st.markdown(
             "Konsultasikan kondisi portofolio, analisis koin, atau tanyakan pergerakan market Indodax hari ini secara cerdas bersama asisten AI khusus Kripto Mania."
