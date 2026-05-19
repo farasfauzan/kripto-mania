@@ -119,8 +119,10 @@ def save_bot_state():
             "last_fomo_alert_time": _last_fomo_alert_time,
             "message_fingerprints": _message_fingerprints
         }
-        with open(STATE_FILE, "w") as f:
+        tmp_path = f"{STATE_FILE}.tmp"
+        with open(tmp_path, "w") as f:
             json.dump(data, f, indent=4)
+        os.replace(tmp_path, STATE_FILE)
     except Exception as e:
         log(f"Error saving bot state: {e}")
 
@@ -174,19 +176,29 @@ def record_bot_learning_signal(result, pair=None, source="bot"):
 # DATA FETCHING
 # =============================================================================
 def fetch_all_tickers():
-    """Satu fetch untuk semua data dari Indodax"""
+    """Satu fetch untuk semua data dari Indodax menggunakan summaries API"""
     try:
-        resp = requests.get("https://indodax.com/api/tickers", timeout=10)
-        data = resp.json().get("tickers", {})
+        resp = requests.get("https://indodax.com/api/summaries", timeout=10)
+        data = resp.json()
+        tickers = data.get("tickers", {})
+        prices_24h = data.get("prices_24h", {})
         all_coins = {}
-        for pair, info in data.items():
+        for pair, info in tickers.items():
             if not pair.endswith("_idr"):
                 continue
             symbol = pair.replace("_idr", "").upper()
+            price = float(info["last"])
+            pair_key = pair.replace("_", "")
+            ref_price = float((prices_24h or {}).get(pair_key, 0))
+            if ref_price > 0:
+                change = ((price - ref_price) / ref_price) * 100
+            else:
+                change = 0.0
+
             all_coins[symbol] = {
                 "symbol": symbol, "pair": pair,
-                "price": float(info["last"]),
-                "change": float(info.get("change", 0) or 0),
+                "price": price,
+                "change": round(change, 2),
                 "vol_idr": float(info.get("vol_idr", 0)),
                 "high": float(info.get("high", 0)),
                 "low": float(info.get("low", 0)),

@@ -170,10 +170,21 @@ def train_from_prices(price_items, now=None):
             continue
         entry = _as_float(sig.get("entry"), price)
         sig["last_price"] = price
-        sig["max_price"] = max(_as_float(sig.get("max_price"), entry), price)
-        sig["min_price"] = min(_as_float(sig.get("min_price"), entry), price)
-        sig["max_gain_pct"] = round((sig["max_price"] - entry) / entry * 100, 2) if entry > 0 else 0
-        sig["max_drawdown_pct"] = round((sig["min_price"] - entry) / entry * 100, 2) if entry > 0 else 0
+        
+        old_max = _as_float(sig.get("max_price"), entry)
+        old_min = _as_float(sig.get("min_price"), entry)
+        old_tp1_hit = sig.get("tp1_hit", False)
+
+        new_max = max(old_max, price)
+        new_min = min(old_min, price)
+
+        sig["max_price"] = new_max
+        sig["min_price"] = new_min
+        sig["max_gain_pct"] = round((new_max - entry) / entry * 100, 2) if entry > 0 else 0
+        sig["max_drawdown_pct"] = round((new_min - entry) / entry * 100, 2) if entry > 0 else 0
+
+        if new_max != old_max or new_min != old_min:
+            changed = True
 
         opened_at = _parse_iso_datetime(sig.get("opened_at")) or now
         age_hours = (now - opened_at).total_seconds() / 3600
@@ -181,8 +192,10 @@ def train_from_prices(price_items, now=None):
         tp1 = _as_float(sig.get("tp1"))
         target = _as_float(sig.get("target"))
 
-        if tp1 > 0 and price >= tp1:
+        if tp1 > 0 and price >= tp1 and not old_tp1_hit:
             sig["tp1_hit"] = True
+            changed = True
+            
         if target > 0 and price >= target:
             sig["status"] = "TARGET"
             sig["outcome"] = "WIN"
