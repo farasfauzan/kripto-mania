@@ -2175,8 +2175,8 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         entry_zone_high = price * 1.005
         entry_zone_label = "Koreksi" if range_pos > 70 else "Saat ini" if range_pos < 30 else "Netral"
 
-    # ATR based Dynamic TP/SL with Fallback
-    atr = compute_atr(candles)
+    # ATR based Dynamic TP/SL with Fallback (reuse ATR yang sudah dihitung untuk intel)
+    atr = atr_for_intel
     if atr and atr > 0 and atr < price * 0.25:
         stop_loss = price - (1.5 * atr)
         target = price + (2.0 * atr)
@@ -3123,24 +3123,37 @@ def render_footer():
 # MAIN APP
 # =============================================================================
 def main():
-    # --- AUTO REFRESH ---
-    # Refresh otomatis setiap 60 detik
-    st.markdown(
-        f"""
-        <meta http-equiv="refresh" content="60">
-        <div style="display:none">autorefresh</div>
-        """,
-        unsafe_allow_html=True,
-    )
-    
+    # --- AUTO REFRESH (toggleable) ---
+    # User bisa matikan saat lagi chat AI biar spinner tidak ke-reset.
+    if "auto_refresh_enabled" not in st.session_state:
+        st.session_state["auto_refresh_enabled"] = True
+
+    if st.session_state["auto_refresh_enabled"]:
+        st.markdown(
+            """
+            <meta http-equiv="refresh" content="60">
+            <div style="display:none">autorefresh</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     render_header()
-    
-    # --- REFRESH BUTTON & TIMER ---
+
+    # --- REFRESH BUTTON & TOGGLE ---
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        if st.button("Refresh Data Sekarang", use_container_width=True, type="primary"):
-            st.cache_data.clear()
-            st.rerun()
+        btn_cols = st.columns([2, 1])
+        with btn_cols[0]:
+            if st.button("Refresh Data Sekarang", use_container_width=True, type="primary"):
+                st.cache_data.clear()
+                st.rerun()
+        with btn_cols[1]:
+            current = st.session_state["auto_refresh_enabled"]
+            label = "Auto: ON" if current else "Auto: OFF"
+            if st.button(label, use_container_width=True, key="toggle_auto_refresh",
+                         help="Matikan saat lagi chat AI agar spinner tidak ke-reset tiap 60 detik"):
+                st.session_state["auto_refresh_enabled"] = not current
+                st.rerun()
     
     loading_placeholder = st.empty()
     loading_placeholder.markdown(loading_markup(), unsafe_allow_html=True)
@@ -3185,12 +3198,14 @@ def main():
         time_str = server_time.astimezone(WIB).strftime("%H:%M:%S WIB")
     else:
         time_str = datetime.now(WIB).strftime("%H:%M:%S WIB")
+    auto_state_text = "Auto-refresh tiap 60 detik" if st.session_state["auto_refresh_enabled"] else "Auto-refresh OFF"
+    auto_state_color = "#666" if st.session_state["auto_refresh_enabled"] else "#b45309"
     st.markdown(
         f"""<div style="display:flex;justify-content:center;margin-bottom:0.5rem">
             <div class="freshness-badge">
                 <span class="freshness-dot {freshness}"></span>
                 <span>{freshness_text} · {time_str}</span>
-                <span style="margin-left:8px;font-size:0.7rem;color:#666">Auto-refresh tiap 60 detik</span>
+                <span style="margin-left:8px;font-size:0.7rem;color:{auto_state_color}">{auto_state_text}</span>
             </div>
         </div>""",
         unsafe_allow_html=True,

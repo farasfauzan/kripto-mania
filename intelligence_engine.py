@@ -52,24 +52,26 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 def _find_swing_points(highs: pd.Series, lows: pd.Series, lookback: int = 3) -> tuple[list[int], list[int]]:
     """Cari indeks swing high & swing low menggunakan window simetris.
 
-    Sebuah candle dianggap swing high jika high-nya lebih tinggi dari
-    `lookback` candle di kiri & kanan. Swing low kebalikannya.
+    Sebuah candle dianggap swing high jika high-nya >= max dari `lookback` candle
+    di kiri & kanan. Swing low kebalikannya. Vectorised pakai rolling window
+    supaya skala linier untuk dataset besar.
     """
-    swing_highs: list[int] = []
-    swing_lows: list[int] = []
     n = len(highs)
     if n < (2 * lookback + 1):
-        return swing_highs, swing_lows
+        return [], []
+    win = 2 * lookback + 1
+    h_arr = highs.to_numpy(dtype=float)
+    l_arr = lows.to_numpy(dtype=float)
+    # rolling(win).max() menempatkan hasil di akhir window — kita ingin
+    # window terpusat pada index i, jadi shift -lookback.
+    rmax = pd.Series(h_arr).rolling(win, center=True).max().to_numpy()
+    rmin = pd.Series(l_arr).rolling(win, center=True).min().to_numpy()
+    swing_highs: list[int] = []
+    swing_lows: list[int] = []
     for i in range(lookback, n - lookback):
-        h = highs.iloc[i]
-        l = lows.iloc[i]
-        left_h = highs.iloc[i - lookback : i]
-        right_h = highs.iloc[i + 1 : i + 1 + lookback]
-        left_l = lows.iloc[i - lookback : i]
-        right_l = lows.iloc[i + 1 : i + 1 + lookback]
-        if h >= left_h.max() and h >= right_h.max():
+        if not math.isnan(rmax[i]) and h_arr[i] >= rmax[i]:
             swing_highs.append(i)
-        if l <= left_l.min() and l <= right_l.min():
+        if not math.isnan(rmin[i]) and l_arr[i] <= rmin[i]:
             swing_lows.append(i)
     return swing_highs, swing_lows
 
@@ -440,6 +442,9 @@ def compute_kelly_allocation(winrate_pct: float, avg_win_pct: float, avg_loss_pc
         ratio = avg_win / avg_loss
     if ratio <= 0:
         return default
+    # Cap ratio agar Kelly tidak meledak saat coin pernah pump ekstrem
+    # tapi winrate biasa-biasa saja (avg_max_gain bias ke high single trade).
+    ratio = min(ratio, 3.0)
     kelly = w - (1 - w) / ratio
     if kelly <= 0:
         return {"kelly_pct": 0.0, "kelly_label": "EDGE NEGATIF", "kelly_edge": round(kelly * 100, 2)}
@@ -517,8 +522,12 @@ def build_intelligence_bundle(candles: pd.DataFrame, price: float, atr_pct: floa
     # Risk adjustment via volatilitas
     risk_adj_score = compute_risk_adjusted_score(50 + intel_adjust, atr_pct)
     intel_adjust -= risk_adj_score.get("vol_penalty", 0)
-    if risk_adj_score.get("vol_label") in {"tinggi", "ekstrem"}:
-        notes.append(f"Volatilitas {risk_adj_score['vol_label']} (-{risk_adj_score['vol_penalty']})")
+    vol_label = risk_adj_score.get("vol_label")
+    vol_pen = risk_adj_score.get("vol_penalty", 0)
+    if vol_label in {"tinggi", "ekstrem"}:
+        notes.append(f"Volatilitas {vol_label} (-{vol_pen})")
+    elif vol_label == "sangat sepi" and vol_pen:
+        notes.append(f"Likuiditas tipis (-{vol_pen})")
 
     # Confidence label dari magnitudo agregat
     abs_adj = abs(intel_adjust)
