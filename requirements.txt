@@ -1,4 +1,12 @@
 streamlit>=1.35,<2
 requests>=2.31,<3
 pandas>=2.2,<3
+numpy>=1.26,<3
 openai>=1.35,<2
+
+# Smart-upgrade pack (optional but auto-detected at runtime; web tetap jalan kalau gagal install)
+pandas-ta-classic>=0.4.47,<0.5 # 130+ indikator: Ichimoku, Squeeze, OBV, MFI, KDJ (import name: pandas_ta_classic)
+tradingview-ta>=3.3.0,<4       # second-opinion rating dari TradingView (free, no key)
+quantstats>=0.0.62,<0.1        # Sharpe/drawdown/equity curve dari signal journal
+ipython>=8.18.1,<9             # Dependency required for quantstats to import reports module
+

@@ -17,6 +17,7 @@ from intelligence_engine import (
     build_two_steps_ahead,
 )
 import journal_store
+import smart_engine
 
 # =============================================================================
 # CONFIG & CONSTANTS
@@ -2043,6 +2044,9 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     atr_pct = (atr_for_intel / price * 100) if (atr_for_intel and price > 0) else 3.0
     intel = build_intelligence_bundle(candles, price, atr_pct=atr_pct)
 
+    # Smart engine (pandas-ta: Ichimoku, Squeeze, OBV, MFI). No-op kalau pandas-ta belum install.
+    smart = smart_engine.build_smart_indicators_bundle(candles)
+
     # --- SCORING (UPGRADED) ---
     liquidity_bonus = min(16, vol_idr / 1_000_000_000)
     fomo_penalty = 9 if range_pos > 88 and change > 8 else 0
@@ -2082,6 +2086,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         + bt_adj
         + mtf["mtf_adjustment"]
         + intel.get("intel_adjustment", 0)
+        + smart.get("smart_adjustment", 0)
         - fomo_penalty
         - micin_penalty
         + mode_rules.get("score_adjustment", 0)
@@ -2269,6 +2274,14 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         "fib_500": intel.get("fib", {}).get("fib_500"),
         "swing_quality": intel.get("swings", {}).get("swing_quality", "DATA KURANG"),
         "vol_label_ext": intel.get("vol", {}).get("vol_label", "normal"),
+        # Smart engine layer (pandas-ta)
+        "smart_adjustment": smart.get("smart_adjustment", 0),
+        "smart_notes": smart.get("smart_notes", []),
+        "ichimoku_signal": smart.get("ichimoku", {}).get("ichimoku_signal", "NO DATA"),
+        "squeeze": smart.get("squeeze", {}).get("squeeze", "NO DATA"),
+        "obv_signal": smart.get("obv", {}).get("obv_signal", "NO DATA"),
+        "mfi": smart.get("mfi", {}).get("mfi", 50.0),
+        "mfi_signal": smart.get("mfi", {}).get("mfi_signal", "NEUTRAL"),
     }
 
 
@@ -3373,6 +3386,125 @@ def render_portfolio_tab(tickers, prices_24h, all_results):
             st.dataframe(hist_df, use_container_width=True, hide_index=True)
 
 
+# =============================================================================
+# STATISTIK BOT TAB (quantstats metrics dari signal journal)
+# =============================================================================
+def render_stats_tab():
+    """Tab Statistik Bot: Sharpe, Sortino, max DD, equity curve dari signal journal."""
+    st.markdown("## Statistik Performa Bot")
+    st.markdown(
+        "Metrik performance dihitung dari `signal_journal` (closed signals). "
+        "Dipakai untuk evaluasi apakah strategi web ini benar-benar profitable atau cuma keberuntungan."
+    )
+
+    journal = load_learning_journal()
+    metrics = smart_engine.compute_journal_metrics(journal)
+
+    if metrics["trades"] == 0:
+        st.info(
+            "Belum ada sinyal yang sudah closed. Statistik akan muncul setelah ada beberapa "
+            "trade yang TP/SL/Expired. Sabar — ini bagian dari proses learning engine."
+        )
+        return
+
+    # KPI cards
+    cols = st.columns(4)
+    with cols[0]:
+        st.markdown(
+            f"""<div class="stat-card"><div class="stat-value">{metrics['trades']}</div>
+            <div class="stat-label">Total trades</div></div>""",
+            unsafe_allow_html=True,
+        )
+    with cols[1]:
+        wr = metrics.get("winrate")
+        wr_color = "#047857" if wr and wr >= 55 else "#b45309" if wr and wr >= 45 else "#b91c1c"
+        wr_text = f"{wr:.1f}%" if wr is not None else "—"
+        st.markdown(
+            f"""<div class="stat-card"><div class="stat-value" style="color:{wr_color}">{wr_text}</div>
+            <div class="stat-label">Winrate</div></div>""",
+            unsafe_allow_html=True,
+        )
+    with cols[2]:
+        avg = metrics.get("avg_return_pct", 0)
+        avg_color = "#047857" if avg > 0 else "#b91c1c"
+        st.markdown(
+            f"""<div class="stat-card"><div class="stat-value" style="color:{avg_color}">{avg:+.2f}%</div>
+            <div class="stat-label">Avg return/trade</div></div>""",
+            unsafe_allow_html=True,
+        )
+    with cols[3]:
+        pf = metrics.get("profit_factor")
+        pf_text = f"{pf:.2f}" if pf is not None else "—"
+        pf_color = "#047857" if pf and pf >= 1.5 else "#b45309" if pf and pf >= 1.0 else "#b91c1c"
+        st.markdown(
+            f"""<div class="stat-card"><div class="stat-value" style="color:{pf_color}">{pf_text}</div>
+            <div class="stat-label">Profit factor</div></div>""",
+            unsafe_allow_html=True,
+        )
+
+    # Risk metrics row
+    cols2 = st.columns(4)
+    with cols2[0]:
+        sh = metrics.get("sharpe")
+        sh_text = f"{sh:.2f}" if sh is not None else "—"
+        sh_color = "#047857" if sh and sh >= 1.0 else "#b45309" if sh and sh >= 0 else "#b91c1c"
+        st.markdown(
+            f"""<div class="stat-card"><div class="stat-value" style="color:{sh_color}">{sh_text}</div>
+            <div class="stat-label">Sharpe ratio</div></div>""",
+            unsafe_allow_html=True,
+        )
+    with cols2[1]:
+        so = metrics.get("sortino")
+        so_text = f"{so:.2f}" if so is not None else "—"
+        so_color = "#047857" if so and so >= 1.0 else "#b45309" if so and so >= 0 else "#b91c1c"
+        st.markdown(
+            f"""<div class="stat-card"><div class="stat-value" style="color:{so_color}">{so_text}</div>
+            <div class="stat-label">Sortino ratio</div></div>""",
+            unsafe_allow_html=True,
+        )
+    with cols2[2]:
+        dd = metrics.get("max_drawdown_pct")
+        dd_text = f"{dd:.2f}%" if dd is not None else "—"
+        st.markdown(
+            f"""<div class="stat-card"><div class="stat-value" style="color:#b91c1c">{dd_text}</div>
+            <div class="stat-label">Max drawdown</div></div>""",
+            unsafe_allow_html=True,
+        )
+    with cols2[3]:
+        best = metrics.get("best_trade_pct", 0)
+        worst = metrics.get("worst_trade_pct", 0)
+        st.markdown(
+            f"""<div class="stat-card">
+            <div class="stat-value" style="color:#047857;font-size:0.95rem">{best:+.1f}% / <span style="color:#b91c1c">{worst:+.1f}%</span></div>
+            <div class="stat-label">Best / worst trade</div></div>""",
+            unsafe_allow_html=True,
+        )
+
+    # Equity curve
+    eq = metrics.get("equity_curve", [])
+    if len(eq) >= 2:
+        st.markdown("### Equity curve")
+        st.caption("Asumsi 1 unit modal di-compounding setiap trade. Datar = belum profit, naik kanan = healthy.")
+        df_eq = pd.DataFrame({"trade": list(range(len(eq))), "equity": eq})
+        st.line_chart(df_eq, x="trade", y="equity", use_container_width=True, height=280)
+
+    # Library status
+    avail = smart_engine.is_available()
+    st.markdown("### Diagnostik library")
+    diag_cols = st.columns(3)
+    for i, (name, ok) in enumerate(avail.items()):
+        with diag_cols[i]:
+            status_icon = "✅" if ok else "⚪"
+            status_text = "Aktif" if ok else "Belum install"
+            color = "#047857" if ok else "#94a3b8"
+            st.markdown(
+                f"""<div class="stat-card">
+                <div class="stat-value" style="color:{color};font-size:1rem">{status_icon} {status_text}</div>
+                <div class="stat-label">{name}</div></div>""",
+                unsafe_allow_html=True,
+            )
+
+
 def render_donation():
     with st.expander("💖 Dukung Project Ini (Donasi)"):
         st.markdown("Bantu saya terus mengembangkan tools ini:")
@@ -3501,14 +3633,16 @@ def main():
     render_learning_panel(learning_profile)
     render_fomo_alerts(tickers, prices_24h, market_stats, news_profile, learning_profile)
 
-    tab1, tab_pf, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "Rekomendasi Beli", "Portofolio Saya", "Semua Aset", "Micin/Meme",
-        "Analisis Detail", "Scan Koin Lain", "Tanya AI Advisor",
+    tab1, tab_pf, tab_st, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "Rekomendasi Beli", "Portofolio Saya", "Statistik Bot",
+        "Semua Aset", "Micin/Meme", "Analisis Detail", "Scan Koin Lain", "Tanya AI Advisor",
     ])
     with tab1:
         render_rekomendasi_list(all_results, "Rekomendasi Beli Hari Ini", max_items=20)
     with tab_pf:
         render_portfolio_tab(tickers, prices_24h, all_results)
+    with tab_st:
+        render_stats_tab()
     with tab2:
         render_rekomendasi_list(main_results, "Main Assets", max_items=15)
     with tab3:
