@@ -2140,51 +2140,40 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     elif verdict == "TUNGGU" and is_entry_action(action):
         action, emoji = "WATCH", "⚪"
 
-    # --- ENTRY ZONE & TWO STEPS AHEAD ---
-    # Entry Zone: harga ideal untuk entry berdasarkan support/resistance
-    entry_zone_low = price * 0.97  # -3% dari harga saat ini
-    entry_zone_high = price * 1.01  # +1% dari harga saat ini
-    entry_zone_label = "⬇️ Koreksi" if range_pos > 70 else "⬆️ Saat ini" if range_pos < 30 else "⚖️ Netral"
-    
-    # Support & Resistance levels
-    support_s1 = price * 0.95  # -5%
-    support_s2 = price * 0.90  # -10%
-    resistance_r1 = price * 1.05  # +5%
-    resistance_r2 = price * 1.10  # +10%
-    
-    # Two Steps Ahead scenarios
-    if is_entry_action(action):
-        # Skenario bullish
-        step1_action = "🚀 Naik ke R1"
-        step1_price = resistance_r1
-        step1_gain = 5.0
-        step2_action = "🚀🚀 Tembus R1, lanjut ke R2"
-        step2_price = resistance_r2
-        step2_gain = 10.0
-        # Skenario bearish (jika gagal)
-        fail_action = "📉 Gagal, turun ke S1"
-        fail_price = support_s1
-        fail_loss = 5.0
-    elif "WATCH" in action:
-        step1_action = "⏳ Pantau support S1"
-        step1_price = support_s1
-        step1_gain = -5.0
-        step2_action = "⏳ Jika S1 bertahan, target R1"
-        step2_price = resistance_r1
-        step2_gain = 5.0
-        fail_action = "📉 Jika S1 jebol, turun ke S2"
-        fail_price = support_s2
-        fail_loss = 10.0
+    # --- ENTRY ZONE & TWO STEPS AHEAD (adaptive: pakai swing S/R + ATR riil) ---
+    # Two Steps Ahead pakai swing high/low riil dari intel; fallback otomatis ke ATR jika swing kosong
+    atr_for_steps = atr_for_intel
+    steps = build_two_steps_ahead(price, action, intel.get("swings", {}), atr_for_steps)
+    step1_action = steps["step1_action"]
+    step1_price = steps["step1_price"]
+    step1_gain = steps["step1_gain"]
+    step2_action = steps["step2_action"]
+    step2_price = steps["step2_price"]
+    step2_gain = steps["step2_gain"]
+    fail_action = steps["fail_action"]
+    fail_price = steps["fail_price"]
+    fail_loss = steps["fail_loss"]
+    support_s1 = steps["support_s1"]
+    support_s2 = steps["support_s2"]
+    resistance_r1 = steps["resistance_r1"]
+    resistance_r2 = steps["resistance_r2"]
+
+    # Entry Zone: dari Fibonacci golden zone bila tersedia, fallback ke S1 zone
+    fib_data = intel.get("fib", {})
+    fib_zone = fib_data.get("fib_zone", "NO DATA")
+    fib_500 = fib_data.get("fib_500")
+    fib_618 = fib_data.get("fib_618")
+    if fib_500 and fib_618 and fib_500 > 0 and fib_618 > 0 and fib_618 < price:
+        entry_zone_low = fib_618
+        entry_zone_high = min(price * 1.005, fib_500)
+        if entry_zone_high <= entry_zone_low:
+            entry_zone_high = entry_zone_low * 1.01
+        entry_zone_label = f"Golden zone {fib_zone}" if "GOLDEN" in fib_zone else "Tarik mundur ke 0.618"
     else:
-        step1_action = "⛔ Hindari dulu"
-        step1_price = 0
-        step1_gain = 0
-        step2_action = "⛔ Pantau dari jauh"
-        step2_price = 0
-        step2_gain = 0
-        fail_action = "⛔ Tidak direkomendasikan"
-        fail_price = 0
-        fail_loss = 0
+        # fallback dari swing support kalau tidak ada fib valid
+        entry_zone_low = support_s1 if support_s1 > 0 else price * 0.97
+        entry_zone_high = price * 1.005
+        entry_zone_label = "Koreksi" if range_pos > 70 else "Saat ini" if range_pos < 30 else "Netral"
 
     # ATR based Dynamic TP/SL with Fallback
     atr = compute_atr(candles)
@@ -2262,6 +2251,23 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         "confluence_label": confluence["confluence_label"],
         "confluence_strength": confluence["confluence_strength"],
         "confluence_checks": confluence["checks"],
+        # Intelligence layer
+        "intel_adjustment": intel.get("intel_adjustment", 0),
+        "intel_confidence": intel.get("intel_confidence", "LEMAH"),
+        "intel_notes": intel.get("intel_notes", []),
+        "divergence": intel.get("divergence", {}).get("divergence", "NONE"),
+        "candle_pattern": intel.get("candle", {}).get("candle_pattern", "NONE"),
+        "candle_bias": intel.get("candle", {}).get("candle_bias", "neutral"),
+        "regime": intel.get("regime", {}).get("regime", "MIXED"),
+        "choppiness": intel.get("regime", {}).get("choppiness", 50.0),
+        "vwap": intel.get("vwap", {}).get("vwap"),
+        "vwap_bias": intel.get("vwap", {}).get("vwap_bias", "neutral"),
+        "vwap_distance_pct": intel.get("vwap", {}).get("vwap_distance_pct", 0.0),
+        "fib_zone": intel.get("fib", {}).get("fib_zone", "NO DATA"),
+        "fib_618": intel.get("fib", {}).get("fib_618"),
+        "fib_500": intel.get("fib", {}).get("fib_500"),
+        "swing_quality": intel.get("swings", {}).get("swing_quality", "DATA KURANG"),
+        "vol_label_ext": intel.get("vol", {}).get("vol_label", "normal"),
     }
 
 
@@ -2404,6 +2410,8 @@ def apply_learning_adjustments(results, profile):
             item["score"] = int(clamp(original_score + adjustment, 0, 100))
             if item.get("allocation_pct", 0) > 0:
                 item["allocation_pct"] = round(clamp(item["allocation_pct"] * (1 + adjustment / 25), 0, 10), 1)
+        # Kelly Criterion: blend allocation dengan winrate historis (jika cukup riwayat)
+        apply_kelly_to_allocation(item, profile)
     return results
 
 
@@ -2837,7 +2845,36 @@ def render_rekomendasi_card(item, idx):
     news_delta = f"{news_adjustment:+d}" if news_adjustment else "0"
     news_headline = item.get("news_headline") or "Tidak ada headline spesifik coin"
 
+    # Intelligence layer fields
+    intel_adjustment = int(item.get("intel_adjustment", 0) or 0)
+    intel_confidence = item.get("intel_confidence", "LEMAH")
+    intel_color = "#047857" if intel_adjustment > 0 else "#b91c1c" if intel_adjustment < 0 else "#64748b"
+    intel_delta = f"{intel_adjustment:+d}" if intel_adjustment else "0"
+    intel_notes = item.get("intel_notes", []) or []
+    intel_notes_text = " · ".join(intel_notes) if intel_notes else "Belum ada catatan kuat"
+    divergence_label = item.get("divergence", "NONE")
+    divergence_color = "#047857" if divergence_label == "BULLISH" else "#b91c1c" if divergence_label == "BEARISH" else "#64748b"
+    candle_pattern = clean_ui_text(item.get("candle_pattern", "NONE"))
+    candle_bias = item.get("candle_bias", "neutral")
+    candle_color = "#047857" if candle_bias == "bullish" else "#b91c1c" if candle_bias == "bearish" else "#64748b"
+    regime_label = item.get("regime", "MIXED")
+    regime_color = "#047857" if "TRENDING" in regime_label else "#b45309" if regime_label == "RANGING" else "#64748b"
+    vwap_bias = item.get("vwap_bias", "neutral")
+    vwap_dist = float(item.get("vwap_distance_pct", 0) or 0)
+    vwap_label = f"{vwap_bias.upper()} {vwap_dist:+.1f}%" if vwap_bias != "neutral" else "DI VWAP"
+    vwap_color = "#b45309" if vwap_bias == "above" else "#047857" if vwap_bias == "below" else "#64748b"
+    fib_zone = item.get("fib_zone", "NO DATA")
+    fib_color = "#047857" if "GOLDEN" in str(fib_zone) or "DEEP" in str(fib_zone) else "#b91c1c" if "DI HIGH" in str(fib_zone) else "#64748b"
+    kelly_pct = item.get("kelly_pct")
+    kelly_label = item.get("kelly_label", "BUTUH DATA")
+    if kelly_pct is not None:
+        kelly_value = f"{kelly_pct:.1f}%"
+    else:
+        kelly_value = "—"
+    kelly_color = "#047857" if (kelly_pct or 0) >= 3 else "#b45309" if (kelly_pct or 0) >= 1 else "#64748b"
+
     check_rows = ""
+
     for label, ok in confluence_checks.items():
         row_class = "check-ok" if ok else "check-no"
         status = "Valid" if ok else "Belum"
@@ -2882,6 +2919,27 @@ def render_rekomendasi_card(item, idx):
                 <div class="metric-chip"><span class="metric-label">TP2</span><span class="metric-value" style="color:#047857">{format_price(item['tp2'])}</span></div>
                 <div class="metric-chip"><span class="metric-label">Target</span><span class="metric-value" style="color:#047857">{format_price(item['target'])}</span></div>
                 <div class="metric-chip"><span class="metric-label">Stop Loss</span><span class="metric-value" style="color:#b91c1c">{format_price(item['stop_loss'])}</span></div>
+            </div>
+
+            <div class="metrics-grid">
+                <div class="metric-chip"><span class="metric-label">Smart adj</span><span class="metric-value" style="color:{intel_color}">{intel_delta} · {intel_confidence}</span></div>
+                <div class="metric-chip"><span class="metric-label">Divergence</span><span class="metric-value" style="color:{divergence_color}">{divergence_label}</span></div>
+                <div class="metric-chip"><span class="metric-label">Candle</span><span class="metric-value" style="color:{candle_color}">{candle_pattern or 'NONE'}</span></div>
+                <div class="metric-chip"><span class="metric-label">Regime</span><span class="metric-value" style="color:{regime_color}">{regime_label}</span></div>
+                <div class="metric-chip"><span class="metric-label">VWAP</span><span class="metric-value" style="color:{vwap_color}">{vwap_label}</span></div>
+                <div class="metric-chip"><span class="metric-label">Fib zone</span><span class="metric-value" style="color:{fib_color}">{fib_zone}</span></div>
+                <div class="metric-chip"><span class="metric-label">Kelly</span><span class="metric-value" style="color:{kelly_color}">{kelly_value} · {kelly_label}</span></div>
+            </div>
+
+            <div class="card-section">
+                <div class="section-row">
+                    <span class="section-label">Smart insight</span>
+                    <span class="section-strong" style="color:{intel_color}">Confidence {intel_confidence}</span>
+                </div>
+                <div class="section-row" style="margin-top:0.35rem">
+                    <span class="section-label">Catatan</span>
+                    <span class="section-strong" style="color:#334155;text-align:right;flex:1">{intel_notes_text}</span>
+                </div>
             </div>
 
             <div class="card-section">
@@ -3313,7 +3371,7 @@ def main():
                                 "Berikan analisis teknikal/fundamental singkat, ingatkan manajemen risiko (TP/SL/Alokasi), "
                                 "dan jawablah dengan bahasa Indonesia yang santun, profesional, serta menyemangati. Selalu ingatkan bahwa ini bukan saran keuangan mutlak (DYOR)."
                             )
-                            
+                             
                             # Siapkan messages payload
                             api_messages = [{"role": "system", "content": system_prompt}]
                             # Sertakan history (batasi 10 pesan terakhir agar hemat token)
