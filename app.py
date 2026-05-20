@@ -11,6 +11,11 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from news_engine import apply_news_adjustments, build_news_profile
+from intelligence_engine import (
+    apply_kelly_to_allocation,
+    build_intelligence_bundle,
+    build_two_steps_ahead,
+)
 
 # =============================================================================
 # CONFIG & CONSTANTS
@@ -2032,6 +2037,11 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     confluence = compute_confluence_signal(candles)
     mtf = compute_multi_timeframe_confirmation(candles)
 
+    # Intelligence layer (swing S/R, Fib, divergence, candle patterns, regime, VWAP)
+    atr_for_intel = compute_atr(candles)
+    atr_pct = (atr_for_intel / price * 100) if (atr_for_intel and price > 0) else 3.0
+    intel = build_intelligence_bundle(candles, price, atr_pct=atr_pct)
+
     # --- SCORING (UPGRADED) ---
     liquidity_bonus = min(16, vol_idr / 1_000_000_000)
     fomo_penalty = 9 if range_pos > 88 and change > 8 else 0
@@ -2070,6 +2080,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         + ml_adj
         + bt_adj
         + mtf["mtf_adjustment"]
+        + intel.get("intel_adjustment", 0)
         - fomo_penalty
         - micin_penalty
         + mode_rules.get("score_adjustment", 0)
@@ -3242,10 +3253,12 @@ def main():
                     selected_prompt = qp
         
         # Ambil API key
-        api_key = get_secret("DEEPSEEK_API_KEY", "")
+        gemini_api_key = get_secret("GEMINI_API_KEY", "")
+        deepseek_api_key = get_secret("DEEPSEEK_API_KEY", "")
+        api_key = gemini_api_key or deepseek_api_key
         
         if not api_key:
-            st.warning("⚠️ **DEEPSEEK_API_KEY tidak ditemukan.** Pastikan Anda telah memasang API Key di Hugging Face Space Secrets.")
+            st.warning("⚠️ **API Key tidak ditemukan.** Pastikan Anda telah memasang GEMINI_API_KEY atau DEEPSEEK_API_KEY di secrets Anda.")
         else:
             # Setup session state untuk chat history
             if "messages" not in st.session_state:
@@ -3265,7 +3278,7 @@ def main():
                     st.markdown(prompt)
                 st.session_state.messages.append({"role": "user", "content": prompt})
                 
-                # Panggil DeepSeek API dengan context market
+                # Panggil AI API dengan context market
                 with st.chat_message("assistant"):
                     with st.spinner("AI sedang berpikir..."):
                         try:
@@ -3283,6 +3296,15 @@ def main():
                             for c in top_picks:
                                 context_str += f"  * {c['symbol']}: Harga {format_price(c['price'])} ({c['change']:+.2f}%), Score: {c['score']}/100, Rekomendasi: {c['action']}, Target: {format_price(c['target'])}, SL: {format_price(c['stop_loss'])}\n"
                             
+                            # Tambahkan konteks sentimen berita dan pembelajaran (learning)
+                            if news_profile:
+                                context_str += f"- Sentimen Berita Global: {news_profile.get('global_label', 'NEUTRAL')} (Score: {news_profile.get('global_score', 0.0)})\n"
+                            if learning_profile:
+                                context_str += f"- Performa Sinyal Historis: Winrate {learning_profile.get('winrate', 0.0)}% dari {learning_profile.get('closed', 0)} transaksi selesai.\n"
+                                best_syms = learning_profile.get("best_symbols", [])
+                                if best_syms:
+                                    context_str += f"  * Koin Performa Terbaik: " + ", ".join([f"{sym} ({stats['winrate']:.0f}% WR)" for sym, stats in best_syms]) + "\n"
+                            
                             # Buat system prompt khusus
                             system_prompt = (
                                 "Anda adalah Kripto Mania AI, asisten trading premium berbahasa Indonesia yang ahli, ramah, dan jujur. "
@@ -3299,9 +3321,15 @@ def main():
                                 api_messages.append({"role": msg["role"], "content": msg["content"]})
                                 
                             from openai import OpenAI
-                            client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+                            if gemini_api_key:
+                                client = OpenAI(api_key=gemini_api_key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+                                model_name = "gemini-2.5-flash"
+                            else:
+                                client = OpenAI(api_key=deepseek_api_key, base_url="https://api.deepseek.com")
+                                model_name = "deepseek-chat"
+                                
                             response = client.chat.completions.create(
-                                model="deepseek-chat",
+                                model=model_name,
                                 messages=api_messages,
                                 temperature=0.7,
                                 max_tokens=1000

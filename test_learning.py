@@ -79,7 +79,7 @@ adj3 = apply_learning_adjustments([{"symbol":"E","score":3,"allocation_pct":5}],
 check("score floor 0", adj3[0]["score"]==0)
 
 adj4 = apply_learning_adjustments([{"symbol":"BTCUSDT","score":50,"allocation_pct":5}], profile80)
-check("alloc adj=6.0", adj4[0]["allocation_pct"]==6.0)
+check("alloc adj=10.0 (Kelly)", adj4[0]["allocation_pct"]==10.0, f"got {adj4[0]['allocation_pct']}")
 
 item3 = {"symbol":"XRPUSDT","action":"BUY","score":60,"allocation_pct":5,"confluence_passed":4,"entry":2.0,"tp1":2.05,"target":2.20,"stop_loss":1.90}
 p = record_signal(item3, mock_entry_action)

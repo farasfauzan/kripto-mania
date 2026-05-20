@@ -114,6 +114,32 @@ def build_profile(journal=None):
     }
 
 
+def calculate_kelly_allocation(winrate_pct, avg_gain_pct, avg_loss_pct, base_alloc=5.0, max_fraction=0.10):
+    """
+    Menghitung alokasi modal optimal berdasarkan Kelly Criterion.
+    winrate_pct: winrate historis (%)
+    avg_gain_pct: gain rata-rata koin tersebut (%)
+    avg_loss_pct: loss rata-rata koin tersebut (%)
+    base_alloc: alokasi dasar jika data kurang (default 5.0%)
+    max_fraction: alokasi maksimal per koin (default 10.0%)
+    """
+    if winrate_pct <= 0 or avg_loss_pct <= 0:
+        return base_alloc
+    
+    p = winrate_pct / 100.0
+    b = (avg_gain_pct / avg_loss_pct) if avg_gain_pct > 0 else 1.0
+    
+    # Kelly formula
+    kelly_f = (p * b - (1 - p)) / b
+    
+    # Amankan dengan fractional Kelly (50% dari Kelly penuh untuk meminimalkan volatilitas saldo)
+    fractional_kelly = kelly_f * 0.5
+    
+    # Konversi ke persentase dan batasi di rentang aman [1.0%, max_fraction * 100]
+    allocation = max(1.0, min(max_fraction * 100, fractional_kelly * 100))
+    return round(allocation, 1)
+
+
 def apply_learning_adjustments(items, profile=None):
     profile = profile or build_profile()
     by_symbol = profile.get("by_symbol", {})
@@ -122,30 +148,56 @@ def apply_learning_adjustments(items, profile=None):
         closed = stats.get("closed", 0)
         adjustment = 0
         note = "Mengumpulkan data"
+        
+        # Inisialisasi variabel Kelly
+        winrate = 0.0
+        avg_gain = 3.0
+        avg_loss = 3.5
+        kelly_f = 0.0
+        
         if closed >= 3:
-            winrate = stats.get("winrate", 0)
+            winrate = stats.get("winrate", 0.0)
+            avg_gain = stats.get("avg_max_gain", 3.0)
+            p = winrate / 100.0
+            b = (avg_gain / avg_loss) if avg_gain > 0 else 1.0
+            kelly_f = (p * b - (1 - p)) / b if b > 0 else 0.0
+            
             if winrate >= 70:
                 adjustment = 5
-                note = f"Riwayat kuat ({winrate:.0f}% WR)"
+                note = f"Riwayat kuat ({winrate:.0f}% WR, Kelly: {kelly_f*100:.1f}%)"
             elif winrate >= 58:
                 adjustment = 2
-                note = f"Riwayat positif ({winrate:.0f}% WR)"
+                note = f"Riwayat positif ({winrate:.0f}% WR, Kelly: {kelly_f*100:.1f}%)"
             elif winrate <= 38:
                 adjustment = -6
-                note = f"Riwayat lemah ({winrate:.0f}% WR)"
+                note = f"Riwayat lemah ({winrate:.0f}% WR, Kelly: Batal)"
             elif winrate <= 48:
                 adjustment = -3
-                note = f"Riwayat hati-hati ({winrate:.0f}% WR)"
+                note = f"Riwayat hati-hati ({winrate:.0f}% WR, Kelly: Kurangi)"
             else:
-                note = f"Riwayat netral ({winrate:.0f}% WR)"
+                note = f"Riwayat netral ({winrate:.0f}% WR, Kelly: {kelly_f*100:.1f}%)"
 
         item["learning_adjustment"] = adjustment
         item["learning_note"] = note
         item["learning_trades"] = closed
+        
+        # Terapkan penyesuaian skor
         if adjustment:
             item["score"] = int(max(0, min(100, int(item.get("score", 0)) + adjustment)))
-            alloc_key = "allocation_pct" if "allocation_pct" in item else "alloc_pct" if "alloc_pct" in item else None
-            if alloc_key and _as_float(item.get(alloc_key)) > 0:
+            
+        # Terapkan alokasi menggunakan Kelly Criterion jika data mencukupi
+        alloc_key = "allocation_pct" if "allocation_pct" in item else "alloc_pct" if "alloc_pct" in item else None
+        if alloc_key and _as_float(item.get(alloc_key)) > 0:
+            if closed >= 3:
+                kelly_val = calculate_kelly_allocation(winrate, avg_gain, avg_loss, base_alloc=_as_float(item.get(alloc_key)))
+                if winrate <= 38:
+                    item[alloc_key] = 0.0
+                elif winrate <= 48:
+                    item[alloc_key] = round(max(0.5, min(3.0, kelly_val)), 1)
+                else:
+                    item[alloc_key] = kelly_val
+            elif adjustment:
+                # Fallback ke multiplier lama jika closed < 3 tetapi ada adjustment dari tempat lain
                 item[alloc_key] = round(max(0, min(10, _as_float(item[alloc_key]) * (1 + adjustment / 25))), 1)
     return items
 

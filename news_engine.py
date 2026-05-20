@@ -259,6 +259,68 @@ def _parse_x_datetime(value):
         return None
 
 
+def analyze_batch_sentiment_gemini(articles_list, api_key):
+    if not articles_list:
+        return {}
+    import json
+    from openai import OpenAI
+
+    items_to_analyze = articles_list[:25]
+    news_text = ""
+    for idx, article in enumerate(items_to_analyze):
+        title = article.get("title", "")
+        summary = article.get("summary", "")
+        news_text += f"Index: {idx}\nTitle: {title}\nSummary: {summary}\n---\n"
+
+    prompt = f"""
+    You are an expert crypto market analyst. Analyze the sentiment of each of the following news articles.
+    For each article (by Index), output a sentiment score between -5.0 (extremely bearish) and +5.0 (extremely bullish).
+    Also extract up to 3 relevant keyword hits that explain this sentiment.
+
+    Input Articles:
+    {news_text}
+
+    Output EXACTLY a JSON array of objects with this format (do not include markdown block formatting, just the raw JSON):
+    [
+        {{
+            "index": <int>,
+            "sentiment_score": <float>,
+            "keywords": ["word1", "word2"]
+        }},
+        ...
+    ]
+    """
+
+    try:
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
+        response = client.chat.completions.create(
+            model="gemini-2.5-flash",
+            messages=[{"role": "user", "content": prompt}],
+            timeout=15
+        )
+        content = response.choices[0].message.content
+        if "```" in content:
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        results = json.loads(content.strip())
+        
+        sentiment_map = {}
+        for item in results:
+            idx = item.get("index")
+            if idx is not None:
+                sentiment_map[int(idx)] = {
+                    "score": float(item.get("sentiment_score", 0.0)),
+                    "keywords": item.get("keywords", [])
+                }
+        return sentiment_map
+    except Exception:
+        return {}
+
+
 def build_news_profile(symbols=None):
     articles = fetch_news_articles(symbols=symbols)
     if not articles:
@@ -271,7 +333,17 @@ def build_news_profile(symbols=None):
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    scored = [a for a in articles if a.get("score")]
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        sentiment_map = analyze_batch_sentiment_gemini(articles, gemini_key)
+        for idx, item in sentiment_map.items():
+            if idx < len(articles):
+                articles[idx]["score"] = item["score"]
+                articles[idx]["label"] = _label(item["score"])
+                if item.get("keywords"):
+                    articles[idx]["keywords"] = list(set(articles[idx].get("keywords", []) + item["keywords"]))
+
+    scored = [a for a in articles if a.get("score") is not None]
     global_score = round(sum(a["score"] for a in scored) / max(1, len(scored)), 2)
     by_symbol = {}
     for article in articles:
