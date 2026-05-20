@@ -580,7 +580,10 @@ def _knn_forecast_horizon(candles: pd.DataFrame, horizon_bars: int, threshold_pc
         "confidence": "rendah",
         "n_patterns": 0,
     }
-    if candles is None or candles.empty or len(candles) < 80:
+    # Adaptive minimum: butuh data untuk horizon shift + rolling window + train sample
+    # Rolling 24 + horizon shift + 60 train samples = baseline minimum
+    min_required = max(80, horizon_bars + 60)
+    if candles is None or candles.empty or len(candles) < min_required:
         return default
     try:
         close = candles["close"].astype(float)

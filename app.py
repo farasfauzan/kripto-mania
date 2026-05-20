@@ -3207,9 +3207,18 @@ def render_pilot_tab(market_stats, all_results, news_profile, learning_profile, 
 
     cache = st.session_state["pilot_cache"]
     age_min = (time.time() - cache.get("generated_at", 0)) / 60
+    cached_text = cache.get("playbook") or ""
+    # Anggap cache invalid kalau isinya error message (italic markdown atau kata kunci error)
+    is_error_cache = (
+        cached_text.startswith("_")
+        or "Gagal hubungi" in cached_text
+        or "RateLimitError" in cached_text
+        or "quota" in cached_text.lower()[:200]
+    )
     cache_valid = (
         cache.get("signature") == sig
-        and cache.get("playbook")
+        and cached_text
+        and not is_error_cache
         and age_min < 5  # max 5 menit
     )
 
@@ -3258,7 +3267,7 @@ def render_pilot_tab(market_stats, all_results, news_profile, learning_profile, 
 # =============================================================================
 # PORTFOLIO TRACKER UI
 # =============================================================================
-def render_portfolio_tab(tickers, prices_24h, all_results):
+def render_portfolio_tab(tickers, all_results):
     """Tab Portfolio: input modal, posisi terbuka, P/L live, exposure breakdown."""
     st.markdown("## Portofolio Saya")
     st.markdown(
@@ -3957,7 +3966,7 @@ def main():
     with tab1:
         render_rekomendasi_list(all_results, "Rekomendasi Beli Hari Ini", max_items=20)
     with tab_pf:
-        render_portfolio_tab(tickers, prices_24h, all_results)
+        render_portfolio_tab(tickers, all_results)
     with tab_st:
         render_stats_tab()
     with tab2:

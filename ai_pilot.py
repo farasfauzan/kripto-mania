@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from typing import Any
 
@@ -176,15 +177,30 @@ def build_pilot_context(
 
 def _hash_context(ctx: dict) -> str:
     """Hash context untuk caching. Kita pakai harga/score sebagai signature
-    supaya cache invalidate saat market berubah signifikan."""
+    supaya cache invalidate saat market berubah signifikan.
+
+    Untuk harga, pakai relative bucket (0.5%) supaya coin micro-price (PEPE/SHIB
+    yang harganya 0.00001) dan coin Rp1JT-an sama-sama detect perubahan ~0.5%.
+    Round absolut akan bias ke salah satu skala.
+    """
+    def _price_bucket(price: float) -> int:
+        """Bucket relatif: setiap 0.5% perubahan dianggap sinyal cache invalidate."""
+        if price <= 0:
+            return 0
+        # log10(price * 200) → setiap 0.5% beda menghasilkan bucket berbeda
+        try:
+            return int(round(math.log(max(price, 1e-12)) * 200, 0))
+        except (ValueError, OverflowError):
+            return 0
+
     sig = {
         "mode": ctx.get("market", {}).get("mode"),
         "picks": [
-            (p["symbol"], round(p["price"], 2), p["score"], p["action"])
+            (p["symbol"], _price_bucket(float(p.get("price", 0))), p["score"], p["action"])
             for p in ctx.get("top_picks", [])
         ],
         "pnl": [
-            (r["symbol"], round(r["pnl_pct"], 1), r.get("current_action", ""))
+            (r["symbol"], round(r.get("pnl_pct", 0), 1), r.get("current_action", ""))
             for r in ctx.get("portfolio", {}).get("positions", [])
         ],
     }
