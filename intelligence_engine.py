@@ -557,6 +557,159 @@ def build_intelligence_bundle(candles: pd.DataFrame, price: float, atr_pct: floa
 
 
 # =============================================================================
+# MULTI-HORIZON KNN FORECAST (6h + 24h dengan probabilitas + price range)
+# =============================================================================
+def _knn_forecast_horizon(candles: pd.DataFrame, horizon_bars: int, threshold_pct: float = 1.0) -> dict:
+    """KNN forecast untuk horizon spesifik.
+
+    Returns:
+        {prob_up, prob_strong_up, range_low_pct, range_high_pct, range_median_pct,
+         confidence, n_patterns}
+
+    - prob_up: P(harga naik > threshold dalam horizon_bars)
+    - prob_strong_up: P(harga naik > 2*threshold)
+    - range_low_pct / range_high_pct: 10th-90th percentile dari forecast pattern
+    - range_median_pct: median forecast (titik tengah ekspektasi)
+    """
+    default = {
+        "prob_up": 50.0,
+        "prob_strong_up": 25.0,
+        "range_low_pct": -3.0,
+        "range_high_pct": 3.0,
+        "range_median_pct": 0.0,
+        "confidence": "rendah",
+        "n_patterns": 0,
+    }
+    if candles is None or candles.empty or len(candles) < 80:
+        return default
+    try:
+        close = candles["close"].astype(float)
+        high = candles["high"].astype(float)
+        low = candles["low"].astype(float)
+        volume = candles["volume"].astype(float)
+
+        ret1 = close.pct_change(1) * 100
+        delta = close.diff()
+        gain = delta.clip(lower=0).rolling(14).mean()
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rsi = 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
+
+        feat = pd.DataFrame({
+            "ret1": ret1,
+            "ret3": close.pct_change(3) * 100,
+            "ret6": close.pct_change(6) * 100,
+            "vol12": ret1.rolling(12).std(),
+            "ema_gap": (close.ewm(span=8, adjust=False).mean() - close.ewm(span=21, adjust=False).mean()) / close * 100,
+            "rsi": rsi,
+            "rng": (close - low.rolling(24).min()) / (high.rolling(24).max() - low.rolling(24).min()).replace(0, np.nan) * 100,
+            "vr": volume / volume.rolling(24).mean().replace(0, np.nan),
+        })
+        feat["future"] = close.shift(-horizon_bars) / close * 100 - 100
+        feat = feat.replace([np.inf, -np.inf], np.nan)
+        cols = ["ret1", "ret3", "ret6", "vol12", "ema_gap", "rsi", "rng", "vr"]
+        current = feat[cols].dropna().tail(1).astype(float)
+        train = feat.dropna(subset=cols + ["future"]).copy()
+        if current.empty or len(train) < 50:
+            return default
+
+        means = train[cols].mean()
+        stds = train[cols].std().replace(0, 1).fillna(1)
+        tx = ((train[cols] - means) / stds).astype(float)
+        cx = ((current.iloc[0] - means) / stds).astype(float)
+        dist = tx.sub(cx, axis=1).pow(2).sum(axis=1).pow(0.5)
+        dist = pd.to_numeric(dist, errors="coerce").dropna()
+        if dist.empty:
+            return default
+
+        k = int(_clamp(round(len(train) ** 0.5), 12, 35))
+        nearest = train.loc[dist.nsmallest(k).index]
+        weights = 1 / (dist.loc[nearest.index] + 0.001)
+        future_returns = nearest["future"].values
+
+        # Probabilitas (weighted)
+        w_total = weights.sum()
+        prob_up = float((nearest["future"] > threshold_pct).astype(float).mul(weights, axis=0).sum() / w_total * 100)
+        prob_strong_up = float((nearest["future"] > 2 * threshold_pct).astype(float).mul(weights, axis=0).sum() / w_total * 100)
+
+        # Price range (10th-90th percentile dari k-nearest forecasts)
+        range_low = float(np.percentile(future_returns, 10))
+        range_high = float(np.percentile(future_returns, 90))
+        range_median = float(np.percentile(future_returns, 50))
+
+        # Confidence: lebih banyak pattern + edge probabilitas dari 50% = lebih tinggi
+        edge = abs(prob_up - 50)
+        if len(train) >= 180 and edge >= 14:
+            conf = "tinggi"
+        elif len(train) >= 90 and edge >= 8:
+            conf = "sedang"
+        else:
+            conf = "rendah"
+
+        return {
+            "prob_up": round(prob_up, 1),
+            "prob_strong_up": round(prob_strong_up, 1),
+            "range_low_pct": round(range_low, 2),
+            "range_high_pct": round(range_high, 2),
+            "range_median_pct": round(range_median, 2),
+            "confidence": conf,
+            "n_patterns": int(k),
+        }
+    except Exception:
+        return default
+
+
+def compute_multi_horizon_forecast(candles: pd.DataFrame, price: float) -> dict:
+    """Forecast 2 horizon: 6 jam (step 1) dan 24 jam (step 2).
+
+    Asumsi candles 1H. Kalau timeframe beda, horizon di-skala otomatis.
+    """
+    # Asumsi 1H candle. 6 candle = 6 jam, 24 candle = 24 jam.
+    h1 = _knn_forecast_horizon(candles, horizon_bars=6, threshold_pct=1.0)
+    h2 = _knn_forecast_horizon(candles, horizon_bars=24, threshold_pct=2.0)
+
+    # Konversi range pct → range harga absolut
+    def to_price_range(low_pct: float, high_pct: float) -> tuple[float, float]:
+        return (
+            price * (1 + low_pct / 100),
+            price * (1 + high_pct / 100),
+        )
+
+    h1_low, h1_high = to_price_range(h1["range_low_pct"], h1["range_high_pct"])
+    h1_median = price * (1 + h1["range_median_pct"] / 100)
+    h2_low, h2_high = to_price_range(h2["range_low_pct"], h2["range_high_pct"])
+    h2_median = price * (1 + h2["range_median_pct"] / 100)
+
+    return {
+        "step1": {
+            "horizon": "6 jam",
+            "prob_up_pct": h1["prob_up"],
+            "prob_strong_pct": h1["prob_strong_up"],
+            "price_low": h1_low,
+            "price_high": h1_high,
+            "price_median": h1_median,
+            "range_low_pct": h1["range_low_pct"],
+            "range_high_pct": h1["range_high_pct"],
+            "range_median_pct": h1["range_median_pct"],
+            "confidence": h1["confidence"],
+            "n_patterns": h1["n_patterns"],
+        },
+        "step2": {
+            "horizon": "24 jam",
+            "prob_up_pct": h2["prob_up"],
+            "prob_strong_pct": h2["prob_strong_up"],
+            "price_low": h2_low,
+            "price_high": h2_high,
+            "price_median": h2_median,
+            "range_low_pct": h2["range_low_pct"],
+            "range_high_pct": h2["range_high_pct"],
+            "range_median_pct": h2["range_median_pct"],
+            "confidence": h2["confidence"],
+            "n_patterns": h2["n_patterns"],
+        },
+    }
+
+
+# =============================================================================
 # REALISTIC TWO STEPS AHEAD (pakai S/R riil + ATR)
 # =============================================================================
 def build_two_steps_ahead(price: float, action: str, swings: dict, atr: float | None) -> dict:

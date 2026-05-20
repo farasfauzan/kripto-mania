@@ -15,9 +15,11 @@ from intelligence_engine import (
     apply_kelly_to_allocation,
     build_intelligence_bundle,
     build_two_steps_ahead,
+    compute_multi_horizon_forecast,
 )
 import journal_store
 import smart_engine
+import ai_pilot
 
 # =============================================================================
 # CONFIG & CONSTANTS
@@ -2050,6 +2052,22 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     # Smart engine (pandas-ta: Ichimoku, Squeeze, OBV, MFI). No-op kalau pandas-ta belum install.
     smart = smart_engine.build_smart_indicators_bundle(candles)
 
+    # Multi-horizon forecast: ramalan probabilistik 6 jam (step1) & 24 jam (step2)
+    forecast = compute_multi_horizon_forecast(candles, price)
+
+    # Forecast adjustment: boost score saat probabilitas tinggi & confidence baik.
+    # Kombinasi step1 + step2 supaya horizon menengah & pendek selaras.
+    f1_prob = forecast["step1"]["prob_up_pct"]
+    f2_prob = forecast["step2"]["prob_up_pct"]
+    f1_conf = forecast["step1"]["confidence"]
+    f2_conf = forecast["step2"]["confidence"]
+    f_conf_mult = {"tinggi": 1.0, "sedang": 0.6, "rendah": 0.3}
+    forecast_adj = (
+        (f1_prob - 50) * 0.10 * f_conf_mult.get(f1_conf, 0.3)
+        + (f2_prob - 50) * 0.08 * f_conf_mult.get(f2_conf, 0.3)
+    )
+    forecast_adj = clamp(forecast_adj, -10, 8)
+
     # --- SCORING (UPGRADED) ---
     liquidity_bonus = min(16, vol_idr / 1_000_000_000)
     fomo_penalty = 9 if range_pos > 88 and change > 8 else 0
@@ -2090,6 +2108,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         + mtf["mtf_adjustment"]
         + intel.get("intel_adjustment", 0)
         + smart.get("smart_adjustment", 0)
+        + forecast_adj
         - fomo_penalty
         - micin_penalty
         + mode_rules.get("score_adjustment", 0)
@@ -2285,6 +2304,27 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         "obv_signal": smart.get("obv", {}).get("obv_signal", "NO DATA"),
         "mfi": smart.get("mfi", {}).get("mfi", 50.0),
         "mfi_signal": smart.get("mfi", {}).get("mfi_signal", "NEUTRAL"),
+        # Multi-horizon forecast (ramalan 2 langkah ke depan)
+        "forecast_step1_horizon": forecast["step1"]["horizon"],
+        "forecast_step1_prob": forecast["step1"]["prob_up_pct"],
+        "forecast_step1_strong": forecast["step1"]["prob_strong_pct"],
+        "forecast_step1_low": forecast["step1"]["price_low"],
+        "forecast_step1_high": forecast["step1"]["price_high"],
+        "forecast_step1_median": forecast["step1"]["price_median"],
+        "forecast_step1_low_pct": forecast["step1"]["range_low_pct"],
+        "forecast_step1_high_pct": forecast["step1"]["range_high_pct"],
+        "forecast_step1_median_pct": forecast["step1"]["range_median_pct"],
+        "forecast_step1_conf": forecast["step1"]["confidence"],
+        "forecast_step2_horizon": forecast["step2"]["horizon"],
+        "forecast_step2_prob": forecast["step2"]["prob_up_pct"],
+        "forecast_step2_strong": forecast["step2"]["prob_strong_pct"],
+        "forecast_step2_low": forecast["step2"]["price_low"],
+        "forecast_step2_high": forecast["step2"]["price_high"],
+        "forecast_step2_median": forecast["step2"]["price_median"],
+        "forecast_step2_low_pct": forecast["step2"]["range_low_pct"],
+        "forecast_step2_high_pct": forecast["step2"]["range_high_pct"],
+        "forecast_step2_median_pct": forecast["step2"]["range_median_pct"],
+        "forecast_step2_conf": forecast["step2"]["confidence"],
     }
 
 
@@ -2957,15 +2997,42 @@ def render_rekomendasi_card(item, idx):
                 </div>
             </div>
 
+            <div class="card-section" style="background:linear-gradient(180deg, #f0f9ff, #e0f2fe);border-color:#7dd3fc">
+                <div class="section-row">
+                    <span class="section-label" style="color:#0369a1">🔮 Ramalan 2 Langkah ke Depan (probabilistik)</span>
+                    <span class="section-strong" style="color:#0c4a6e;font-size:0.72rem">KNN dari pola historis</span>
+                </div>
+                <div class="scenario-grid">
+                    <div class="scenario-box" style="background:#ffffff;border-color:#7dd3fc">
+                        <div class="scenario-title" style="color:#0369a1">Step 1 · {item.get('forecast_step1_horizon', '6 jam')}</div>
+                        <div style="font-size:1.45rem;font-weight:900;color:{'#047857' if item.get('forecast_step1_prob', 50) >= 55 else '#b91c1c' if item.get('forecast_step1_prob', 50) <= 45 else '#0369a1'};margin-top:0.3rem">{item.get('forecast_step1_prob', 50):.0f}%</div>
+                        <div style="font-size:0.7rem;color:#64748b;font-weight:800">probabilitas naik &gt;1%</div>
+                        <div style="margin-top:0.45rem;font-size:0.78rem;color:#334155;font-weight:700">
+                            Range: <span style="color:#b91c1c">{format_price(item.get('forecast_step1_low', 0))}</span> – <span style="color:#047857">{format_price(item.get('forecast_step1_high', 0))}</span>
+                        </div>
+                        <div style="font-size:0.7rem;color:#64748b;margin-top:0.15rem;font-weight:800">Median {item.get('forecast_step1_median_pct', 0):+.2f}% · Conf {item.get('forecast_step1_conf', 'rendah')}</div>
+                    </div>
+                    <div class="scenario-box" style="background:#ffffff;border-color:#0ea5e9">
+                        <div class="scenario-title" style="color:#0369a1">Step 2 · {item.get('forecast_step2_horizon', '24 jam')}</div>
+                        <div style="font-size:1.45rem;font-weight:900;color:{'#047857' if item.get('forecast_step2_prob', 50) >= 55 else '#b91c1c' if item.get('forecast_step2_prob', 50) <= 45 else '#0369a1'};margin-top:0.3rem">{item.get('forecast_step2_prob', 50):.0f}%</div>
+                        <div style="font-size:0.7rem;color:#64748b;font-weight:800">probabilitas naik &gt;2%</div>
+                        <div style="margin-top:0.45rem;font-size:0.78rem;color:#334155;font-weight:700">
+                            Range: <span style="color:#b91c1c">{format_price(item.get('forecast_step2_low', 0))}</span> – <span style="color:#047857">{format_price(item.get('forecast_step2_high', 0))}</span>
+                        </div>
+                        <div style="font-size:0.7rem;color:#64748b;margin-top:0.15rem;font-weight:800">Median {item.get('forecast_step2_median_pct', 0):+.2f}% · Conf {item.get('forecast_step2_conf', 'rendah')}</div>
+                    </div>
+                </div>
+            </div>
+
             <div class="scenario-grid scenario-grid-3">
                 <div class="scenario-box" style="background:#ecfdf5;border-color:#bbf7d0">
-                    <div class="scenario-title" style="color:#047857">Step 1 · Skenario terdekat</div>
+                    <div class="scenario-title" style="color:#047857">Step 1 · Target swing R1</div>
                     <div class="scenario-action">{step_action}</div>
                     <div class="scenario-price" style="color:#047857">{visible_price(item.get('step1_price', 0))}</div>
                     <div style="font-size:0.7rem;color:#64748b;margin-top:0.18rem;font-weight:800">{item.get('step1_gain', 0):+.2f}%</div>
                 </div>
                 <div class="scenario-box" style="background:#dcfce7;border-color:#86efac">
-                    <div class="scenario-title" style="color:#047857">Step 2 · Lanjutan</div>
+                    <div class="scenario-title" style="color:#047857">Step 2 · Target swing R2</div>
                     <div class="scenario-action">{step2_action}</div>
                     <div class="scenario-price" style="color:#047857">{visible_price(item.get('step2_price', 0))}</div>
                     <div style="font-size:0.7rem;color:#64748b;margin-top:0.18rem;font-weight:800">{item.get('step2_gain', 0):+.2f}%</div>
@@ -3103,6 +3170,89 @@ def render_fomo_alerts(tickers, prices_24h, market_stats, news_profile, learning
                     render_rekomendasi_card(adj_results[0], 999)
                 else:
                     st.error(f"Gagal memuat candle untuk {analyzed_sym}. Silakan coba lagi.")
+
+
+# =============================================================================
+# AI AUTO-PILOT UI
+# =============================================================================
+def render_pilot_tab(market_stats, all_results, news_profile, learning_profile, tickers, prices_24h):
+    """Tab AI Auto-Pilot: playbook harian dari AI berdasarkan semua data engine."""
+    st.markdown("## 🤖 AI Auto-Pilot — Playbook Hari Ini")
+    st.markdown(
+        "AI baca semua data web (sinyal, ramalan probabilistik, portofolio, news, market mode), "
+        "lalu kasih perintah ringkas yang tinggal kamu eksekusi manual. AI **tidak** trade otomatis."
+    )
+
+    gemini_key = get_secret("GEMINI_API_KEY", "")
+    deepseek_key = get_secret("DEEPSEEK_API_KEY", "")
+    if not gemini_key and not deepseek_key:
+        st.warning(
+            "⚠️ AI Auto-Pilot butuh API key. Pasang `GEMINI_API_KEY` atau `DEEPSEEK_API_KEY` di secrets."
+        )
+        return
+
+    buy_picks = [r for r in all_results if is_entry_action(r.get("action", ""))][:5]
+    portfolio_positions = journal_store.list_positions(status="OPEN") if journal_store.get_backend() == "sqlite" else []
+    capital_idr = float(journal_store.get_setting("capital_idr", "0") or 0) if journal_store.get_backend() == "sqlite" else 0
+
+    # Cache di session state — playbook tidak regen tiap auto-refresh, hemat quota
+    if "pilot_cache" not in st.session_state:
+        st.session_state["pilot_cache"] = {"signature": None, "playbook": None, "generated_at": 0}
+
+    ctx = ai_pilot.build_pilot_context(
+        market_stats, buy_picks, portfolio_positions, capital_idr,
+        news_profile, learning_profile, tickers,
+    )
+    sig = ai_pilot._hash_context(ctx)
+
+    cache = st.session_state["pilot_cache"]
+    age_min = (time.time() - cache.get("generated_at", 0)) / 60
+    cache_valid = (
+        cache.get("signature") == sig
+        and cache.get("playbook")
+        and age_min < 5  # max 5 menit
+    )
+
+    btn_cols = st.columns([1, 1, 4])
+    with btn_cols[0]:
+        regen = st.button("🔄 Regen", use_container_width=True, type="primary",
+                          help="Force regenerate playbook (pakai quota AI)")
+    with btn_cols[1]:
+        if cache_valid:
+            st.markdown(
+                f"<div style='padding-top:6px;color:#64748b;font-size:0.8rem;font-weight:700'>"
+                f"Cached {age_min:.1f} menit lalu</div>",
+                unsafe_allow_html=True,
+            )
+
+    if regen or not cache_valid:
+        with st.spinner("AI sedang menyusun playbook hari ini..."):
+            result = ai_pilot.generate_playbook(
+                market_stats, buy_picks, portfolio_positions, capital_idr,
+                news_profile, learning_profile, tickers,
+                gemini_key=gemini_key, deepseek_key=deepseek_key,
+            )
+            st.session_state["pilot_cache"] = {
+                "signature": result["signature"],
+                "playbook": result["playbook"],
+                "generated_at": result["generated_at"],
+                "context_summary": result.get("context_summary", {}),
+            }
+
+    cache = st.session_state["pilot_cache"]
+    playbook = cache.get("playbook") or "_Playbook belum tersedia. Klik Regen._"
+    summary = cache.get("context_summary", {})
+
+    # Render playbook: pakai container streamlit dengan border supaya markdown beneran ke-render
+    with st.container(border=True):
+        st.markdown(playbook)
+
+    # Footer dengan context summary
+    st.caption(
+        f"Konteks: {summary.get('n_picks', 0)} top picks · "
+        f"{summary.get('n_positions', 0)} posisi portfolio · "
+        f"market mode: {summary.get('market_mode', 'normal')}"
+    )
 
 
 # =============================================================================
@@ -3797,11 +3947,13 @@ def main():
     render_learning_panel(learning_profile)
     render_fomo_alerts(tickers, prices_24h, market_stats, news_profile, learning_profile)
 
-    tab1, tab_pf, tab_st, tab2, tab3, tab4, tab5, tab6, tab_edu = st.tabs([
-        "Rekomendasi Beli", "Portofolio Saya", "Statistik Bot",
+    tab_pilot, tab1, tab_pf, tab_st, tab2, tab3, tab4, tab5, tab6, tab_edu = st.tabs([
+        "🤖 AI Auto-Pilot", "Rekomendasi Beli", "Portofolio Saya", "Statistik Bot",
         "Semua Aset", "Micin/Meme", "Analisis Detail", "Scan Koin Lain", "Tanya AI Advisor",
         "Cara Baca Sinyal",
     ])
+    with tab_pilot:
+        render_pilot_tab(market_stats, all_results, news_profile, learning_profile, tickers, prices_24h)
     with tab1:
         render_rekomendasi_list(all_results, "Rekomendasi Beli Hari Ini", max_items=20)
     with tab_pf:
@@ -3948,9 +4100,17 @@ def main():
                             if market_stats:
                                 context_str += f"- Status Pasar: {market_stats['mode'].upper()} (Hijau: {market_stats['green_pct']}%, Volume: {format_idr(market_stats['total_vol'])})\n"
                             
-                            context_str += "- Rekomendasi Teratas:\n"
+                            context_str += "- Rekomendasi Teratas (dengan ramalan probabilistik):\n"
                             for c in top_picks:
-                                context_str += f"  * {c['symbol']}: Harga {format_price(c['price'])} ({c['change']:+.2f}%), Score: {c['score']}/100, Rekomendasi: {c['action']}, Target: {format_price(c['target'])}, SL: {format_price(c['stop_loss'])}\n"
+                                f1_prob = c.get("forecast_step1_prob", 50)
+                                f2_prob = c.get("forecast_step2_prob", 50)
+                                f1_conf = c.get("forecast_step1_conf", "rendah")
+                                context_str += (
+                                    f"  * {c['symbol']}: Harga {format_price(c['price'])} ({c['change']:+.2f}%), "
+                                    f"Score: {c['score']}/100, Rekomendasi: {c['action']}, "
+                                    f"Target: {format_price(c['target'])}, SL: {format_price(c['stop_loss'])}, "
+                                    f"Ramalan 6h: {f1_prob:.0f}% naik (conf {f1_conf}), 24h: {f2_prob:.0f}% naik\n"
+                                )
                             
                             # Tambahkan konteks sentimen berita dan pembelajaran (learning)
                             if news_profile:
