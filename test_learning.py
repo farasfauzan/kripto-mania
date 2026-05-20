@@ -1,7 +1,16 @@
-import json, os, sys
+import json, os, sys, tempfile
 sys.path.insert(0, os.path.dirname(__file__))
-from learning_engine import *
-import learning_engine
+
+# Pakai temp dir supaya test tidak ganggu DB/JSON production
+_tmpdir = tempfile.mkdtemp(prefix="test_learning_")
+os.environ["SIGNAL_JOURNAL_FILE"] = os.path.join(_tmpdir, "signal_journal.json")
+os.environ["SIGNAL_JOURNAL_DB"] = os.path.join(_tmpdir, "signal_journal.db")
+
+import journal_store  # noqa: E402
+journal_store.reset_journal()  # mulai dari kondisi bersih
+
+from learning_engine import *  # noqa: E402,F401,F403
+import learning_engine  # noqa: E402
 
 learning_engine.SIGNAL_LEARNING_DEDUPE_HOURS = 0
 learning_engine.SIGNAL_LEARNING_TTL_HOURS = 72
@@ -19,8 +28,7 @@ def check(name, cond, detail=""):
         failed += 1
         print(f"FAIL: {name} {detail}")
 
-for f in [SIGNAL_JOURNAL_FILE, SIGNAL_JOURNAL_FILE+".tmp"]:
-    if os.path.exists(f): os.remove(f)
+journal_store.reset_journal()
 
 p = build_profile()
 check("empty profile", p["total_signals"]==0 and p["winrate"] is None)
@@ -117,9 +125,7 @@ p = build_profile(j)
 check("best_symbols empty (need >=2 per symbol)", len(p["best_symbols"])==0)
 check("best_symbols format", all(len(x)==2 for x in p["best_symbols"]))
 
-os.remove(SIGNAL_JOURNAL_FILE)
-for f in [SIGNAL_JOURNAL_FILE+".tmp"]:
-    if os.path.exists(f): os.remove(f)
+journal_store.reset_journal()
 
 print(f"\n=== {passed}/{passed+failed} tests passed ===")
 sys.exit(0 if failed==0 else 1)

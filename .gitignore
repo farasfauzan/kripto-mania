@@ -15,6 +15,10 @@ test_signal.py
 bot_state.json
 signal_journal.json
 signal_journal.json.tmp
+signal_journal.json.migrated
+signal_journal.db
+signal_journal.db-wal
+signal_journal.db-shm
 
 # Local environments
 .env

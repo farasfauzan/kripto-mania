@@ -1,48 +1,19 @@
-import json
 import os
 from datetime import datetime, timedelta, timezone
 
+# Storage backend: SQLite (default) atau JSON fallback. API kompatibel
+# dengan kode lama: load_journal()/save_journal() tetap return/terima dict.
+from journal_store import (
+    JSON_PATH as SIGNAL_JOURNAL_FILE,  # noqa: F401  (re-export untuk test_learning.py)
+    load_journal,
+    save_journal,
+)
+
 
 WIB = timezone(timedelta(hours=7))
-SIGNAL_JOURNAL_FILE = os.environ.get("SIGNAL_JOURNAL_FILE", "signal_journal.json")
 SIGNAL_LEARNING_ENABLED = str(os.environ.get("ENABLE_SIGNAL_LEARNING", "true")).lower() in {"1", "true", "yes", "on"}
 SIGNAL_LEARNING_TTL_HOURS = int(os.environ.get("SIGNAL_LEARNING_TTL_HOURS", "72"))
 SIGNAL_LEARNING_DEDUPE_HOURS = int(os.environ.get("SIGNAL_LEARNING_DEDUPE_HOURS", "6"))
-
-
-def _empty_journal():
-    return {"version": 1, "signals": [], "updated_at": None}
-
-
-def load_journal():
-    if not SIGNAL_LEARNING_ENABLED or not os.path.exists(SIGNAL_JOURNAL_FILE):
-        return _empty_journal()
-    try:
-        with open(SIGNAL_JOURNAL_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return _empty_journal()
-        data.setdefault("version", 1)
-        data.setdefault("signals", [])
-        data.setdefault("updated_at", None)
-        return data
-    except (OSError, ValueError, TypeError):
-        return _empty_journal()
-
-
-def save_journal(journal):
-    if not SIGNAL_LEARNING_ENABLED:
-        return False
-    try:
-        journal["signals"] = journal.get("signals", [])[-500:]
-        journal["updated_at"] = datetime.now(WIB).isoformat()
-        tmp_path = f"{SIGNAL_JOURNAL_FILE}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(journal, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, SIGNAL_JOURNAL_FILE)
-        return True
-    except OSError:
-        return False
 
 
 def _parse_iso_datetime(value):

@@ -16,6 +16,7 @@ from intelligence_engine import (
     build_intelligence_bundle,
     build_two_steps_ahead,
 )
+import journal_store
 
 # =============================================================================
 # CONFIG & CONSTANTS
@@ -2299,33 +2300,18 @@ def _empty_learning_journal():
 
 
 def load_learning_journal():
-    if not SIGNAL_LEARNING_ENABLED or not os.path.exists(SIGNAL_JOURNAL_FILE):
+    """Delegate ke journal_store. Backend SQLite dengan auto-migrate dari JSON,
+    fallback otomatis ke JSON kalau filesystem read-only."""
+    if not SIGNAL_LEARNING_ENABLED:
         return _empty_learning_journal()
-    try:
-        with open(SIGNAL_JOURNAL_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return _empty_learning_journal()
-        data.setdefault("version", 1)
-        data.setdefault("signals", [])
-        data.setdefault("updated_at", None)
-        return data
-    except (OSError, ValueError, TypeError):
-        return _empty_learning_journal()
+    return journal_store.load_journal()
 
 
 def save_learning_journal(journal):
+    """Delegate ke journal_store. Tetap silent-fail seperti sebelumnya."""
     if not SIGNAL_LEARNING_ENABLED:
         return
-    try:
-        journal["signals"] = journal.get("signals", [])[-500:]
-        journal["updated_at"] = datetime.now(BOT_WIB).isoformat()
-        tmp_path = f"{SIGNAL_JOURNAL_FILE}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(journal, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, SIGNAL_JOURNAL_FILE)
-    except OSError:
-        pass
+    journal_store.save_journal(journal)
 
 
 def _parse_iso_datetime(value):
@@ -3094,6 +3080,299 @@ def render_fomo_alerts(tickers, prices_24h, market_stats, news_profile, learning
                     st.error(f"Gagal memuat candle untuk {analyzed_sym}. Silakan coba lagi.")
 
 
+# =============================================================================
+# PORTFOLIO TRACKER UI
+# =============================================================================
+def render_portfolio_tab(tickers, prices_24h, all_results):
+    """Tab Portfolio: input modal, posisi terbuka, P/L live, exposure breakdown."""
+    st.markdown("## Portofolio Saya")
+    st.markdown(
+        "Input modal & posisi yang sudah Anda beli untuk lihat P/L real-time, "
+        "exposure per kategori, dan peringatan konsentrasi. Data tersimpan lokal di SQLite."
+    )
+
+    backend = journal_store.get_backend()
+    if backend != "sqlite":
+        st.warning(
+            "Portfolio tracker butuh backend SQLite. Saat ini fallback JSON aktif "
+            "(filesystem read-only). Fitur ini disable di environment ini."
+        )
+        return
+
+    # --- CAPITAL SETTINGS ---
+    saved_capital = float(journal_store.get_setting("capital_idr", "0") or 0)
+    cap_cols = st.columns([2, 1])
+    with cap_cols[0]:
+        capital = st.number_input(
+            "Modal total (IDR)",
+            min_value=0.0,
+            value=saved_capital,
+            step=100_000.0,
+            format="%.0f",
+            help="Total modal yang Anda alokasikan untuk crypto. Dipakai untuk hitung exposure %.",
+        )
+    with cap_cols[1]:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if st.button("Simpan modal", use_container_width=True, key="btn_save_capital"):
+            journal_store.set_setting("capital_idr", str(capital))
+            st.success("Modal tersimpan")
+            st.rerun()
+
+    # --- ADD POSITION FORM ---
+    st.markdown("### Tambah Posisi Baru")
+    idr_pairs = sorted([p.replace("_idr", "").upper() for p in tickers.keys() if p.endswith("_idr")])
+    if not idr_pairs:
+        st.info("Daftar koin belum siap. Refresh halaman.")
+        return
+    add_cols = st.columns([1.2, 1, 1, 1.6, 0.8])
+    with add_cols[0]:
+        new_sym = st.selectbox("Koin", idr_pairs, key="new_pos_sym",
+                               index=idr_pairs.index("BTC") if "BTC" in idr_pairs else 0)
+    with add_cols[1]:
+        new_qty = st.number_input("Qty (jumlah koin)", min_value=0.0, value=0.0,
+                                  step=0.0001, format="%.8f", key="new_pos_qty")
+    with add_cols[2]:
+        # Pre-fill avg buy dari harga sekarang sebagai reference
+        cur_pair = f"{new_sym.lower()}_idr"
+        cur_price = float(tickers.get(cur_pair, {}).get("last", 0) or 0)
+        new_avg = st.number_input(
+            "Harga rata-rata beli (IDR)",
+            min_value=0.0, value=cur_price, step=1.0, format="%.2f",
+            key="new_pos_avg",
+            help=f"Harga sekarang: {format_price(cur_price)}",
+        )
+    with add_cols[3]:
+        new_notes = st.text_input("Catatan (opsional)", key="new_pos_notes",
+                                  placeholder="mis. DCA round 1, swing trade")
+    with add_cols[4]:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if st.button("Tambah", use_container_width=True, type="primary", key="btn_add_pos"):
+            if new_qty <= 0 or new_avg <= 0:
+                st.error("Qty dan harga rata-rata harus > 0")
+            else:
+                pos_id = journal_store.add_position(
+                    symbol=new_sym, pair=cur_pair, qty=new_qty,
+                    avg_buy_price=new_avg, notes=new_notes,
+                )
+                if pos_id:
+                    st.success(f"Posisi {new_sym} ditambahkan (id #{pos_id})")
+                    st.rerun()
+                else:
+                    st.error("Gagal menyimpan posisi")
+
+    # --- 1-CLICK IMPORT FROM REKOMENDASI ---
+    buy_picks = [r for r in all_results if is_entry_action(r.get("action", ""))][:5]
+    if buy_picks:
+        with st.expander(f"🎯 Quick-add dari rekomendasi beli teratas ({len(buy_picks)})", expanded=False):
+            st.caption("Klik untuk salin harga sekarang ke form atas. Qty masih perlu kamu isi manual.")
+            qa_cols = st.columns(min(len(buy_picks), 5))
+            for i, pick in enumerate(buy_picks):
+                with qa_cols[i]:
+                    if st.button(
+                        f"{pick['symbol']}\n{format_price(pick['price'])}",
+                        key=f"qa_pick_{pick['symbol']}",
+                        use_container_width=True,
+                    ):
+                        # Streamlit tidak punya "fill form" langsung — tampilkan instruksi
+                        st.session_state["new_pos_sym"] = pick["symbol"]
+                        st.rerun()
+
+    # --- POSITIONS TABLE ---
+    st.markdown("### Posisi Aktif")
+    positions = journal_store.list_positions(status="OPEN")
+    if not positions:
+        st.info("Belum ada posisi terbuka. Tambahkan posisi pertama di form atas.")
+    else:
+        total_value = 0.0
+        total_cost = 0.0
+        rows_data = []
+        for pos in positions:
+            pair = pos.get("pair") or f"{pos['symbol'].lower()}_idr"
+            cur_price = float(tickers.get(pair, {}).get("last", 0) or 0)
+            qty = float(pos["qty"])
+            avg_buy = float(pos["avg_buy_price"])
+            cost = qty * avg_buy
+            value_now = qty * cur_price
+            pnl = value_now - cost
+            pnl_pct = (pnl / cost * 100) if cost > 0 else 0
+            total_cost += cost
+            total_value += value_now
+            rec = next((r for r in all_results if r["symbol"] == pos["symbol"]), None)
+            current_action = rec["action"] if rec else "—"
+            current_score = rec["score"] if rec else None
+            cat = COIN_CATEGORIES.get(pos["symbol"], "Lainnya")
+            rows_data.append({
+                "id": pos["id"],
+                "symbol": pos["symbol"],
+                "category": cat,
+                "qty": qty,
+                "avg_buy": avg_buy,
+                "cur_price": cur_price,
+                "cost": cost,
+                "value_now": value_now,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+                "action": current_action,
+                "score": current_score,
+                "notes": pos.get("notes") or "",
+            })
+
+        # --- KPI ROW ---
+        total_pnl = total_value - total_cost
+        total_pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0
+        kpi_cols = st.columns(4)
+        kpi_color = "#047857" if total_pnl >= 0 else "#b91c1c"
+        with kpi_cols[0]:
+            st.markdown(
+                f"""<div class="stat-card"><div class="stat-value">{format_idr(total_cost)}</div>
+                <div class="stat-label">Total cost</div></div>""",
+                unsafe_allow_html=True,
+            )
+        with kpi_cols[1]:
+            st.markdown(
+                f"""<div class="stat-card"><div class="stat-value">{format_idr(total_value)}</div>
+                <div class="stat-label">Nilai sekarang</div></div>""",
+                unsafe_allow_html=True,
+            )
+        with kpi_cols[2]:
+            st.markdown(
+                f"""<div class="stat-card"><div class="stat-value" style="color:{kpi_color}">{total_pnl:+,.0f}</div>
+                <div class="stat-label">P/L (IDR)</div></div>""",
+                unsafe_allow_html=True,
+            )
+        with kpi_cols[3]:
+            st.markdown(
+                f"""<div class="stat-card"><div class="stat-value" style="color:{kpi_color}">{total_pnl_pct:+.2f}%</div>
+                <div class="stat-label">P/L %</div></div>""",
+                unsafe_allow_html=True,
+            )
+
+        # --- EXPOSURE WARNINGS ---
+        warnings = []
+        if capital > 0:
+            exposure_pct = total_cost / capital * 100
+            if exposure_pct > 100:
+                warnings.append(
+                    f"⚠️ Exposure {exposure_pct:.0f}% — total cost melebihi modal yang di-set (cek input)."
+                )
+            elif exposure_pct > 80:
+                warnings.append(
+                    f"⚠️ Exposure tinggi {exposure_pct:.0f}% dari modal — kurangi posisi atau tambah modal."
+                )
+            # Concentration per symbol
+            for r in rows_data:
+                sym_pct = r["cost"] / capital * 100
+                if sym_pct > 30:
+                    warnings.append(
+                        f"⚠️ {r['symbol']} ambil {sym_pct:.0f}% modal — konsentrasi tinggi, pertimbangkan diversifikasi."
+                    )
+        # Action mismatch — coin yang dipegang ternyata sekarang JANGAN BELI / HINDARI
+        for r in rows_data:
+            if r["action"] in ("JANGAN BELI", "HINDARI"):
+                warnings.append(
+                    f"⚠️ {r['symbol']} sekarang sinyal **{r['action']}** — pertimbangkan exit di TP terdekat."
+                )
+        if warnings:
+            for w in warnings[:5]:  # cap supaya tidak banjir
+                st.warning(w)
+
+        # --- TABLE OF POSITIONS ---
+        st.markdown("#### Detail")
+        df = pd.DataFrame([
+            {
+                "Koin": f"{r['symbol']} ({r['category']})",
+                "Qty": f"{r['qty']:.6f}".rstrip("0").rstrip("."),
+                "Avg buy": format_price(r["avg_buy"]),
+                "Harga sekarang": format_price(r["cur_price"]),
+                "Cost": format_idr(r["cost"]),
+                "Nilai": format_idr(r["value_now"]),
+                "P/L": f"{r['pnl']:+,.0f}",
+                "P/L %": f"{r['pnl_pct']:+.2f}%",
+                "Sinyal": r["action"],
+                "Score": f"{r['score']}/100" if r["score"] is not None else "—",
+                "Notes": r["notes"] or "—",
+            }
+            for r in rows_data
+        ])
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # --- EXPOSURE BREAKDOWN PER KATEGORI ---
+        if total_value > 0:
+            st.markdown("#### Exposure per kategori")
+            cat_map: dict[str, float] = {}
+            for r in rows_data:
+                cat_map[r["category"]] = cat_map.get(r["category"], 0) + r["value_now"]
+            cat_df = pd.DataFrame([
+                {"Kategori": cat, "Nilai (IDR)": format_idr(val), "Bobot": f"{val/total_value*100:.1f}%"}
+                for cat, val in sorted(cat_map.items(), key=lambda x: -x[1])
+            ])
+            st.dataframe(cat_df, use_container_width=True, hide_index=True)
+
+        # --- EDIT / CLOSE POSITIONS ---
+        st.markdown("#### Kelola posisi")
+        st.caption("Pilih posisi untuk edit qty/avg buy atau tutup posisi (simpan history) atau hapus permanen.")
+        for r in rows_data:
+            with st.expander(f"#{r['id']} · {r['symbol']} · qty {r['qty']} @ {format_price(r['avg_buy'])} · P/L {r['pnl_pct']:+.2f}%"):
+                edit_cols = st.columns([1, 1, 2, 1, 1])
+                with edit_cols[0]:
+                    new_q = st.number_input(
+                        "Qty baru", min_value=0.0, value=float(r["qty"]),
+                        step=0.0001, format="%.8f", key=f"edit_qty_{r['id']}",
+                    )
+                with edit_cols[1]:
+                    new_a = st.number_input(
+                        "Avg buy baru", min_value=0.0, value=float(r["avg_buy"]),
+                        step=1.0, format="%.2f", key=f"edit_avg_{r['id']}",
+                    )
+                with edit_cols[2]:
+                    new_n = st.text_input(
+                        "Catatan", value=r["notes"], key=f"edit_notes_{r['id']}",
+                    )
+                with edit_cols[3]:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    if st.button("Update", key=f"upd_{r['id']}", use_container_width=True):
+                        ok = journal_store.update_position(
+                            r["id"], qty=new_q, avg_buy_price=new_a, notes=new_n,
+                        )
+                        if ok:
+                            st.success("Posisi diupdate")
+                            st.rerun()
+                        else:
+                            st.error("Gagal update")
+                with edit_cols[4]:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    close_btn, del_btn = st.columns(2)
+                    with close_btn:
+                        if st.button("Tutup", key=f"close_{r['id']}", use_container_width=True,
+                                     help="Tandai CLOSED (tetap simpan history)"):
+                            journal_store.close_position(r["id"])
+                            st.success(f"{r['symbol']} ditutup")
+                            st.rerun()
+                    with del_btn:
+                        if st.button("Hapus", key=f"del_{r['id']}", use_container_width=True,
+                                     help="Hapus permanen (kalau salah input)"):
+                            journal_store.delete_position(r["id"])
+                            st.warning(f"#{r['id']} dihapus")
+                            st.rerun()
+
+    # --- HISTORY ---
+    closed = journal_store.list_positions(status="CLOSED")
+    if closed:
+        with st.expander(f"📜 Riwayat posisi tertutup ({len(closed)})"):
+            hist_df = pd.DataFrame([
+                {
+                    "Koin": p["symbol"],
+                    "Qty": p["qty"],
+                    "Avg buy": format_price(p["avg_buy_price"]),
+                    "Dibuka": p.get("opened_at", "")[:10],
+                    "Ditutup": (p.get("closed_at") or "—")[:10],
+                    "Notes": p.get("notes") or "",
+                }
+                for p in closed
+            ])
+            st.dataframe(hist_df, use_container_width=True, hide_index=True)
+
+
 def render_donation():
     with st.expander("💖 Dukung Project Ini (Donasi)"):
         st.markdown("Bantu saya terus mengembangkan tools ini:")
@@ -3222,9 +3501,14 @@ def main():
     render_learning_panel(learning_profile)
     render_fomo_alerts(tickers, prices_24h, market_stats, news_profile, learning_profile)
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Rekomendasi Beli", "Semua Aset", "Micin/Meme", "Analisis Detail", "Scan Koin Lain", "Tanya AI Advisor"])
+    tab1, tab_pf, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "Rekomendasi Beli", "Portofolio Saya", "Semua Aset", "Micin/Meme",
+        "Analisis Detail", "Scan Koin Lain", "Tanya AI Advisor",
+    ])
     with tab1:
         render_rekomendasi_list(all_results, "Rekomendasi Beli Hari Ini", max_items=20)
+    with tab_pf:
+        render_portfolio_tab(tickers, prices_24h, all_results)
     with tab2:
         render_rekomendasi_list(main_results, "Main Assets", max_items=15)
     with tab3:
