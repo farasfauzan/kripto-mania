@@ -14,8 +14,14 @@ class SimpleHandler(BaseHTTPRequestHandler):
         pass
 
 def run_server():
-    # Render.com akan memberikan port lewat environment variable PORT
-    port = int(os.environ.get('PORT', 8080))
+    # Pakai KEEP_ALIVE_PORT supaya tidak bentrok dengan Streamlit
+    # yang di Docker Hugging Face Space sudah pakai PORT=7860.
+    # Fallback ke PORT hanya kalau KEEP_ALIVE_PORT tidak diset
+    # (mempertahankan kompatibilitas dengan Render.com).
+    port = int(
+        os.environ.get('KEEP_ALIVE_PORT')
+        or os.environ.get('PORT', 8080)
+    )
     server = HTTPServer(('0.0.0.0', port), SimpleHandler)
     server.serve_forever()
 

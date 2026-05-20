@@ -47,9 +47,14 @@ def save_journal(journal):
 
 def _parse_iso_datetime(value):
     try:
-        return datetime.fromisoformat(str(value))
+        dt = datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
         return None
+    # Legacy entries may be tz-naive; treat them as WIB so subtraction with
+    # the tz-aware "now" doesn't blow up the daemon loop.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=WIB)
+    return dt
 
 
 def _as_float(value, default=0.0):
@@ -192,16 +197,18 @@ def train_from_prices(price_items, now=None):
         tp1 = _as_float(sig.get("tp1"))
         target = _as_float(sig.get("target"))
 
-        if tp1 > 0 and price >= tp1 and not old_tp1_hit:
+        # Use running max/min so brief intra-poll spikes/dips that hit
+        # TP or SL between polls aren't missed (poll interval is ~3 min).
+        if tp1 > 0 and new_max >= tp1 and not old_tp1_hit:
             sig["tp1_hit"] = True
             changed = True
-            
-        if target > 0 and price >= target:
+
+        if target > 0 and new_max >= target:
             sig["status"] = "TARGET"
             sig["outcome"] = "WIN"
             sig["closed_at"] = now.isoformat()
             changed = True
-        elif stop_loss > 0 and price <= stop_loss:
+        elif stop_loss > 0 and new_min <= stop_loss:
             sig["status"] = "SL"
             sig["outcome"] = "WIN" if sig.get("tp1_hit") else "LOSS"
             sig["closed_at"] = now.isoformat()
