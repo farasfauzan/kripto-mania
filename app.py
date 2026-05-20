@@ -4137,26 +4137,56 @@ def main():
                                 api_messages.append({"role": msg["role"], "content": msg["content"]})
                                 
                             from openai import OpenAI
+
+                            def _call_provider(api_key, base_url, model_name):
+                                client = OpenAI(api_key=api_key, base_url=base_url)
+                                resp = client.chat.completions.create(
+                                    model=model_name,
+                                    messages=api_messages,
+                                    temperature=0.7,
+                                    max_tokens=1000,
+                                )
+                                return resp.choices[0].message.content
+
+                            ai_response = None
+                            fallback_note = ""
+                            quota_keywords = ("ratelimit", "quota", "429", "exceeded", "resource exhausted")
+
+                            # Coba Gemini dulu
                             if gemini_api_key:
-                                client = OpenAI(api_key=gemini_api_key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
-                                model_name = "gemini-2.5-flash"
+                                try:
+                                    ai_response = _call_provider(
+                                        gemini_api_key,
+                                        "https://generativelanguage.googleapis.com/v1beta/openai/",
+                                        "gemini-2.5-flash",
+                                    )
+                                except Exception as gemini_err:
+                                    err_text = str(gemini_err).lower() + type(gemini_err).__name__.lower()
+                                    is_quota = any(k in err_text for k in quota_keywords)
+                                    # Kalau quota habis & ada deepseek, fallback. Kalau bukan quota & no deepseek, bubble up.
+                                    if not (is_quota and deepseek_api_key):
+                                        if not deepseek_api_key:
+                                            raise
+                                    else:
+                                        fallback_note = "ℹ️ _Gemini quota habis, otomatis fallback ke Deepseek_\n\n"
+
+                            # Fallback ke Deepseek (kalau Gemini gagal quota, atau cuma ada deepseek key)
+                            if ai_response is None and deepseek_api_key:
+                                ai_response = _call_provider(
+                                    deepseek_api_key,
+                                    "https://api.deepseek.com",
+                                    "deepseek-chat",
+                                )
+
+                            if ai_response:
+                                full_response = fallback_note + ai_response
+                                st.markdown(full_response)
+                                st.session_state.messages.append({"role": "assistant", "content": full_response})
                             else:
-                                client = OpenAI(api_key=deepseek_api_key, base_url="https://api.deepseek.com")
-                                model_name = "deepseek-chat"
-                                
-                            response = client.chat.completions.create(
-                                model=model_name,
-                                messages=api_messages,
-                                temperature=0.7,
-                                max_tokens=1000
-                            )
-                            
-                            ai_response = response.choices[0].message.content
-                            st.markdown(ai_response)
-                            st.session_state.messages.append({"role": "assistant", "content": ai_response})
-                            
+                                st.error("Tidak ada API key yang valid untuk AI Advisor.")
+
                         except Exception as e:
-                            st.error(f"Gagal menghubungi AI Advisor: {e}")
+                            st.error(f"Gagal menghubungi AI Advisor: {type(e).__name__}: {str(e)[:300]}")
     with tab_edu:
         render_education_tab()
     render_donation()

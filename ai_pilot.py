@@ -277,22 +277,8 @@ ATURAN:
     return "\n".join(lines)
 
 
-def call_llm_for_playbook(prompt: str, gemini_key: str = "", deepseek_key: str = "") -> str:
-    """Panggil LLM via OpenAI-compatible client. Return playbook markdown."""
-    if not gemini_key and not deepseek_key:
-        return "_AI Auto-Pilot tidak aktif: API key Gemini atau Deepseek belum dipasang._"
-    try:
-        from openai import OpenAI  # type: ignore
-    except ImportError:
-        return "_OpenAI client belum terinstall. Jalankan `pip install openai`._"
-
-    if gemini_key:
-        client = OpenAI(api_key=gemini_key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
-        model = "gemini-2.5-flash"
-    else:
-        client = OpenAI(api_key=deepseek_key, base_url="https://api.deepseek.com")
-        model = "deepseek-chat"
-
+def _try_provider(client, model: str, prompt: str) -> tuple[str | None, Exception | None]:
+    """Coba panggil satu provider. Return (response_text, None) atau (None, exception)."""
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -303,9 +289,65 @@ def call_llm_for_playbook(prompt: str, gemini_key: str = "", deepseek_key: str =
             temperature=0.4,
             max_tokens=900,
         )
-        return resp.choices[0].message.content or "_AI tidak menghasilkan respons._"
+        text = resp.choices[0].message.content
+        if not text:
+            return None, RuntimeError("Empty response")
+        return text, None
     except Exception as e:
-        return f"_Gagal hubungi AI: {type(e).__name__}: {str(e)[:200]}_"
+        return None, e
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """Cek apakah error karena quota/rate limit (perlu fallback)."""
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    return (
+        "ratelimit" in name
+        or "quota" in name
+        or "429" in msg
+        or "exceeded your current quota" in msg
+        or "resource exhausted" in msg
+    )
+
+
+def call_llm_for_playbook(prompt: str, gemini_key: str = "", deepseek_key: str = "") -> str:
+    """Panggil LLM dengan auto-fallback. Coba Gemini dulu, kalau quota habis pindah ke Deepseek."""
+    if not gemini_key and not deepseek_key:
+        return "_AI Auto-Pilot tidak aktif: API key Gemini atau Deepseek belum dipasang._"
+    try:
+        from openai import OpenAI  # type: ignore
+    except ImportError:
+        return "_OpenAI client belum terinstall. Jalankan `pip install openai`._"
+
+    errors: list[str] = []
+
+    # Try Gemini first kalau ada
+    if gemini_key:
+        client = OpenAI(api_key=gemini_key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+        text, err = _try_provider(client, "gemini-2.5-flash", prompt)
+        if text:
+            return text
+        if err is not None:
+            errors.append(f"Gemini: {type(err).__name__}: {str(err)[:140]}")
+            # Kalau bukan quota error & tidak ada deepseek key, langsung return
+            if not _is_quota_error(err) and not deepseek_key:
+                return f"_Gagal hubungi Gemini: {type(err).__name__}: {str(err)[:200]}_"
+
+    # Fallback ke Deepseek (kalau Gemini gagal dengan quota error, atau Gemini key kosong)
+    if deepseek_key:
+        client = OpenAI(api_key=deepseek_key, base_url="https://api.deepseek.com")
+        text, err = _try_provider(client, "deepseek-chat", prompt)
+        if text:
+            # Kalau ini fallback dari Gemini, kasih hint
+            if errors:
+                return f"> ℹ️ _Gemini quota habis, otomatis fallback ke Deepseek_\n\n{text}"
+            return text
+        if err is not None:
+            errors.append(f"Deepseek: {type(err).__name__}: {str(err)[:140]}")
+
+    if errors:
+        return "_Semua AI provider gagal:_\n- " + "\n- ".join(errors)
+    return "_Tidak ada API key yang valid._"
 
 
 def generate_playbook(
