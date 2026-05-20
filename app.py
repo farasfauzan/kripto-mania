@@ -1069,6 +1069,9 @@ st.markdown(
         gap: 0.55rem;
         margin-top: 0.72rem;
     }
+    .scenario-grid.scenario-grid-3 {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
     .scenario-box {
         border-radius: 8px;
         padding: 0.7rem;
@@ -2804,6 +2807,7 @@ def render_rekomendasi_card(item, idx):
         return format_price(value) if value > 0 else "-"
 
     action_text = clean_ui_text(item.get("action", ""))
+    step2_action = clean_ui_text(item.get("step2_action", "Pantau"))
     is_buy_signal = (
         is_entry_action(item.get("action", "")) and
         item.get("allocation_pct", 0) > 0 and
@@ -2953,16 +2957,24 @@ def render_rekomendasi_card(item, idx):
                 </div>
             </div>
 
-            <div class="scenario-grid">
+            <div class="scenario-grid scenario-grid-3">
                 <div class="scenario-box" style="background:#ecfdf5;border-color:#bbf7d0">
-                    <div class="scenario-title" style="color:#047857">Skenario naik/pantau</div>
+                    <div class="scenario-title" style="color:#047857">Step 1 · Skenario terdekat</div>
                     <div class="scenario-action">{step_action}</div>
                     <div class="scenario-price" style="color:#047857">{visible_price(item.get('step1_price', 0))}</div>
+                    <div style="font-size:0.7rem;color:#64748b;margin-top:0.18rem;font-weight:800">{item.get('step1_gain', 0):+.2f}%</div>
+                </div>
+                <div class="scenario-box" style="background:#dcfce7;border-color:#86efac">
+                    <div class="scenario-title" style="color:#047857">Step 2 · Lanjutan</div>
+                    <div class="scenario-action">{step2_action}</div>
+                    <div class="scenario-price" style="color:#047857">{visible_price(item.get('step2_price', 0))}</div>
+                    <div style="font-size:0.7rem;color:#64748b;margin-top:0.18rem;font-weight:800">{item.get('step2_gain', 0):+.2f}%</div>
                 </div>
                 <div class="scenario-box" style="background:#fef2f2;border-color:#fecaca">
                     <div class="scenario-title" style="color:#b91c1c">Skenario gagal</div>
                     <div class="scenario-action">{fail_action}</div>
                     <div class="scenario-price" style="color:#b91c1c">{visible_price(item.get('fail_price', 0))}</div>
+                    <div style="font-size:0.7rem;color:#64748b;margin-top:0.18rem;font-weight:800">-{item.get('fail_loss', 0):.2f}%</div>
                 </div>
             </div>
 
@@ -3505,6 +3517,158 @@ def render_stats_tab():
             )
 
 
+# =============================================================================
+# EDUCATION TAB — cara baca sinyal
+# =============================================================================
+def render_education_tab():
+    """Halaman edukasi singkat: horizon prediksi, cara baca tiap chip, dan contoh."""
+    st.markdown("## Cara Baca Sinyal")
+    st.markdown(
+        "Halaman ini ngebantu kamu paham apa sebenarnya yang dashboard ini hitung, "
+        "dan apa yang **bukan** dilakukan. Baca pelan-pelan biar tidak salah ekspektasi."
+    )
+
+    # --- HEADLINE: HORIZON PREDIKSI ---
+    st.markdown(
+        """
+        <div style="background:#fff7ed;border:1px solid #fed7aa;border-left:5px solid #f97316;
+                    border-radius:8px;padding:1rem 1.2rem;margin:0.6rem 0 1rem;
+                    box-shadow:0 12px 34px rgba(15, 23, 42, 0.06)">
+            <div style="color:#c2410c;font-size:0.74rem;font-weight:900;
+                        text-transform:uppercase;letter-spacing:0.12em;margin-bottom:0.3rem">
+                Horizon prediksi
+            </div>
+            <div style="color:#0f172a;font-size:1.05rem;font-weight:900;line-height:1.35">
+                Web ini memberi sinyal untuk <u>6–24 jam ke depan</u>, bukan ramalan jangka panjang
+            </div>
+            <div style="color:#64748b;font-size:0.9rem;font-weight:600;margin-top:0.4rem;line-height:1.5">
+                Tidak ada model di dunia yang bisa konsisten meramal harga crypto berhari-hari ke depan —
+                volatilitas terlalu tinggi dan banyak black swan event. Yang web ini lakukan adalah
+                membaca <strong>kondisi sekarang</strong> lalu kalkulasi probabilitas pola lanjut naik
+                dalam 6 candle (1H) ke depan, plus skenario kalau retrace ke support terdekat.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # --- ALUR KEPUTUSAN ---
+    st.markdown("### 🧭 Alur keputusan yang bot pakai")
+    st.markdown(
+        """
+        Setiap candle (sekitar 60 detik refresh), bot jalanin pipeline ini per coin:
+
+        1. **Tarik harga & 24h change** dari Indodax `/api/summaries`
+        2. **Hitung 30+ indikator teknikal**: RSI, EMA, MACD, Bollinger, Supertrend, ADX, Ichimoku, Squeeze, OBV, MFI, VWAP
+        3. **Confluence Gate 5/5**: cek 5 syarat valid (Trend EMA200, Volume, Pinbar, Dynamic Wall, Static Support).
+           Kalau cuma lulus 3/5, sinyal otomatis dikecilkan jadi WATCH
+        4. **Multi-timeframe check**: bias 4H + 1D harus selaras, kalau bearish kompak → tolak entry
+        5. **ML KNN forecast**: cari 12-35 pola historis paling mirip kondisi sekarang, hitung berapa persen yang berakhir naik dalam 6 jam
+        6. **Backtest**: simulasi sinyal serupa di 90 candle historis, ukur winrate
+        7. **Intelligence layer**: cari swing S/R riil, deteksi divergence, kenali pola candle (engulfing/hammer/dll)
+        8. **News sentiment**: baca RSS CoinDesk/Cointelegraph/Decrypt + X feed, kasih bias positif/negatif
+        9. **Learning engine**: cek riwayat sinyal coin ini — kalau pernah 70%+ winrate, score naik; kalau lemah, dipotong
+        10. **Final action**: BELI KUAT / CICIL BELI / WATCH / JANGAN BELI / HINDARI + alokasi 0-10% modal via Kelly Criterion
+        """
+    )
+
+    # --- TIPS BACA KARTU ---
+    st.markdown("### 📇 Cara baca kartu rekomendasi")
+    with st.expander("Score, Risk, Alokasi, Volume", expanded=True):
+        st.markdown(
+            """
+            - **Score 0–100**: gabungan momentum + tech + ML + backtest + news + learning. **>=80 = BELI KUAT**, 65-79 = CICIL BELI
+            - **Risk**: dihitung dari volatilitas 24h, RSI overbought, posisi di range, dan kekuatan sinyal bearish. **TINGGI = entry kecil saja**
+            - **Alokasi %**: porsi modal yang disarankan untuk coin ini, sudah dibobot Kelly Criterion + risk multiplier. Maksimal 10%
+            - **Volume**: makin besar makin likuid, makin aman exit. Coin <Rp100JT/24h biasanya pump-dump
+            """
+        )
+
+    with st.expander("RSI, ML, MTF, News, Learning"):
+        st.markdown(
+            """
+            - **RSI 30-70**: zona normal. <30 oversold (peluang beli), >70 overbought (jangan kejar)
+            - **ML BULLISH 65%**: dari 12-35 pola historis paling mirip, 65% berakhir naik 1%+ dalam 6 jam. **Bukan jaminan**
+            - **MTF ALIGN BULLISH**: 4H + 1D kompak naik. **MIXED = arah belum jelas**, lebih baik tunggu
+            - **News +2 / -3**: bias sentimen dari headline 36 jam terakhir. Cuma adjustment kecil, jangan jadi alasan utama
+            - **Learning +5**: coin ini di riwayat 70%+ winrate, dapat boost. -6 = sebaliknya, hati-hati
+            """
+        )
+
+    with st.expander("Smart adj, Divergence, Candle, Regime, VWAP, Fib zone"):
+        st.markdown(
+            """
+            - **Smart adj** (-18 sampai +14): agregat dari intelligence layer. Confidence label TINGGI = sinyal jelas
+            - **Divergence BULLISH**: harga lower low tapi RSI higher low → potensi reversal naik. Sinyal kuat untuk entry
+            - **Candle pattern**: engulfing/hammer = bullish, shooting star/bearish engulfing = sebaliknya
+            - **Regime TRENDING KUAT** (Choppiness <38): momentum sinyal lebih akurat. **RANGING (>62)**: lebih cocok mean-reversion
+            - **VWAP ABOVE +5%**: harga premium, fomo zone. **BELOW -2%**: diskon, peluang akumulasi saat tren naik
+            - **Fib zone GOLDEN 0.5/0.618**: zona klasik untuk entry saat retrace. DI HIGH = sudah mahal
+            - **Kelly %**: alokasi optimal dari winrate historis coin ini (di-cap ke 10%)
+            """
+        )
+
+    with st.expander("Two Steps Ahead — bukan ramalan, tapi roadmap"):
+        st.markdown(
+            """
+            Bagian ini menjawab "**kalau saya entry sekarang, ke mana harga nanti**?":
+
+            - **Step 1**: target terdekat = swing resistance R1 dari ~3 minggu terakhir
+            - **Step 2**: kalau R1 tembus, lanjut ke R2 (bisa terjadi dalam beberapa jam atau beberapa hari, **tidak ada timeline**)
+            - **Skenario gagal**: kalau momentum hilang, harga retrace ke swing support S1
+
+            **Penting**: ini skenario, bukan jadwal. Salah satu dari step 1, step 2, atau gagal akan terjadi.
+            Disiplin TP/SL kamu yang menentukan apakah kamu profit di step 1, step 2, atau cut loss di skenario gagal.
+            """
+        )
+
+    with st.expander("TP1, TP2, Target, Stop Loss, Trailing"):
+        st.markdown(
+            """
+            - **TP1**: ambil 30% posisi di sini (locking profit awal)
+            - **TP2**: ambil 30% lagi
+            - **Target**: ambil 40% sisanya, sekaligus geser SL ke breakeven
+            - **Stop Loss**: cut loss otomatis kalau harga jebol. **Kalau SL kena, jangan rata-ratakan posisi**
+            - **Trailing %**: setelah TP1 hit, trailing stop melindungi profit kalau harga reversal
+            """
+        )
+
+    # --- CONTOH SKENARIO ---
+    st.markdown("### 📊 Contoh skenario nyata")
+    st.markdown(
+        """
+        **Skenario A — sinyal valid 5/5:**
+        - BTC score 85, MTF ALIGN BULLISH, ML BULLISH 70%, Confluence 5/5
+        - Entry → TP1 +1.5% (ambil 30%) → TP2 +3% (ambil 30%) → Target +5% (ambil 40%)
+        - Total profit ~3% dalam 12-24 jam. Disiplin > greedy.
+
+        **Skenario B — sinyal valid 4/5:**
+        - ETH score 70, Confluence 4/5, Risk SEDANG
+        - Entry kecil (2-3% modal saja) — alokasi otomatis dipotong 50%
+        - Bersiap jika retrace ke support, cut loss kalau jebol
+
+        **Skenario C — JANGAN BELI:**
+        - Coin micin score 35, RSI 85 (overbought), MTF MIXED, vol <Rp100JT
+        - Skip dulu, tunggu retrace + sinyal lebih bersih. Banyak yang menggoda, tapi disiplin.
+        """
+    )
+
+    # --- DISCLAIMER PENUTUP ---
+    st.markdown(
+        """
+        <div style="background:#fef2f2;border:1px solid #fecaca;border-left:5px solid #b91c1c;
+                    border-radius:8px;padding:0.9rem 1.1rem;margin:1.2rem 0;
+                    color:#7f1d1d;font-size:0.88rem;line-height:1.55;font-weight:600">
+            <strong>Disclaimer keras:</strong> Ini bukan saran keuangan. Web ini cuma alat bantu analisis statistik
+            yang punya tingkat error nyata. Pasar crypto berisiko tinggi, kamu bisa kehilangan seluruh modal dalam
+            hitungan menit. Selalu lakukan riset sendiri (DYOR), gunakan modal yang siap kamu hilangkan, dan
+            <strong>jangan pernah leverage</strong> sampai kamu paham 100% mekanismenya.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_donation():
     with st.expander("💖 Dukung Project Ini (Donasi)"):
         st.markdown("Bantu saya terus mengembangkan tools ini:")
@@ -3633,9 +3797,10 @@ def main():
     render_learning_panel(learning_profile)
     render_fomo_alerts(tickers, prices_24h, market_stats, news_profile, learning_profile)
 
-    tab1, tab_pf, tab_st, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab_pf, tab_st, tab2, tab3, tab4, tab5, tab6, tab_edu = st.tabs([
         "Rekomendasi Beli", "Portofolio Saya", "Statistik Bot",
         "Semua Aset", "Micin/Meme", "Analisis Detail", "Scan Koin Lain", "Tanya AI Advisor",
+        "Cara Baca Sinyal",
     ])
     with tab1:
         render_rekomendasi_list(all_results, "Rekomendasi Beli Hari Ini", max_items=20)
@@ -3832,6 +3997,8 @@ def main():
                             
                         except Exception as e:
                             st.error(f"Gagal menghubungi AI Advisor: {e}")
+    with tab_edu:
+        render_education_tab()
     render_donation()
     render_footer()
 

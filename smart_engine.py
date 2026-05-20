@@ -26,14 +26,15 @@ import pandas as pd
 # =============================================================================
 # GRACEFUL IMPORTS
 # =============================================================================
+# pandas-ta-classic (fork aktif, Python 3.12+) atau pandas-ta legacy
 try:
-    import pandas_ta as pta  # type: ignore
+    import pandas_ta_classic as pta  # type: ignore
     PTA_AVAILABLE = True
-except Exception:  # pragma: no cover
+except Exception:
     try:
-        import pandas_ta_classic as pta  # type: ignore
+        import pandas_ta as pta  # type: ignore
         PTA_AVAILABLE = True
-    except Exception:
+    except Exception:  # pragma: no cover
         pta = None  # type: ignore
         PTA_AVAILABLE = False
 
