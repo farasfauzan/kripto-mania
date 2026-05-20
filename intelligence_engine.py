@@ -202,7 +202,7 @@ def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
     loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
-    rs = gain / loss.replace(0, pd.NA)
+    rs = gain / loss.replace(0, np.nan)
     return (100 - (100 / (1 + rs))).fillna(50)
 
 
@@ -341,7 +341,7 @@ def compute_choppiness_index(candles: pd.DataFrame, period: int = 14) -> dict:
     atr_sum = tr.rolling(period).sum()
     high_max = high.rolling(period).max()
     low_min = low.rolling(period).min()
-    rng = (high_max - low_min).replace(0, pd.NA)
+    rng = (high_max - low_min).replace(0, np.nan)
     ci_series = 100 * np.log10(atr_sum / rng) / np.log10(period)
     ci_series = ci_series.replace([np.inf, -np.inf], np.nan).dropna()
     if ci_series.empty:
