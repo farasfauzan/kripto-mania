@@ -2782,7 +2782,9 @@ def render_sidebar(market_stats, fg_data, all_results):
                 st.markdown(f"**{p['symbol']}** · Score {p['score']}/100 · {p['change']:+.1f}%")
         st.markdown("#### Status")
         st.markdown("Telegram Bot: **Aktif**" if BOT_ENABLED else "Telegram Bot: **Nonaktif**")
-        st.markdown("Auto-refresh: **60 detik**")
+        auto_state = "ON (60 detik)" if st.session_state.get("auto_refresh_enabled") else "OFF (manual)"
+        st.markdown(f"Auto-refresh: **{auto_state}**")
+
         st.markdown(
             f"""<a href="{TELEGRAM_COMMUNITY}" target="_blank" style="color:#2563eb;font-weight:900;text-decoration:none">Gabung Telegram Premium</a>""",
             unsafe_allow_html=True,
@@ -3858,17 +3860,41 @@ def render_footer():
 # =============================================================================
 def main():
     # --- AUTO REFRESH (toggleable) ---
-    # User bisa matikan saat lagi chat AI biar spinner tidak ke-reset.
+    # Default OFF biar nggak ganggu pas mantau. User bisa nyalain manual.
+    # Kalau ON, kita pakai soft-refresh: reload halaman cuma DI BACKGROUND saat tab masih
+    # aktif, tanpa flicker splash skeleton.
     if "auto_refresh_enabled" not in st.session_state:
-        st.session_state["auto_refresh_enabled"] = True
+        st.session_state["auto_refresh_enabled"] = False
 
     if st.session_state["auto_refresh_enabled"]:
-        st.markdown(
+        # Soft refresh: cuma trigger reload kalau tab visible & user nggak lagi ngetik /
+        # interact. Lebih halus dari meta-refresh murni.
+        components.html(
             """
-            <meta http-equiv="refresh" content="60">
-            <div style="display:none">autorefresh</div>
+            <script>
+            (function() {
+              if (window.__autoRefreshScheduled) return;
+              window.__autoRefreshScheduled = true;
+              const REFRESH_MS = 60000;
+              const tick = () => {
+                if (document.hidden) {
+                  setTimeout(tick, 5000);
+                  return;
+                }
+                const active = document.activeElement;
+                const tag = active ? active.tagName : '';
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || (active && active.isContentEditable)) {
+                  // user lagi ngetik, jangan reload
+                  setTimeout(tick, 10000);
+                  return;
+                }
+                window.parent.location.reload();
+              };
+              setTimeout(tick, REFRESH_MS);
+            })();
+            </script>
             """,
-            unsafe_allow_html=True,
+            height=0,
         )
 
     render_header()
@@ -3885,13 +3911,20 @@ def main():
             current = st.session_state["auto_refresh_enabled"]
             label = "Auto: ON" if current else "Auto: OFF"
             if st.button(label, use_container_width=True, key="toggle_auto_refresh",
-                         help="Matikan saat lagi chat AI agar spinner tidak ke-reset tiap 60 detik"):
+                         help="Default OFF supaya halaman nggak reload sendiri pas lagi mantau. Nyalakan kalau ingin update otomatis tiap 60 detik."):
                 st.session_state["auto_refresh_enabled"] = not current
                 st.rerun()
-    
+
+    # Skeleton splash hanya muncul saat first-load (belum ada cache di session).
+    # Kalau data sudah pernah ada, langsung pake yang lama biar nggak flicker.
+    has_prior_data = bool(st.session_state.get("last_all_tickers"))
     loading_placeholder = st.empty()
-    loading_placeholder.markdown(loading_markup(), unsafe_allow_html=True)
+    if not has_prior_data:
+        loading_placeholder.markdown(loading_markup(), unsafe_allow_html=True)
     tickers, prices_24h, server_time, error = fetch_all_ticker_data()
+    if tickers:
+        st.session_state["last_all_tickers"] = tickers
+
     if error and not tickers:
         loading_placeholder.empty()
         st.error(f"❌ {error}")

@@ -40,15 +40,21 @@ def env_bool(name, default=False):
 
 ENABLE_FOMO_ALERTS = env_bool("ENABLE_FOMO_ALERTS", True)
 ENABLE_CONFLUENCE_ALERTS = env_bool("ENABLE_CONFLUENCE_ALERTS", True)
+ENABLE_EARLY_ALERTS = env_bool("ENABLE_EARLY_ALERTS", True)
 
 # === ANTI-SPAM CONTROL ===
-LOOP_SLEEP_SECONDS = int(os.environ.get("LOOP_SLEEP_SECONDS", "180"))
+# Default 60s biar scan 3x lebih cepet daripada 180s lama.
+LOOP_SLEEP_SECONDS = int(os.environ.get("LOOP_SLEEP_SECONDS", "60"))
 
 FOMO_GLOBAL_COOLDOWN_SEC = int(os.environ.get("FOMO_GLOBAL_COOLDOWN_SEC", "1800"))
 FOMO_SYMBOL_COOLDOWN_SEC = int(os.environ.get("FOMO_SYMBOL_COOLDOWN_SEC", str(24 * 3600)))
 
 CONFLUENCE_SYMBOL_COOLDOWN_SEC = int(os.environ.get("CONFLUENCE_SYMBOL_COOLDOWN_SEC", str(24 * 3600)))
 CONFLUENCE_MAX_ALERTS_PER_CYCLE = int(os.environ.get("CONFLUENCE_MAX_ALERTS_PER_CYCLE", "1"))
+
+# Early-entry punya cooldown sendiri supaya nggak nabrak alert konfirmasi.
+EARLY_SYMBOL_COOLDOWN_SEC = int(os.environ.get("EARLY_SYMBOL_COOLDOWN_SEC", str(4 * 3600)))
+EARLY_MAX_ALERTS_PER_CYCLE = int(os.environ.get("EARLY_MAX_ALERTS_PER_CYCLE", "2"))
 
 MESSAGE_DUPLICATE_TTL_SEC = int(os.environ.get("MESSAGE_DUPLICATE_TTL_SEC", str(12 * 3600)))
 ACTIVE_SIGNAL_TTL_SEC = int(os.environ.get("ACTIVE_SIGNAL_TTL_SEC", str(72 * 3600)))
@@ -58,11 +64,19 @@ MIN_ALERT_SCORE = int(os.environ.get("MIN_ALERT_SCORE", "78"))
 MIN_ALERT_VOLUME_IDR = float(os.environ.get("MIN_ALERT_VOLUME_IDR", "1000000000"))
 MAX_ALERT_RANGE_POS = float(os.environ.get("MAX_ALERT_RANGE_POS", "82"))
 
+# Threshold khusus EARLY ENTRY: dilonggarin biar masuk sebelum pump meledak.
+EARLY_MIN_SCORE = int(os.environ.get("EARLY_MIN_SCORE", "62"))
+EARLY_MIN_VOLUME_IDR = float(os.environ.get("EARLY_MIN_VOLUME_IDR", "500000000"))
+EARLY_MAX_RANGE_POS = float(os.environ.get("EARLY_MAX_RANGE_POS", "65"))  # harus masih di paruh bawah range 24h
+EARLY_MIN_SETUP_STRENGTH = int(os.environ.get("EARLY_MIN_SETUP_STRENGTH", "3"))  # min checklist setup terpenuhi
+
+
 # === STATE ===
 _last_sinyal_date = None
 _last_summary_date = None
 _fomo_sent_symbols = {}
 _confluence_sent_symbols = {}  # track real-time confluence alerts
+_early_sent_symbols = {}  # track EARLY entry alerts (pre-pump)
 _active_signals = {}  # track sinyal beli aktif untuk TP/SL monitor
 _daily_stats = {"tp_hit": 0, "sl_hit": 0, "signals_sent": 0}
 _last_fomo_alert_time = 0  # track last global FOMO alert to prevent spamming
@@ -70,10 +84,11 @@ _message_fingerprints = {}  # Anti-duplicate message fingerprint cache
 _last_news_profile = None
 _last_news_profile_at = 0
 
+
 STATE_FILE = "bot_state.json"
 
 def load_bot_state():
-    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time, _message_fingerprints
+    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _early_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time, _message_fingerprints
     if not os.path.exists(STATE_FILE):
         log("No state file found. Starting fresh.")
         return
@@ -84,10 +99,12 @@ def load_bot_state():
         _last_summary_date = data.get("last_summary_date", _last_summary_date)
         _fomo_sent_symbols = data.get("fomo_sent_symbols", _fomo_sent_symbols)
         _confluence_sent_symbols = data.get("confluence_sent_symbols", _confluence_sent_symbols)
+        _early_sent_symbols = data.get("early_sent_symbols", _early_sent_symbols)
         _active_signals = data.get("active_signals", _active_signals)
         _daily_stats = data.get("daily_stats", _daily_stats)
         _last_fomo_alert_time = data.get("last_fomo_alert_time", _last_fomo_alert_time)
         _message_fingerprints = data.get("message_fingerprints", _message_fingerprints)
+
         
         # Convert _active_signals hit back to set (JSON arrays become lists)
         for sym in _active_signals:
@@ -99,7 +116,7 @@ def load_bot_state():
         log(f"Error loading bot state: {e}")
 
 def save_bot_state():
-    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time, _message_fingerprints
+    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _early_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time, _message_fingerprints
     try:
         # Convert set to list for JSON serialization
         active_signals_copy = {}
@@ -114,11 +131,13 @@ def save_bot_state():
             "last_summary_date": _last_summary_date,
             "fomo_sent_symbols": _fomo_sent_symbols,
             "confluence_sent_symbols": _confluence_sent_symbols,
+            "early_sent_symbols": _early_sent_symbols,
             "active_signals": active_signals_copy,
             "daily_stats": _daily_stats,
             "last_fomo_alert_time": _last_fomo_alert_time,
             "message_fingerprints": _message_fingerprints
         }
+
         tmp_path = f"{STATE_FILE}.tmp"
         with open(tmp_path, "w") as f:
             json.dump(data, f, indent=4)
@@ -1349,11 +1368,230 @@ def check_realtime_confluence_alerts(all_coins):
             log(f"Gagal memproses real-time alert untuk {sym}: {e}")
 
 
+# =============================================================================
+# EARLY ENTRY (PRE-PUMP) DETECTION
+# =============================================================================
+# Tujuan: kasih alert lebih cepet di candle 15m sebelum pump 1H/4H ngeluarin
+# konfirmasi. Pakai checklist sederhana yang fokus ke "early signs":
+#   - EMA8 > EMA21 di 15m + slope EMA8 mulai naik
+#   - RSI(14) bangun dari area oversold/netral (38..62) + naik vs candle lalu
+#   - Volume spike: volume bar terakhir > 1.4x rata-rata 20 bar
+#   - Bollinger Squeeze release: pct_b naik dari <0.4 menuju >0.5
+#   - MACD histogram balik positif atau bullish cross di 15m
+# Setup butuh minimal EARLY_MIN_SETUP_STRENGTH dari 5 checklist.
+def detect_early_setup_15m(candles_15m):
+    """Cari early entry di TF 15 menit. Return dict dengan checklist+score."""
+    default = {
+        "early_ok": False,
+        "passed": 0,
+        "checks": {},
+        "rsi": None,
+        "rsi_prev": None,
+        "vol_ratio": 1.0,
+        "macd_state": "netral",
+        "ema_state": "neutral",
+        "bb_pct_b": 0.5,
+        "bb_pct_b_prev": 0.5,
+        "trigger": "NO DATA",
+    }
+    if candles_15m is None or candles_15m.empty or len(candles_15m) < 30:
+        return default
+
+    close = candles_15m["close"].astype(float)
+    vol = candles_15m["volume"].astype(float)
+
+    # EMA cross + slope
+    ema8 = compute_ema(close, 8)
+    ema21 = compute_ema(close, 21)
+    ema_cross_up = bool(ema8.iloc[-1] > ema21.iloc[-1])
+    ema8_slope_up = bool(ema8.iloc[-1] > ema8.iloc[-3]) if len(ema8) >= 3 else False
+    ema_state = "bullish" if ema_cross_up and ema8_slope_up else ("warming" if ema_cross_up else "bearish")
+    ema_check = ema_cross_up and ema8_slope_up
+
+    # RSI bangun
+    rsi_now = compute_rsi(close) if len(close) >= 14 else 50
+    rsi_prev = compute_rsi(close.iloc[:-1]) if len(close) >= 16 else rsi_now
+    rsi_check = (38 <= rsi_now <= 68) and (rsi_now > rsi_prev + 1.5)
+
+    # Volume spike (15m)
+    avg_vol_20 = float(vol.tail(21).iloc[:-1].mean()) if len(vol) >= 21 else float(vol.tail(20).mean())
+    last_vol = float(vol.iloc[-1])
+    vol_ratio = (last_vol / avg_vol_20) if avg_vol_20 > 0 else 1.0
+    vol_check = vol_ratio >= 1.4
+
+    # MACD bullish-ish
+    macd_state, macd_hist = compute_macd(close)
+    macd_check = macd_state in ("bullish cross", "bullish") and macd_hist > 0
+
+    # Bollinger squeeze release
+    bb_now = compute_bollinger(close)
+    bb_prev = compute_bollinger(close.iloc[:-1]) if len(close) >= 21 else bb_now
+    pct_b_now = bb_now.get("bb_pct_b", 0.5)
+    pct_b_prev = bb_prev.get("bb_pct_b", pct_b_now)
+    bb_check = pct_b_prev < 0.4 and pct_b_now >= 0.5
+
+    checks = {
+        "EMA8>EMA21 + slope naik": ema_check,
+        "RSI bangun (38-68 & naik)": rsi_check,
+        "Volume 1.4x MA20 (15m)": vol_check,
+        "MACD bullish (15m)": macd_check,
+        "BB squeeze release": bb_check,
+    }
+    passed = sum(1 for v in checks.values() if v)
+
+    # Trigger label utk pesan
+    triggers = []
+    if ema_check: triggers.append("EMA up")
+    if rsi_check: triggers.append(f"RSI {rsi_prev:.0f}->{rsi_now:.0f}")
+    if vol_check: triggers.append(f"Vol {vol_ratio:.1f}x")
+    if macd_check: triggers.append("MACD+")
+    if bb_check: triggers.append("BB release")
+    trigger_label = " | ".join(triggers) if triggers else "no trigger"
+
+    return {
+        "early_ok": passed >= EARLY_MIN_SETUP_STRENGTH,
+        "passed": passed,
+        "checks": checks,
+        "rsi": round(rsi_now, 1),
+        "rsi_prev": round(rsi_prev, 1),
+        "vol_ratio": round(vol_ratio, 2),
+        "macd_state": macd_state,
+        "ema_state": ema_state,
+        "bb_pct_b": round(pct_b_now, 2),
+        "bb_pct_b_prev": round(pct_b_prev, 2),
+        "trigger": trigger_label,
+    }
+
+
+def check_early_entry_alerts(all_coins):
+    """Scan candle 15m utk deteksi setup pre-pump. Lebih cepat dari 1H confluence."""
+    if not ENABLE_EARLY_ALERTS:
+        return
+
+    global _early_sent_symbols
+    now_ts = time.time()
+    sent = 0
+
+    # Bersihin cache
+    _early_sent_symbols = {
+        k: v for k, v in _early_sent_symbols.items()
+        if now_ts - v.get("sent_at", 0) < EARLY_SYMBOL_COOLDOWN_SEC
+    }
+
+    for sym, pair in MAIN_ASSETS.items():
+        if sym not in all_coins:
+            continue
+        if sym in _early_sent_symbols:
+            continue
+        # Kalau symbol udah keluar di confluence alert, skip biar tidak dobel
+        if sym in _confluence_sent_symbols:
+            continue
+
+        try:
+            ticker = all_coins[sym]
+
+            # Filter dasar dari ticker dulu (cepat, tanpa fetch candle)
+            if ticker["vol_idr"] < EARLY_MIN_VOLUME_IDR:
+                continue
+            high_24h = ticker.get("high", 0)
+            low_24h = ticker.get("low", 0)
+            range_w = high_24h - low_24h
+            range_pos = ((ticker["price"] - low_24h) / range_w * 100) if range_w > 0 else 50
+            if range_pos > EARLY_MAX_RANGE_POS:
+                continue  # udah terlalu deket puncak, bukan early
+            if ticker["change"] > 8:
+                continue  # udah pump ngegas, ini ranah FOMO/Confluence
+
+            # Fetch 15m candles
+            candles_15m = fetch_candles(pair, tf="15", lookback_days=5)
+            time.sleep(0.25)
+            setup = detect_early_setup_15m(candles_15m)
+            if not setup["early_ok"]:
+                continue
+
+            # Konfirmasi dengan analisa 1H supaya nggak nge-fire di downtrend yg dalem
+            candles_1h = fetch_candles(pair, tf="60")
+            time.sleep(0.25)
+            if candles_1h.empty:
+                continue
+            res = apply_bot_intelligence(analyze_coin(sym, ticker, candles_1h))
+
+            # Filter konteks 1H: minimal score early & jangan kontra trend bearish
+            if res["score"] < EARLY_MIN_SCORE:
+                continue
+            if res["mtf_adjustment"] <= -5:
+                continue  # 4H/1D kompak bearish, skip
+            if res["risk_level"] == "TINGGI":
+                continue
+            if res["adx_trend"] in ("bearish_strong",):
+                continue
+
+            # Susun alert
+            pair_url = pair.upper().replace("_", "")
+            link = f"https://indodax.com/market/{pair_url}?ref={INDODAX_REF}"
+            ch_sign = "+" if res["change"] >= 0 else ""
+
+            # Suggested entry zone: harga sekarang ± 0.4%
+            entry_lo = res["price"] * 0.996
+            entry_hi = res["price"] * 1.004
+            # Early SL agak lebih ketat krn entry awal: 2.5% di bawah harga
+            early_sl = res["price"] * 0.975
+            # Early TP1/TP2: 1.8% & 3.5%
+            early_tp1 = res["price"] * 1.018
+            early_tp2 = res["price"] * 1.035
+
+            checks_text = "\n".join(
+                f"   {'🟢' if ok else '⚪'} {name}"
+                for name, ok in setup["checks"].items()
+            )
+
+            msg = (
+                f"⚡ *EARLY ENTRY -- PRE-PUMP SETUP* ⚡\n"
+                f"🚀 *{sym}* — Setup {setup['passed']}/5 (15m)\n"
+                f"──────────────────────\n"
+                f"💵 Harga: {format_idr(res['price'])} ({ch_sign}{res['change']:.2f}%)\n"
+                f"🧭 Range 24h: {res['range_pos']:.0f}% (paruh bawah)\n"
+                f"📍 Trigger: _{setup['trigger']}_\n"
+                f"📊 RSI 15m: {setup['rsi_prev']} → *{setup['rsi']}* | Vol 15m: *{setup['vol_ratio']}x*\n"
+                f"📈 EMA 15m: {setup['ema_state']} | MACD 15m: {setup['macd_state']}\n"
+                f"🛡️ Konteks 1H: Score *{res['score']}/100* | {res['action']}\n"
+                f"🧠 ML: {res['ml_label']} ({res['ml_prob']}%) | MTF: {res['mtf_label']}\n\n"
+                f"✅ *Checklist Setup 15m:*\n"
+                f"{checks_text}\n\n"
+                f"🎯 Entry zone: {format_idr(entry_lo)} – {format_idr(entry_hi)}\n"
+                f"🎯 TP1 / TP2: {format_idr(early_tp1)} / {format_idr(early_tp2)}\n"
+                f"🛑 SL ketat (early): {format_idr(early_sl)} (-2.5%)\n"
+                f"💰 Saran size: kecil dulu (1-3% modal), tambah saat konfirmasi 1H\n\n"
+                f"[⚡ MASUK DI INDODAX]({link})\n"
+                f"──────────────────────\n"
+                f"⚠️ *Early signal = lebih cepat tapi lebih rawan false-break.* "
+                f"Pakai SL ketat & ukuran kecil. DYOR.\n"
+                f"💎 *Gabung Premium:* {TELEGRAM_CHANNEL}"
+            )
+
+            # Notifikasi getar utk early karena ini intinya kecepatan
+            send_message(msg, notify=True)
+            log(f"EARLY ENTRY ALERT terkirim untuk {sym} (setup {setup['passed']}/5, score 1H {res['score']})")
+
+            _early_sent_symbols[sym] = {
+                "sent_at": now_ts,
+                "price": res["price"],
+                "passed": setup["passed"],
+            }
+
+            sent += 1
+            if sent >= EARLY_MAX_ALERTS_PER_CYCLE:
+                break
+        except Exception as e:
+            log(f"Gagal early-entry scan utk {sym}: {e}")
+
+
 def should_send_sinyal():
     global _last_sinyal_date
     now = datetime.now(WIB)
     today = now.strftime("%Y-%m-%d")
     return 8 <= now.hour <= 9 and _last_sinyal_date != today
+
 
 
 # =============================================================================
@@ -1447,10 +1685,12 @@ if __name__ == "__main__":
         keep_alive()
 
     log("BOT DAEMON ULTRA SMART -- 24/7")
-    log("   Sinyal: 08:00 WIB (RSI+EMA+MACD+BB+Supertrend+ADX+ML+Backtest)")
-    log("   FOMO check: setiap 2 menit")
-    log("   TP/SL monitor: setiap 2 menit")
+    log("   Sinyal harian: 08:00 WIB (1H multi-indikator)")
+    log(f"   Loop scan: setiap {LOOP_SLEEP_SECONDS}s")
+    log("   Early entry (15m pre-pump): tiap loop")
+    log("   Confluence 1H + FOMO + TP/SL: tiap loop")
     log("   Daily summary: 21:00 WIB")
+
     log(f"   Channel: {TELEGRAM_CHANNEL}")
     log("=" * 40)
     if not BOT_TOKEN or not CHAT_ID:
@@ -1492,17 +1732,21 @@ if __name__ == "__main__":
             if should_send_sinyal():
                 send_sinyal_harian(all_coins)
 
-            # 2. Real-time Confluence Alert 4/5+ (setiap siklus)
+            # 2. Early Entry (15m pre-pump) — paling cepet, dijalanin duluan
+            check_early_entry_alerts(all_coins)
+
+            # 3. Real-time Confluence Alert 4/5+ (1H, sebagai konfirmasi)
             check_realtime_confluence_alerts(all_coins)
 
-            # 3. FOMO detection (setiap siklus)
+            # 4. FOMO detection (setiap siklus)
             check_fomo_and_alert(all_coins)
 
-            # 4. TP/SL price monitor
+            # 5. TP/SL price monitor
             check_tp_sl_alerts(all_coins)
 
-            # 5. Daily summary (jam 21:00 WIB)
+            # 6. Daily summary (jam 21:00 WIB)
             send_daily_summary()
+
 
             # Save state at the end of each successful cycle
             save_bot_state()
