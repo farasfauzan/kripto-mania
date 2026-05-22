@@ -795,12 +795,11 @@ st.markdown(
         .buy-button { padding: 12px 28px; font-size: 1rem; }
         .rekomendasi-hero { padding: 1.5rem 1rem; }
     }
-    /* Premium clean dashboard layer */
     .stApp {
-        background:
-            radial-gradient(circle at top left, rgba(34, 197, 94, 0.10), transparent 30rem),
-            radial-gradient(circle at top right, rgba(59, 130, 246, 0.10), transparent 28rem),
-            #f6f8fb !important;
+        background: radial-gradient(circle at 15% 50%, rgba(16, 185, 129, 0.08), transparent 25%),
+                    radial-gradient(circle at 85% 30%, rgba(59, 130, 246, 0.08), transparent 25%),
+                    linear-gradient(180deg, #09090b 0%, #111827 100%) !important;
+        color: #e2e8f0 !important;
     }
     .block-container {
         max-width: 1240px;
@@ -808,12 +807,14 @@ st.markdown(
         padding-bottom: 2rem !important;
     }
     .app-shell-header {
-        background: rgba(255, 255, 255, 0.84);
-        border: 1px solid #dbe7f3;
+        background: rgba(15, 23, 42, 0.65) !important;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
         border-radius: 8px;
         padding: 1.35rem 1.4rem;
         margin-bottom: 0.8rem;
-        box-shadow: 0 18px 50px rgba(15, 23, 42, 0.08);
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.3);
     }
     .app-brand-row {
         display: flex;
@@ -822,27 +823,27 @@ st.markdown(
         gap: 1rem;
         flex-wrap: wrap;
     }
-    .app-kicker {
-        color: #047857;
-        font-size: 0.74rem;
-        font-weight: 900;
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        margin-bottom: 0.25rem;
-    }
     .app-title {
-        color: #0f172a;
+        color: #f8fafc !important;
         font-size: 2.25rem;
         line-height: 1.05;
         font-weight: 900;
         margin: 0;
     }
     .app-subtitle {
-        color: #64748b;
+        color: #94a3b8 !important;
         font-size: 0.96rem;
         font-weight: 600;
         margin: 0.45rem 0 0;
         max-width: 720px;
+    }
+    .app-kicker {
+        color: #10b981 !important;
+        font-size: 0.74rem;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        margin-bottom: 0.25rem;
     }
     .quick-links {
         display: flex;
@@ -3077,6 +3078,22 @@ def render_rekomendasi_card(item, idx):
         """).strip().replace("\n", ""),
         unsafe_allow_html=True,
     )
+    
+    # AI Insight Button underneath the card
+    btn_key = f"insight_btn_{item['symbol']}_{idx}"
+    if st.button(f"🧠 Minta AI Insight untuk {item['symbol']}", key=btn_key, use_container_width=True):
+        with st.spinner(f"Menghubungi AI untuk {item['symbol']}..."):
+            gemini_key = get_secret("GEMINI_API_KEY", "")
+            deepseek_key = get_secret("DEEPSEEK_API_KEY", "")
+            if not gemini_key and not deepseek_key:
+                st.error("API Key Gemini atau Deepseek belum dikonfigurasi di secrets.toml")
+            else:
+                try:
+                    insight_res = ai_pilot.generate_signal_insight(item, gemini_key, deepseek_key)
+                    insight_text = insight_res.get("insight", "AI gagal memberikan insight.")
+                    st.info(insight_text)
+                except Exception as e:
+                    st.error(f"Gagal menghubungi AI: {e}")
 
 
 

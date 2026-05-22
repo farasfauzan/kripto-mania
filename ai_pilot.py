@@ -395,3 +395,39 @@ def generate_playbook(
             "market_mode": ctx.get("market", {}).get("mode", "normal"),
         },
     }
+
+
+def generate_signal_insight(coin_data: dict, gemini_key: str = "", deepseek_key: str = "") -> dict:
+    """Generate a quick insight for a single realtime signal."""
+    prompt = f"""
+    Berikan "ANALYTICS & INSIGHT" dan "INSTRUKSI" singkat, padat, dan profesional untuk aset crypto {coin_data.get('symbol')} yang sedang memberikan sinyal {coin_data.get('action')}.
+    
+    Data aset saat ini:
+    Harga: {coin_data.get('price')}
+    Perubahan 24j: {coin_data.get('change'):+.2f}%
+    RSI: {coin_data.get('rsi')}
+    MACD: {coin_data.get('macd_signal')}
+    Supertrend: {coin_data.get('supertrend')}
+    Machine Learning Forecast: {coin_data.get('ml_label')} ({coin_data.get('ml_prob')}%)
+    Score: {coin_data.get('score')}/100
+    Risk Level: {coin_data.get('risk_level')}
+    
+    Tuliskan dalam format ini persis seperti di bawah ini, gunakan Markdown tebal/miring:
+    
+    📊 *ANALYTICS & INSIGHT:*
+    [1 paragraf analisis naratif singkat yang menjelaskan mengapa momentum ini terjadi atau potensinya berdasarkan data teknikal di atas. Gunakan bahasa pro layaknya laporan on-chain/trading profesional]
+    
+    🟢 *INSTRUKSI:*
+    [1-2 kalimat instruksi trading konkrit terkait titik entry, trailing, atau take profit]
+    
+    Batasi maksimal 70 kata secara keseluruhan. Jangan beri salam pembuka/penutup.
+    """
+    
+    insight_text = call_llm_for_playbook(prompt, gemini_key, deepseek_key)
+    
+    # Clean up
+    insight_text = insight_text.replace("```markdown", "").replace("```", "").strip()
+    if "_Semua AI provider gagal" in insight_text or "_Tidak ada API" in insight_text:
+        insight_text = "📊 *ANALYTICS & INSIGHT:*\nAI Insight tidak tersedia saat ini.\n\n🟢 *INSTRUKSI:*\nIkuti sinyal teknikal di atas dengan manajemen risiko."
+        
+    return {"insight": insight_text}

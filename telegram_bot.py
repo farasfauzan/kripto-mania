@@ -17,8 +17,24 @@ from datetime import datetime, timezone, timedelta
 from keep_alive import keep_alive
 from learning_engine import apply_learning_adjustments, record_signal, train_from_prices
 from news_engine import apply_news_adjustments, build_news_profile
+from ai_pilot import generate_signal_insight
 
 # === CONFIG ===
+def _get_api_key(key_name):
+    val = os.environ.get(key_name)
+    if val: return val
+    try:
+        with open(".streamlit/secrets.toml", "r") as f:
+            for line in f:
+                if line.startswith(key_name):
+                    return line.split("=")[1].strip().strip('"').strip("'")
+    except:
+        pass
+    return ""
+
+GEMINI_API_KEY = _get_api_key("GEMINI_API_KEY")
+DEEPSEEK_API_KEY = _get_api_key("DEEPSEEK_API_KEY")
+
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 INDODAX_REF = "narwanpratanta"
@@ -1308,36 +1324,33 @@ def check_realtime_confluence_alerts(all_coins):
             # Kirim alert instan!
             pair_url = pair.upper().replace("_", "")
             link = f"https://indodax.com/market/{pair_url}?ref={INDODAX_REF}"
+            link_tv = f"https://www.tradingview.com/chart/?symbol=INDODAX:{pair_url}"
             ch_sign = "+" if res["change"] >= 0 else ""
             
-            # Buat daftar checklist confluence
-            valid_checks = []
-            for name, ok in res["confluence_checks"].items():
-                if ok:
-                    valid_checks.append(f"   🟢 {name}: VALID")
-                else:
-                    valid_checks.append(f"   🔴 {name}: TIDAK")
-            valid_checks_text = "\n".join(valid_checks)
+            insight_res = generate_signal_insight(res, GEMINI_API_KEY, DEEPSEEK_API_KEY)
+            ai_insight = insight_res.get("insight", "📊 *ANALYTICS & INSIGHT:*\nAI Insight tidak tersedia saat ini.\n\n🟢 *INSTRUKSI:*\nIkuti sinyal teknikal di atas dengan manajemen risiko.")
 
             msg = (
-                f"🚨 *SINYAL MASUK INSTAN (CONFLUENCE {res['confluence_passed']}/5)* 🚨\n"
-                f"🔥 *{sym}* — {res['action']} (Score: {res['score']}/100)\n"
+                f"*[ RADAR SINYAL OTOMATIS ]*\n"
+                f"🚨 *CEX OUTFLOW ALERT:* [${sym}]({link})\n"
+                f"\n"
+                f"🔥 *{res['action']} DETECTED!* Score: {res['score']}/100\n"
                 f"──────────────────────\n"
                 f"💵 Harga: {format_idr(res['price'])} ({ch_sign}{res['change']:.2f}%)\n"
-                f"🛡️ Confluence: *{res['confluence_label']}* ({res['confluence_strength']})\n\n"
-                f"🧭 MTF: *{res['mtf_label']}* | 4H {res['mtf_4h']} | 1D {res['mtf_1d']}\n"
-                f"📰 News: *{res.get('news_label', 'NO DATA')}* ({res.get('news_adjustment', 0):+d})\n"
-                f"✅ *Status Gerbang Konfluensi:*\n"
-                f"{valid_checks_text}\n\n"
+                f"🛡️ Confluence: *{res['confluence_label']}* ({res['confluence_strength']})\n"
                 f"🧠 ML Forecast: *{res['ml_label']}* ({res['ml_prob']}%, {res['ml_conf']})\n"
-                f"📊 Backtest: *{res['bt_label']}* (WR {res['bt_wr']}%, {res['bt_trades']} trades)\n"
-                f"──────────────────────\n"
-                f"🎯 TP1 / TP2 / TP3: {format_idr(res['tp1'])} / {format_idr(res['tp2'])} / {format_idr(res['tp3'])}\n"
+                f"📊 Backtest WR: *{res['bt_wr']}%* ({res['bt_trades']} trades)\n"
+                f"\n"
+                f"{ai_insight}\n"
+                f"\n"
+                f"🎯 TP1/TP2/TP3: {format_idr(res['tp1'])} / {format_idr(res['tp2'])} / {format_idr(res['tp3'])}\n"
                 f"🛑 Stop Loss: {format_idr(res['stop_loss'])} | Trailing: {res['trailing_pct']}%\n"
-                f"💰 Alokasi Modal: *{res['alloc_pct']}%*\n\n"
-                f"[🔥 EKSEKUSI DI INDODAX]({link})\n"
+                f"💰 Alokasi Modal: *{res['alloc_pct']}%*\n"
+                f"\n"
+                f"📈 *On-Chain Tracker:*\n"
+                f"[Indodax]({link}) | [TradingView]({link_tv})\n"
                 f"──────────────────────\n"
-                f"⚠️ *Bukan saran keuangan. Selalu gunakan uang dingin (DYOR).* \n"
+                f"⚠️ _Bukan saran keuangan. Selalu gunakan uang dingin (DYOR)._\n"
                 f"💎 *Gabung Premium:* {TELEGRAM_CHANNEL}"
             )
             
