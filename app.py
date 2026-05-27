@@ -2910,7 +2910,7 @@ def render_market_stats(market_stats):
         )
 
 
-def render_rekomendasi_card(item, idx):
+def render_rekomendasi_card(item, idx, key_prefix=""):
     change_sign = "+" if item["change"] >= 0 else ""
     change_color = "#22c55e" if item["change"] >= 0 else "#ef4444"
     pair_upper = item["pair"].upper().replace("_", "")
@@ -3249,7 +3249,7 @@ def render_rekomendasi_card(item, idx):
     )
     
     # AI Insight Button underneath the card
-    btn_key = f"insight_btn_{item['symbol']}_{idx}_{id(item)}"
+    btn_key = f"insight_btn_{key_prefix}_{item['symbol']}_{idx}_{id(item)}"
     if st.button(f"🧠 Minta AI Insight untuk {item['symbol']}", key=btn_key, use_container_width=True):
         with st.spinner(f"Menghubungi AI untuk {item['symbol']}..."):
             gemini_key = get_secret("GEMINI_API_KEY", "")
@@ -3280,7 +3280,7 @@ def render_rekomendasi_list(results, title, max_items=10):
         st.info("Belum ada data untuk ditampilkan.")
         return
     for i, item in enumerate(results[:max_items]):
-        render_rekomendasi_card(item, i)
+        render_rekomendasi_card(item, i, key_prefix=title)
 
 
 def render_fomo_alerts(tickers, prices_24h, market_stats, news_profile, learning_profile):
