@@ -35,8 +35,8 @@ def _get_api_key(key_name):
 GEMINI_API_KEY = _get_api_key("GEMINI_API_KEY")
 DEEPSEEK_API_KEY = _get_api_key("DEEPSEEK_API_KEY")
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+BOT_TOKEN = _get_api_key("TELEGRAM_BOT_TOKEN")
+CHAT_ID = _get_api_key("TELEGRAM_CHAT_ID")
 INDODAX_REF = "narwanpratanta"
 WIB = timezone(timedelta(hours=7))
 
@@ -76,14 +76,14 @@ MESSAGE_DUPLICATE_TTL_SEC = int(os.environ.get("MESSAGE_DUPLICATE_TTL_SEC", str(
 ACTIVE_SIGNAL_TTL_SEC = int(os.environ.get("ACTIVE_SIGNAL_TTL_SEC", str(72 * 3600)))
 NEWS_REFRESH_SECONDS = int(os.environ.get("NEWS_REFRESH_SECONDS", "900"))
 
-MIN_ALERT_SCORE = int(os.environ.get("MIN_ALERT_SCORE", "78"))
-MIN_ALERT_VOLUME_IDR = float(os.environ.get("MIN_ALERT_VOLUME_IDR", "1000000000"))
-MAX_ALERT_RANGE_POS = float(os.environ.get("MAX_ALERT_RANGE_POS", "82"))
+MIN_ALERT_SCORE = int(os.environ.get("MIN_ALERT_SCORE", "68"))
+MIN_ALERT_VOLUME_IDR = float(os.environ.get("MIN_ALERT_VOLUME_IDR", "500000000"))
+MAX_ALERT_RANGE_POS = float(os.environ.get("MAX_ALERT_RANGE_POS", "88"))
 
 # Threshold khusus EARLY ENTRY: dilonggarin biar masuk sebelum pump meledak.
-EARLY_MIN_SCORE = int(os.environ.get("EARLY_MIN_SCORE", "62"))
-EARLY_MIN_VOLUME_IDR = float(os.environ.get("EARLY_MIN_VOLUME_IDR", "500000000"))
-EARLY_MAX_RANGE_POS = float(os.environ.get("EARLY_MAX_RANGE_POS", "65"))  # harus masih di paruh bawah range 24h
+EARLY_MIN_SCORE = int(os.environ.get("EARLY_MIN_SCORE", "58"))
+EARLY_MIN_VOLUME_IDR = float(os.environ.get("EARLY_MIN_VOLUME_IDR", "300000000"))
+EARLY_MAX_RANGE_POS = float(os.environ.get("EARLY_MAX_RANGE_POS", "70"))  # harus masih di paruh bawah range 24h
 EARLY_MIN_SETUP_STRENGTH = int(os.environ.get("EARLY_MIN_SETUP_STRENGTH", "3"))  # min checklist setup terpenuhi
 
 
@@ -151,7 +151,8 @@ def save_bot_state():
             "active_signals": active_signals_copy,
             "daily_stats": _daily_stats,
             "last_fomo_alert_time": _last_fomo_alert_time,
-            "message_fingerprints": _message_fingerprints
+            "message_fingerprints": _message_fingerprints,
+            "early_sent_symbols": _early_sent_symbols
         }
 
         tmp_path = f"{STATE_FILE}.tmp"
@@ -848,10 +849,10 @@ def analyze_coin(symbol, data, candles):
     )
     score = int(clamp(round(base), 0, 100))
 
-    # Action (Raised thresholds to be much more selective and avoid noise)
-    if score >= 85 and momentum > 2.0:
+    # Action — threshold yang realistis agar sinyal bisa lolos
+    if score >= 78 and momentum > 1.0:
         action, emoji = "BELI KUAT", "🟢"
-    elif score >= 70 and momentum > 0.8:
+    elif score >= 62 and momentum > 0:
         action, emoji = "CICIL BELI", "🟡"
     elif score >= 50:
         action, emoji = "WATCH", "⚪"
@@ -860,27 +861,27 @@ def analyze_coin(symbol, data, candles):
     else:
         action, emoji = "HINDARI", "⛔"
 
-    # Confluence Gate: Entry hanya diperbolehkan jika minimal 4 dari 5 indikator valid
-    if not confluence["allow_entry"]:
+    # Confluence Gate: Entry hanya diperbolehkan jika minimal 3 dari 5 indikator valid
+    # (sebelumnya 4/5 — terlalu ketat, hampir mustahil terpenuhi bersamaan)
+    if confluence["confluence_passed"] < 3:
         if action in ("BELI KUAT", "CICIL BELI"):
-            action = "WATCH" if confluence["confluence_passed"] >= 3 else "JANGAN BELI"
-            emoji = "⚪" if confluence["confluence_passed"] >= 3 else "🔴"
+            action = "JANGAN BELI"
+            emoji = "🔴"
+    elif confluence["confluence_passed"] < 4:
+        if action == "BELI KUAT":
+            action, emoji = "CICIL BELI", "🟡"
 
-    # Super Selective Confluence Gate for BELI KUAT:
-    # Require 5/5 confluence for BELI KUAT. If only 4/5, demote to CICIL BELI.
-    if action == "BELI KUAT" and confluence["confluence_passed"] < 5:
-        action, emoji = "CICIL BELI", "🟡"
-
-    # Anti-FOMO Filter: Jangan asal masuk jika sudah terlalu dekat harga tertinggi 24h
-    if range_pos > 85 and change > 5:
+    # Anti-FOMO Filter: Jangan asal masuk jika sudah sangat dekat harga tertinggi 24h
+    # (threshold dinaikkan dari 85/5% ke 92/8% agar tidak terlalu agresif memblokir)
+    if range_pos > 92 and change > 8:
         if action in ("BELI KUAT", "CICIL BELI"):
             action = "WATCH"
             emoji = "⚪"
 
-    # Multi-timeframe guard: jangan agresif jika 4H/1D kompak bearish.
-    if mtf["mtf_adjustment"] <= -5 and action in ("BELI KUAT", "CICIL BELI"):
-        action = "WATCH"
-        emoji = "⚪"
+    # Multi-timeframe guard: jangan agresif jika 4H/1D kompak bearish KUAT.
+    # (threshold dari -5 ke -8, agar sinyal bearish ringan tidak langsung blokir)
+    if mtf["mtf_adjustment"] <= -8 and action == "BELI KUAT":
+        action, emoji = "CICIL BELI", "🟡"
 
     # Risk level
     risk_pts = 0
@@ -1310,11 +1311,11 @@ def check_realtime_confluence_alerts(all_coins):
             if res["risk_level"] == "TINGGI":
                 continue
 
-            # Tighten confluence logic
-            strong = res["confluence_passed"] >= 5
+            # Confluence logic — dilonggarkan agar sinyal bisa lolos
+            strong = res["confluence_passed"] >= 4
             smart = (
-                res["confluence_passed"] >= 4 and
-                res["ml_label"] == "BULLISH" and
+                res["confluence_passed"] >= 3 and
+                res["ml_label"] in ("BULLISH", "NETRAL") and
                 res["bt_label"] != "LEMAH"
             )
 
@@ -1603,7 +1604,8 @@ def should_send_sinyal():
     global _last_sinyal_date
     now = datetime.now(WIB)
     today = now.strftime("%Y-%m-%d")
-    return 8 <= now.hour <= 9 and _last_sinyal_date != today
+    # Window diperluas dari 8-9 ke 7-12 WIB supaya ada retry kalau gagal
+    return 7 <= now.hour <= 12 and _last_sinyal_date != today
 
 
 
@@ -1707,7 +1709,13 @@ if __name__ == "__main__":
     log(f"   Channel: {TELEGRAM_CHANNEL}")
     log("=" * 40)
     if not BOT_TOKEN or not CHAT_ID:
-        log("WARNING: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID belum diset di environment.")
+        log("CRITICAL: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID belum diset!")
+        log(f"  BOT_TOKEN: {'OK (' + BOT_TOKEN[:8] + '...)' if BOT_TOKEN else 'KOSONG'}")
+        log(f"  CHAT_ID: {'OK (' + str(CHAT_ID) + ')' if CHAT_ID else 'KOSONG'}")
+        log("  Cek environment variables ATAU .streamlit/secrets.toml")
+    else:
+        log(f"  BOT_TOKEN: OK ({BOT_TOKEN[:8]}...)")
+        log(f"  CHAT_ID: OK ({CHAT_ID})")
 
     # Load previously saved bot state to avoid duplicate alerts and preserve active trades
     load_bot_state()
