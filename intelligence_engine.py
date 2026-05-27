@@ -26,6 +26,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+# Import advanced algorithms
+from advanced_algorithms import build_advanced_bundle, compute_advanced_adjustment
+
 
 # =============================================================================
 # UTIL
@@ -542,6 +545,18 @@ def build_intelligence_bundle(candles: pd.DataFrame, price: float, atr_pct: floa
 
     intel_adjust = int(_clamp(intel_adjust, -18, 14))
 
+    # === Advanced algorithms integration ===
+    adv_bundle = build_advanced_bundle(candles)
+    adv_adjust, adv_notes = compute_advanced_adjustment(adv_bundle)
+    adv_adjust = int(_clamp(adv_adjust, -15, 15))
+
+    # Combine adjustments (weighted average: 60% basic + 40% advanced)
+    combined_adjust = int(intel_adjust * 0.6 + adv_adjust * 0.4)
+    combined_adjust = int(_clamp(combined_adjust, -20, 20))
+
+    # Merge notes
+    all_notes = notes[:4] + adv_notes[:4]
+
     return {
         "swings": swings,
         "fib": fib,
@@ -553,6 +568,12 @@ def build_intelligence_bundle(candles: pd.DataFrame, price: float, atr_pct: floa
         "intel_adjustment": intel_adjust,
         "intel_notes": notes[:5],
         "intel_confidence": confidence_label,
+        # Advanced algorithms
+        "advanced": adv_bundle,
+        "advanced_adjustment": adv_adjust,
+        "advanced_notes": adv_notes[:6],
+        "combined_adjustment": combined_adjust,
+        "combined_notes": all_notes[:8],
     }
 
 

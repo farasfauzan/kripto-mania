@@ -2998,6 +2998,51 @@ def render_rekomendasi_card(item, idx):
         kelly_value = "—"
     kelly_color = "#047857" if (kelly_pct or 0) >= 3 else "#b45309" if (kelly_pct or 0) >= 1 else "#64748b"
 
+    # Advanced algorithms fields
+    adv_adjustment = int(item.get("advanced_adjustment", 0) or 0)
+    adv_notes = item.get("advanced_notes", []) or []
+    adv_notes_text = " · ".join(adv_notes) if adv_notes else "Tidak ada sinyal advanced"
+    adv_color = "#047857" if adv_adjustment > 0 else "#b91c1c" if adv_adjustment < 0 else "#64748b"
+    combined_adj = int(item.get("combined_adjustment", 0) or 0)
+    combined_notes = item.get("combined_notes", []) or []
+    combined_text = " · ".join(combined_notes[:4]) if combined_notes else "Belum ada catatan"
+    combined_color = "#047857" if combined_adj > 0 else "#b91c1c" if combined_adj < 0 else "#64748b"
+    ichimoku_sig = item.get("ichimoku_signal", "NO DATA")
+    ichimoku_color = "#047857" if "BULL" in str(ichimoku_sig) else "#b91c1c" if "BEAR" in str(ichimoku_sig) else "#64748b"
+    squeeze_sig = item.get("squeeze", "NO DATA")
+    squeeze_color = "#047857" if "RELEASED" in str(squeeze_sig) else "#b45309" if "SQUEEZED" in str(squeeze_sig) else "#64748b"
+    mfi_val = item.get("mfi", 50.0)
+    mfi_sig = item.get("mfi_signal", "NEUTRAL")
+    mfi_color = "#047857" if mfi_sig in ("OVERSOLD", "STRONG") else "#b91c1c" if mfi_sig == "OVERBOUGHT" else "#64748b"
+    stoch_rsi_sig = item.get("stoch_rsi_signal", "NEUTRAL")
+    stoch_rsi_color = "#047857" if "BULL" in str(stoch_rsi_sig) else "#b91c1c" if "BEAR" in str(stoch_rsi_sig) else "#64748b"
+    cci_sig = item.get("cci_signal", "NEUTRAL")
+    cci_color = "#047857" if "BULL" in str(cci_sig) else "#b91c1c" if "BEAR" in str(cci_sig) else "#64748b"
+    breakout_sig = item.get("breakout", "NONE")
+    breakout_color = "#047857" if "UP" in str(breakout_sig) else "#b91c1c" if "DOWN" in str(breakout_sig) else "#64748b"
+    trend_str = item.get("trend_strength", 0)
+    trend_dir = item.get("trend_direction", "NEUTRAL")
+    trend_qual = item.get("trend_quality", "LOW")
+    trend_color = "#047857" if trend_dir == "BULLISH" else "#b91c1c" if trend_dir == "BEARISH" else "#64748b"
+    wyckoff_phase = item.get("wyckoff_phase", "UNKNOWN")
+    wyckoff_color = "#047857" if "ACCUM" in str(wyckoff_phase) else "#b91c1c" if "DISTRIB" in str(wyckoff_phase) else "#64748b"
+    vp_shape = item.get("vp_shape", "UNKNOWN")
+    vp_color = "#047857" if "BULL" in str(vp_shape) else "#b91c1c" if "BEAR" in str(vp_shape) else "#64748b"
+    sr_nearest = item.get("sr_nearest", None)
+    sr_color = "#047857" if sr_nearest and "DEMAND" in str(sr_nearest) else "#b91c1c" if sr_nearest and "SUPPLY" in str(sr_nearest) else "#64748b"
+    mean_rev_sig = item.get("mean_reversion_signal", "NEUTRAL")
+    mean_rev_color = "#047857" if "UP" in str(mean_rev_sig) else "#b91c1c" if "DOWN" in str(mean_rev_sig) else "#64748b"
+    money_flow_sig = item.get("money_flow_signal", "NEUTRAL")
+    money_flow_color = "#047857" if "BUY" in str(money_flow_sig) else "#b91c1c" if "SELL" in str(money_flow_sig) else "#64748b"
+    order_flow_net = item.get("order_flow_net", 0)
+    order_flow_color = "#047857" if float(order_flow_net) > 10 else "#b91c1c" if float(order_flow_net) < -10 else "#64748b"
+    fib_zone_ext = item.get("fib_extension_zone", "NO DATA")
+    fib_ext_color = "#047857" if "WITHIN" in str(fib_zone_ext) else "#b91c1c" if "BELOW" in str(fib_zone_ext) else "#64748b"
+    vol_regime = item.get("vol_regime", "MEDIUM")
+    vol_regime_color = "#047857" if "HIGH" in str(vol_regime) else "#b91c1c" if "EXTREME" in str(vol_regime) else "#64748b"
+    price_action = item.get("price_action_pattern", "NONE")
+    price_action_color = "#047857" if "CONSOLIDATION" in str(price_action) else "#b45309" if "EXPANSION" in str(price_action) else "#64748b"
+
     check_rows = ""
 
     for label, ok in confluence_checks.items():
@@ -3054,6 +3099,50 @@ def render_rekomendasi_card(item, idx):
                 <div class="metric-chip"><span class="metric-label">VWAP</span><span class="metric-value" style="color:{vwap_color}">{vwap_label}</span></div>
                 <div class="metric-chip"><span class="metric-label">Fib zone</span><span class="metric-value" style="color:{fib_color}">{fib_zone}</span></div>
                 <div class="metric-chip"><span class="metric-label">Kelly</span><span class="metric-value" style="color:{kelly_color}">{kelly_value} · {kelly_label}</span></div>
+            </div>
+
+            <div class="metrics-grid">
+                <div class="metric-chip"><span class="metric-label">Combined adj</span><span class="metric-value" style="color:{combined_color}">{combined_adj:+d}</span></div>
+                <div class="metric-chip"><span class="metric-label">Ichimoku</span><span class="metric-value" style="color:{ichimoku_color}">{ichimoku_sig}</span></div>
+                <div class="metric-chip"><span class="metric-label">Squeeze</span><span class="metric-value" style="color:{squeeze_color}">{squeeze_sig}</span></div>
+                <div class="metric-chip"><span class="metric-label">MFI</span><span class="metric-value" style="color:{mfi_color}">{mfi_val:.0f} {mfi_sig}</span></div>
+                <div class="metric-chip"><span class="metric-label">StochRSI</span><span class="metric-value" style="color:{stoch_rsi_color}">{stoch_rsi_sig}</span></div>
+                <div class="metric-chip"><span class="metric-label">CCI</span><span class="metric-value" style="color:{cci_color}">{cci_sig}</span></div>
+                <div class="metric-chip"><span class="metric-label">Breakout</span><span class="metric-value" style="color:{breakout_color}">{breakout_sig}</span></div>
+                <div class="metric-chip"><span class="metric-label">Trend</span><span class="metric-value" style="color:{trend_color}">{trend_dir} {trend_qual}</span></div>
+            </div>
+
+            <div class="metrics-grid">
+                <div class="metric-chip"><span class="metric-label">Wyckoff</span><span class="metric-value" style="color:{wyckoff_color}">{wyckoff_phase}</span></div>
+                <div class="metric-chip"><span class="metric-label">VP Shape</span><span class="metric-value" style="color:{vp_color}">{vp_shape}</span></div>
+                <div class="metric-chip"><span class="metric-label">S/R Zone</span><span class="metric-value" style="color:{sr_color}">{sr_nearest or 'NONE'}</span></div>
+                <div class="metric-chip"><span class="metric-label">Mean Rev</span><span class="metric-value" style="color:{mean_rev_color}">{mean_rev_sig}</span></div>
+                <div class="metric-chip"><span class="metric-label">Money Flow</span><span class="metric-value" style="color:{money_flow_color}">{money_flow_sig}</span></div>
+                <div class="metric-chip"><span class="metric-label">Order Flow</span><span class="metric-value" style="color:{order_flow_color}">{order_flow_net:+.0f}%</span></div>
+                <div class="metric-chip"><span class="metric-label">Fib Ext</span><span class="metric-value" style="color:{fib_ext_color}">{fib_zone_ext}</span></div>
+                <div class="metric-chip"><span class="metric-label">Vol Regime</span><span class="metric-value" style="color:{vol_regime_color}">{vol_regime}</span></div>
+            </div>
+
+            <div class="card-section">
+                <div class="section-row">
+                    <span class="section-label">Advanced insight</span>
+                    <span class="section-strong" style="color:{adv_color}">Advanced adj {adv_adjustment:+d}</span>
+                </div>
+                <div class="section-row" style="margin-top:0.35rem">
+                    <span class="section-label">Catatan advanced</span>
+                    <span class="section-strong" style="color:#334155;text-align:right;flex:1">{adv_notes_text}</span>
+                </div>
+            </div>
+
+            <div class="card-section" style="background:linear-gradient(180deg, #f0fdf4, #dcfce7);border-color:#86efac">
+                <div class="section-row">
+                    <span class="section-label" style="color:#166534">🧮 Combined Score</span>
+                    <span class="section-strong" style="color:{combined_color};font-size:1.1rem">{combined_adj:+d}</span>
+                </div>
+                <div class="section-row" style="margin-top:0.35rem">
+                    <span class="section-label">Catatan gabungan</span>
+                    <span class="section-strong" style="color:#334155;text-align:right;flex:1">{combined_text}</span>
+                </div>
             </div>
 
             <div class="card-section">
