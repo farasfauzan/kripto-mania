@@ -3159,7 +3159,7 @@ def render_rekomendasi_card(item, idx):
     )
     
     # AI Insight Button underneath the card
-    btn_key = f"insight_btn_{item['symbol']}_{idx}"
+    btn_key = f"insight_btn_{item['symbol']}_{idx}_{id(item)}"
     if st.button(f"🧠 Minta AI Insight untuk {item['symbol']}", key=btn_key, use_container_width=True):
         with st.spinner(f"Menghubungi AI untuk {item['symbol']}..."):
             gemini_key = get_secret("GEMINI_API_KEY", "")
