@@ -147,11 +147,90 @@ VALUE_HIGH_RISK = {"PEPE", "SHIB", "BONK", "FLOKI", "LUNC", "BTT"}
 # PAGE CONFIG
 # =============================================================================
 st.set_page_config(
-    page_title="Rekomendasi Beli Crypto Hari Ini",
-    page_icon="💰",
+    page_title="Kripto Mania - Dashboard Trading Cerdas",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# =============================================================================
+# HCI PRINCIPLES IMPLEMENTATION (Norman & Nielsen Heuristics)
+# =============================================================================
+# 
+# PRINSIP HCI YANG DIIMPLEMENTASIKAN:
+# 
+# 1. VISIBILITY OF SYSTEM STATUS (Nielsen #1)
+#    - Freshness badge dengan indikator live/stale/offline
+#    - Progress bar saat analisis berjalan
+#    - Status loading screen dengan animasi
+#    - Auto-refresh indicator
+#    - Market mode banner yang selalu terlihat
+# 
+# 2. MATCH BETWEEN SYSTEM AND REAL WORLD (Nielsen #2)
+#    - Bahasa Indonesia untuk semua label dan pesan
+#    - Simbol yang familiar (🟢 hijau = bagus, 🔴 merah = bahaya)
+#    - Format mata uang Rupiah (IDR)
+#    - Zona waktu WIB (Asia/Jakarta)
+#    - Kategori coin yang familiar (Layer1, DeFi, Meme, AI, Gaming)
+# 
+# 3. USER CONTROL AND FREEDOM (Nielsen #3)
+#    - Toggle auto-refresh ON/OFF
+#    - Manual refresh button
+#    - Scan koin mandiri (user bisa pilih koin apapun)
+#    - Portfolio management (edit, close, delete posisi)
+#    - Tab navigation untuk berbagai fitur
+#    - Quick prompt buttons untuk AI Advisor
+# 
+# 4. CONSISTENCY AND STANDARDS (Nielsen #4)
+#    - Warna konsisten: hijau = profit/bullish, merah = loss/bearish
+#    - Badge styling konsisten di seluruh halaman
+#    - Font Plus Jakarta Sans untuk semua elemen
+#    - Card design konsisten dengan hover effects
+#    - Metric chips dengan format yang sama
+# 
+# 5. ERROR PREVENTION (Nielsen #5)
+#    - Confluence gate mencegah entry saat sinyal lemah
+#    - Anti-FOMO filter mencegah entry di pucuk
+#    - Multi-timeframe guard untuk konfirmasi
+#    - Validasi input form (qty > 0, harga > 0)
+#    - Fallback data saat API gagal
+#    - Deduplikasi sinyal berulang
+# 
+# 6. RECOGNITION RATHER THAN RECALL (Nielsen #6)
+#    - Tooltip dan label untuk setiap metric
+#    - Color-coded signals (tidak perlu hafal arti angka)
+#    - Visual indicators (emoji, badges, progress bars)
+#    - Category labels untuk setiap coin
+#    - Learning notes yang menjelaskan alasan adjustment
+# 
+# 7. FLEXIBILITY AND EFFICIENCY OF USE (Nielsen #7)
+#    - Quick-add dari rekomendasi langsung ke portfolio
+#    - Quick-scan untuk analisis koin spesifik
+#    - Tab navigation untuk akses cepat
+#    - Auto-refresh untuk user yang ingin real-time
+#    - Cached data untuk performa cepat
+# 
+# 8. AESTHETIC AND MINIMALIST DESIGN (Nielsen #8)
+#    - Clean dark theme dengan accent colors
+#    - Card-based layout yang rapi
+#    - Whitespace yang cukup
+#    - Typography hierarchy yang jelas
+#    - Gradient backgrounds untuk visual interest
+# 
+# 9. HELP USERS RECOGNIZE, DIAGNOSE, AND RECOVER FROM ERRORS (Nielsen #9)
+#    - Error messages yang jelas dan informatif
+#    - Fallback mechanisms (cache, shared data)
+#    - Loading states yang menunjukkan progress
+#    - Status indicators (live/stale/offline)
+#    - Warning messages untuk kondisi risiko
+# 
+# 10. HELP AND DOCUMENTATION (Nielsen #10)
+#     - Tab "Cara Baca Sinyal" dengan edukasi lengkap
+#     - Tooltips dan help text di setiap form
+#     - Disclaimer yang jelas
+#     - AI Advisor untuk pertanyaan interaktif
+#     - Learning engine notes yang menjelaskan adjustment
+# =============================================================================
 
 # =============================================================================
 # SESSION STATE INIT
@@ -4254,5 +4333,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
