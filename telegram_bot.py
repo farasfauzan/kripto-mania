@@ -1693,91 +1693,1064 @@ def send_daily_summary():
 
 
 # =============================================================================
-# MAIN DAEMON LOOP
+# TELEGRAM COMMAND HANDLER
 # =============================================================================
-if __name__ == "__main__":
-    if os.environ.get("RUN_KEEP_ALIVE") == "true":
-        keep_alive()
-
-    log("BOT DAEMON ULTRA SMART -- 24/7")
-    log("   Sinyal harian: 08:00 WIB (1H multi-indikator)")
-    log(f"   Loop scan: setiap {LOOP_SLEEP_SECONDS}s")
-    log("   Early entry (15m pre-pump): tiap loop")
-    log("   Confluence 1H + FOMO + TP/SL: tiap loop")
-    log("   Daily summary: 21:00 WIB")
-
-    log(f"   Channel: {TELEGRAM_CHANNEL}")
-    log("=" * 40)
-    if not BOT_TOKEN or not CHAT_ID:
-        log("CRITICAL: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID belum diset!")
-        log(f"  BOT_TOKEN: {'OK (' + BOT_TOKEN[:8] + '...)' if BOT_TOKEN else 'KOSONG'}")
-        log(f"  CHAT_ID: {'OK (' + str(CHAT_ID) + ')' if CHAT_ID else 'KOSONG'}")
-        log("  Cek environment variables ATAU .streamlit/secrets.toml")
-    else:
-        log(f"  BOT_TOKEN: OK ({BOT_TOKEN[:8]}...)")
-        log(f"  CHAT_ID: OK ({CHAT_ID})")
-
-    # Load previously saved bot state to avoid duplicate alerts and preserve active trades
-    load_bot_state()
-
-    # Commented out to prevent duplicate spam upon process restarts
-    # send_message("*Bot Radar ULTRA SMART Aktif (24/7)*\nRSI, EMA, MACD, Bollinger, Supertrend, ADX, ML/KNN, Backtest, Agentic Verdict", notify=False)
-
-    consecutive_errors = 0
-    cycle_count = 0
-
-    while True:
+def _get_last_update_id():
+    """Simpan last_update_id di file supaya tidak baca pesan lama berulang."""
+    path = "last_update_id.txt"
+    if os.path.exists(path):
         try:
-            cycle_count += 1
+            with open(path, "r") as f:
+                return int(f.read().strip())
+        except:
+            pass
+    return 0
+
+
+def _save_last_update_id(uid):
+    with open("last_update_id.txt", "w") as f:
+        f.write(str(uid))
+
+
+def _format_idr(value):
+    if value is None or value == 0:
+        return "-"
+    if value >= 1_000_000_000:
+        return f"Rp{value/1_000_000_000:.2f}M"
+    if value >= 1_000_000:
+        return f"Rp{value/1_000_000:.1f}JT"
+    if value >= 1_000:
+        return f"Rp{value:,.0f}"
+    return f"Rp{value:,.2f}"
+
+
+def handle_telegram_command(update_data):
+    """Handle incoming Telegram commands. Returns True if a command was processed."""
+    global _message_fingerprints
+
+    if not update_data or not BOT_TOKEN or not CHAT_ID:
+        return False
+
+    # Extract message
+    message = None
+    if "message" in update_data:
+        message = update_data["message"]
+    elif "callback_query" in update_data:
+        # Handle inline query (button clicks)
+        message = update_data["callback_query"].get("message")
+        if not message:
+            return False
+
+    if not message:
+        return False
+
+    # Check if message is from our chat
+    msg_chat_id = str(message.get("chat", {}).get("id", ""))
+    if str(msg_chat_id) != str(CHAT_ID):
+        return False
+
+    # Update last update id
+    uid = message.get("message_id", 0)
+    _save_last_update_id(uid)
+
+    # Get text/command
+    text = message.get("text", "").strip()
+    if not text.startswith("/"):
+        return False
+
+    parts = text.split()
+    cmd = parts[0].lower()
+    args = parts[1:] if len(parts) > 1 else []
+
+    # Check for duplicate messages (avoid re-processing on restart)
+    now_ts = time.time()
+    msg_key = f"{msg_chat_id}:{uid}"
+    if msg_key in _message_fingerprints:
+        if now_ts - _message_fingerprints[msg_key] < 30:  # 30s dedupe
+            return False
+    _message_fingerprints[msg_key] = now_ts
+
+    # === /help ===
+    if cmd == "/help":
+        help_text = (
+            f"*⚙️ DAFTAR COMMAND TELEGRAM*\n"
+            f"──────────────────────\n"
+            f"📊 */scan* — Scan semua koin utama sekarang\n"
+            f"🎯 */top* — Lihat 5 koin terbaik saat ini\n"
+            f"💼 */portfolio* — Cek posisi terbuka + P/L\n"
+            f"📜 */journal* — Riwayat sinyal + winrate\n"
+            f"📈 */stats* — Statistik performa bot\n"
+            f"🔔 */alert on/off* — Aktifkan/nonaktifkan alert\n"
+            f"🌤 */weather* — Cek market mode saat ini\n"
+            f"──────────────────────\n"
+            f"💡 Bot juga otomatis push sinyal:\n"
+            f"• 08:00 WIB — Sinyal harian\n"
+            f"• Setiap 60s — Early entry + confluence\n"
+            f"• Realtime — TP/SL alert\n"
+            f"• 21:00 WIB — Daily summary"
+        )
+        send_message(help_text, notify=True)
+        return True
+
+    # === /scan ===
+    if cmd == "/scan":
+        send_message("⏳ *Memulai scan...*_", notify=False)
+        try:
+            all_coins = fetch_all_tickers()
+            if not all_coins:
+                send_message("❌ Gagal fetch data dari Indodax.", notify=True)
+                return True
+
+            # Scan main assets
+            signals = []
+            for sym, pair in MAIN_ASSETS.items():
+                if sym not in all_coins:
+                    continue
+                candles = fetch_candles(pair)
+                time.sleep(0.3)
+                res = apply_bot_intelligence(analyze_coin(sym, all_coins[sym], candles))
+                signals.append(res)
+
+            if not signals:
+                send_message("❌ Tidak ada sinyal.", notify=True)
+                return True
+
+            # Sort: BELI KUAT > CICIL BELI > WATCH > JANGAN BELI > HINDARI
+            priority = {"BELI KUAT": 0, "CICIL BELI": 1, "WATCH": 2, "JANGAN BELI": 3, "HINDARI": 4}
+            signals.sort(key=lambda x: priority.get(x["action"], 5))
+
+            # Format response
+            mode, _ = detect_market_mode(all_coins)
+            mode_emoji = {"agresif": "🟢", "normal": "🟡", "defensif": "🔴"}[mode]
+
+            lines = [
+                f"*📊 HASIL SCAN — {mode_emoji} {mode.upper()}*",
+                f"{datetime.now(WIB).strftime('%d/%m %H:%M WIB')}",
+                "──────────────────────",
+                "",
+            ]
+
+            buy_count = 0
+            for s in signals[:8]:  # Max 8 koin
+                ch = f"+{s['change']:.2f}" if s["change"] >= 0 else f"{s['change']:.2f}"
+                lines.append(f"{s['emoji']} *{s['symbol']}* -- {s['action']}")
+                lines.append(f"   💰 {format_idr(s['price'])} ({ch}%) | Score: {s['score']}/100")
+                lines.append(f"   📊 RSI: {s['rsi']} | MACD: {s['macd_signal']} | ST: {s['supertrend']}")
+                lines.append(f"   🧠 ML: {s['ml_label']} ({s['ml_prob']}%) | MTF: {s['mtf_label']}")
+
+                if is_entry_action(s["action"]):
+                    buy_count += 1
+                    lines.append(f"   🎯 TP1: {format_idr(s['tp1'])} | SL: {format_idr(s['stop_loss'])}")
+                    lines.append(f"   💰 Alokasi: {s['alloc_pct']}%")
+                lines.append("")
+
+            lines.append("──────────────────────")
+            lines.append(f"*{buy_count} koin layak beli* dari {len(signals)} koin")
+            lines.append(f"⚠️ Bukan saran keuangan. DYOR.")
+
+            send_message("\n".join(lines), notify=True)
+            log(f"/scan command executed — {buy_count} buy signals found")
+
+        except Exception as e:
+            log(f"Error /scan: {e}")
+            send_message(f"❌ Error scan: {str(e)[:100]}", notify=True)
+        return True
+
+    # === /top ===
+    if cmd == "/top":
+        try:
+            all_coins = fetch_all_tickers()
+            if not all_coins:
+                send_message("❌ Gagal fetch data.", notify=True)
+                return True
+
+            signals = []
+            for sym, pair in MAIN_ASSETS.items():
+                if sym not in all_coins:
+                    continue
+                candles = fetch_candles(pair)
+                time.sleep(0.3)
+                res = apply_bot_intelligence(analyze_coin(sym, all_coins[sym], candles))
+                signals.append(res)
+
+            if not signals:
+                send_message("❌ Tidak ada data.", notify=True)
+                return True
+
+            # Sort by score descending
+            signals.sort(key=lambda x: x["score"], reverse=True)
+            top5 = signals[:5]
+
+            lines = [
+                "*🎯 TOP 5 COIN TERBAIK*",
+                f"{datetime.now(WIB).strftime('%d/%m %H:%M WIB')}",
+                "──────────────────────",
+                "",
+            ]
+
+            for i, s in enumerate(top5, 1):
+                ch = f"+{s['change']:.2f}" if s["change"] >= 0 else f"{s['change']:.2f}"
+                lines.append(f"*{i}. {s['emoji']} {s['symbol']}*")
+                lines.append(f"   Score: {s['score']}/100 | Action: {s['action']}")
+                lines.append(f"   Harga: {format_idr(s['price'])} ({ch}%)")
+                lines.append(f"   RSI: {s['rsi']} | MACD: {s['macd_signal']}")
+                lines.append(f"   ML: {s['ml_label']} ({s['ml_prob']}%) | MTF: {s['mtf_label']}")
+                lines.append(f"   Confluence: {s['confluence_label']}")
+
+                if is_entry_action(s["action"]):
+                    lines.append(f"   🎯 Entry → TP1: {format_idr(s['tp1'])} | TP2: {format_idr(s['tp2'])} | SL: {format_idr(s['stop_loss'])}")
+                    lines.append(f"   💰 Alokasi: {s['alloc_pct']}%")
+                lines.append("")
+
+            lines.append("──────────────────────")
+            lines.append("⚠️ Bukan saran keuangan. DYOR.")
+
+            send_message("\n".join(lines), notify=True)
+            log(f"/top command executed")
+
+        except Exception as e:
+            log(f"Error /top: {e}")
+            send_message(f"❌ Error: {str(e)[:100]}", notify=True)
+        return True
+
+    # === /portfolio ===
+    if cmd == "/portfolio":
+        try:
+            # Check active signals as proxy for portfolio
+            if not _active_signals:
+                send_message(
+                    "💼 *PORTFOLIO*\n\nTidak ada posisi terbuka saat ini.\n\n"
+                    "💡 Tips: Buka /scan untuk cari entry baru.",
+                    notify=True
+                )
+                return True
+
+            lines = [
+                "💼 *PORTFOLIO TERBUKA*",
+                f"{datetime.now(WIB).strftime('%d/%m %H:%M WIB')}",
+                "──────────────────────",
+                "",
+            ]
+
+            total_pnl = 0
             all_coins = fetch_all_tickers()
 
-            if not all_coins:
-                consecutive_errors += 1
-                wait = min(30, consecutive_errors * 5)
-                log(f"Fetch gagal ({consecutive_errors}x). Retry in {wait}s...")
-                time.sleep(wait)
-                continue
+            for sym, sig in _active_signals.items():
+                if sym not in all_coins:
+                    continue
+                price = all_coins[sym]["price"]
+                entry = sig["entry"]
+                pnl = (price - entry) / entry * 100
+                total_pnl += pnl
 
-            consecutive_errors = 0
-            coin_count = len(all_coins)
-            now = datetime.now(WIB)
-            learning_profile = train_from_prices(all_coins)
-            news_profile = get_bot_news_profile()
+                emoji = "🟢" if pnl >= 0 else "🔴"
+                hit_status = ", ".join(sig.get("hit", [])) if sig.get("hit") else "Aktif"
 
-            if cycle_count % 10 == 1:
-                wr = learning_profile.get("winrate")
-                wr_text = f"{wr:.1f}%" if wr is not None else "belum ada"
-                log(f"Heartbeat -- {coin_count} koin | {now.strftime('%H:%M WIB')} | Learning WR: {wr_text} | News: {news_profile.get('global_label', 'NO DATA')}")
+                lines.append(f"{emoji} *{sym}*")
+                lines.append(f"   Entry: {format_idr(entry)} → Sekarang: {format_idr(price)}")
+                lines.append(f"   P/L: {pnl:+.2f}% | Status: {hit_status}")
 
-            # 1. Sinyal harian (jam 8-9 pagi)
-            if should_send_sinyal():
-                send_sinyal_harian(all_coins)
+                if "TP1" in sig.get("hit", []):
+                    lines.append(f"   ✅ TP1 TERCAPAI!")
+                if "TP2" in sig.get("hit", []):
+                    lines.append(f"   ✅ TP2 TERCAPAI!")
+                if "TP3" in sig.get("hit", []):
+                    lines.append(f"   ✅ TP3 TERCAPAI!")
+                if "SL" in sig.get("hit", []):
+                    lines.append(f"   🛑 STOP LOSS KENA")
+                lines.append("")
 
-            # 2. Early Entry (15m pre-pump) — paling cepet, dijalanin duluan
-            check_early_entry_alerts(all_coins)
+            lines.append("──────────────────────")
+            lines.append(f"Total P/L: {total_pnl:+.2f}%")
+            lines.append(f"Posisi aktif: {len(_active_signals)}")
+            lines.append("")
+            lines.append("📌 Monitor: bot akan notif otomatis saat TP/SL kena.")
 
-            # 3. Real-time Confluence Alert 4/5+ (1H, sebagai konfirmasi)
-            check_realtime_confluence_alerts(all_coins)
+            send_message("\n".join(lines), notify=True)
+            log(f"/portfolio command executed — {len(_active_signals)} active positions")
 
-            # 4. FOMO detection (setiap siklus)
-            check_fomo_and_alert(all_coins)
-
-            # 5. TP/SL price monitor
-            check_tp_sl_alerts(all_coins)
-
-            # 6. Daily summary (jam 21:00 WIB)
-            send_daily_summary()
-
-
-            # Save state at the end of each successful cycle
-            save_bot_state()
-
-            time.sleep(LOOP_SLEEP_SECONDS)
-
-        except KeyboardInterrupt:
-            log("Shutdown by user.")
-            break
         except Exception as e:
-            consecutive_errors += 1
-            log(f"Crash: {e} -- restarting in 10s...")
-            time.sleep(10)
+            log(f"Error /portfolio: {e}")
+            send_message(f"❌ Error: {str(e)[:100]}", notify=True)
+        return True
+
+    # === /journal ===
+    if cmd == "/journal":
+        try:
+            from learning_engine import build_profile
+            profile = build_profile()
+
+            lines = [
+                "📜 *RIWAYAT SINYAL*",
+                f"{datetime.now(WIB).strftime('%d/%m %Y')}",
+                "──────────────────────",
+                "",
+            ]
+
+            total = profile.get("closed", 0)
+            wins = profile.get("wins", 0)
+            losses = profile.get("losses", 0)
+            wr = profile.get("winrate", 0)
+
+            lines.append(f"Total sinyal: {profile.get('total_signals', 0)}")
+            lines.append(f"Selesai: {total} | Win: {wins} | Loss: {losses}")
+            lines.append(f"*Winrate: {wr:.1f}%*")
+            lines.append("")
+
+            # Best symbols
+            best = profile.get("best_symbols", [])
+            if best:
+                lines.append("*Top Performer:*\n")
+                for sym, stats in best:
+                    lines.append(f"🏆 {sym}: {stats.get('winrate', 0):.1f}% WR ({stats.get('closed', 0)} trades)")
+                lines.append("")
+
+            # Active signals
+            active = profile.get("active", 0)
+            if active > 0:
+                lines.append(f"Posisi aktif: {active}")
+
+            lines.append("")
+            lines.append("──────────────────────")
+            lines.append("📊 Data dari semua sinyal yang tercatat.")
+            lines.append("⚠️ Bukan saran keuangan. DYOR.")
+
+            send_message("\n".join(lines), notify=True)
+            log(f"/journal command executed — WR: {wr:.1f}%")
+
+        except Exception as e:
+            log(f"Error /journal: {e}")
+            send_message(f"❌ Error: {str(e)[:100]}", notify=True)
+        return True
+
+    # === /stats ===
+    if cmd == "/stats":
+        try:
+            from learning_engine import build_profile
+            profile = build_profile()
+
+            total = profile.get("closed", 0)
+            wr = profile.get("winrate", 0)
+
+            lines = [
+                "📈 *STATISTIK BOT*",
+                f"{datetime.now(WIB).strftime('%d/%m %Y')}",
+                "──────────────────────",
+                "",
+            ]
+
+            lines.append(f"Total sinyal tercatat: {profile.get('total_signals', 0)}")
+            lines.append(f"Trade selesai: {total}")
+            lines.append(f"Win: {profile.get('wins', 0)} | Loss: {profile.get('losses', 0)}")
+            lines.append(f"*Winrate: {wr:.1f}%*")
+            lines.append("")
+
+            # Daily stats
+            lines.append("*Hari Ini:*\n")
+            lines.append(f"  Sinyal dikirim: {_daily_stats['signals_sent']}")
+            lines.append(f"  TP hit: {_daily_stats['tp_hit']}")
+            lines.append(f"  SL hit: {_daily_stats['sl_hit']}")
+            lines.append(f"  Posisi aktif: {len(_active_signals)}")
+            lines.append("")
+
+            # Best symbols
+            best = profile.get("best_symbols", [])
+            if best:
+                lines.append("*Top Performer:*\n")
+                for sym, stats in best:
+                    lines.append(f"  🏆 {sym}: {stats.get('winrate', 0):.1f}% WR ({stats.get('closed', 0)} trades)")
+                lines.append("")
+
+            lines.append("──────────────────────")
+            lines.append("🤖 Bot belajar otomatis dari setiap trade.")
+            lines.append("💡 Semakin banyak data, semakin akurat.")
+
+            send_message("\n".join(lines), notify=True)
+            log(f"/stats command executed")
+
+        except Exception as e:
+            log(f"Error /stats: {e}")
+            send_message(f"❌ Error: {str(e)[:100]}", notify=True)
+        return True
+
+    # === /alert on/off ===
+    if cmd == "/alert":
+        if not args or args[0] not in ("on", "off"):
+            send_message(
+                "🔔 *ALERT SETTINGS*\n\n"
+                "Gunakan:\n"
+                "*/alert on* — Aktifkan semua alert\n"
+                "*/alert off* — Nonaktifkan semua alert",
+                notify=True
+            )
+            return True
+
+        if args[0] == "on":
+            global ENABLE_FOMO_ALERTS, ENABLE_CONFLUENCE_ALERTS, ENABLE_EARLY_ALERTS
+            ENABLE_FOMO_ALERTS = True
+            ENABLE_CONFLUENCE_ALERTS = True
+            ENABLE_EARLY_ALERTS = True
+            send_message("🔔 *Alert AKTIF* — Semua notifikasi on.", notify=True)
+        else:
+            ENABLE_FOMO_ALERTS = False
+            ENABLE_CONFLUENCE_ALERTS = False
+            ENABLE_EARLY_ALERTS = False
+            send_message("🔕 *Alert NONAKTIF* — Semua notifikasi off.", notify=True)
+        return True
+
+    # === /weather (market mode) ===
+    if cmd == "/weather":
+        try:
+            all_coins = fetch_all_tickers()
+            if not all_coins:
+                send_message("❌ Gagal fetch data.", notify=True)
+                return True
+
+            mode, mode_desc = detect_market_mode(all_coins)
+            mode_emoji = {"agresif": "🟢 AGRESIF", "normal": "🟡 NORMAL", "defensif": "🔴 DEFENSIF"}[mode]
+
+            changes = [c["change"] for c in all_coins.values() if c["vol_idr"] >= 100_000_000]
+            green = sum(1 for c in changes if c > 0)
+            pct_green = green / len(changes) * 100 if changes else 0
+            avg_change = sum(changes) / len(changes) if changes else 0
+
+            lines = [
+                f"🌤 *OUTLOOK PASAR*",
+                f"{datetime.now(WIB).strftime('%d/%m %H:%M WIB')}",
+                "──────────────────────",
+                "",
+                f"Mode: *{mode_emoji}*",
+                f"Koin hijau: *{pct_green:.0f}%*",
+                f"Rata-rata change: *{avg_change:+.2f}%*",
+                "",
+            ]
+
+            # Top movers
+            sorted_coins = sorted(all_coins.values(), key=lambda x: x["change"], reverse=True)[:5]
+            if sorted_coins:
+                lines.append("*Top Gainer:*\n")
+                for c in sorted_coins:
+                    lines.append(f"  📈 {c['symbol']}: +{c['change']:.1f}%")
+                lines.append("")
+
+                bottom = sorted(all_coins.values(), key=lambda x: x["change"])[:5]
+                lines.append("*Top Loser:*\n")
+                for c in bottom:
+                    lines.append(f"  📉 {c['symbol']}: {c['change']:.1f}%")
+                lines.append("")
+
+            lines.append("──────────────────────")
+            lines.append(f"Total koin: {len(all_coins)}")
+
+            send_message("\n".join(lines), notify=True)
+            log(f"/weather command executed — mode: {mode}")
+
+        except Exception as e:
+            log(f"Error /weather: {e}")
+            send_message(f"❌ Error: {str(e)[:100]}", notify=True)
+        return True
+
+    return False
+#!/usr/bin/env python3
+"""
+DAEMON 24/7 — Auto sinyal ULTRA SMART ke Telegram.
+Fitur: RSI, EMA, MACD, Bollinger, Supertrend, ADX, ML/KNN, Backtest, Agentic Verdict.
+- Sinyal harian: tiap jam 8 pagi WIB
+- FOMO check: tiap 2 menit
+- TP/SL monitor: tiap siklus
+- Daily summary: jam 21:00 WIB
+"""
+
+import os
+import time
+import requests
+import pandas as pd
+import json
+from datetime import datetime, timezone, timedelta
+from keep_alive import keep_alive
+from learning_engine import apply_learning_adjustments, record_signal, train_from_prices
+from news_engine import apply_news_adjustments, build_news_profile
+from ai_pilot import generate_signal_insight
+
+# === CONFIG ===
+def _get_api_key(key_name):
+    val = os.environ.get(key_name)
+    if val: return val
+    try:
+        with open(".streamlit/secrets.toml", "r") as f:
+            for line in f:
+                if line.startswith(key_name):
+                    return line.split("=")[1].strip().strip('"').strip("'")
+    except:
+        pass
+    return ""
+
+GEMINI_API_KEY = _get_api_key("GEMINI_API_KEY")
+DEEPSEEK_API_KEY = _get_api_key("DEEPSEEK_API_KEY")
+
+BOT_TOKEN = _get_api_key("TELEGRAM_BOT_TOKEN")
+CHAT_ID = _get_api_key("TELEGRAM_CHAT_ID")
+INDODAX_REF = "narwanpratanta"
+WIB = timezone(timedelta(hours=7))
+
+MAIN_ASSETS = {
+    "BTC": "btc_idr", "ETH": "eth_idr", "SOL": "sol_idr",
+    "XRP": "xrp_idr", "BNB": "bnb_idr", "ADA": "ada_idr",
+    "DOGE": "doge_idr",
+}
+
+BLUE_CHIPS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA"}
+MICIN_COINS = {"DOGE", "PEPE", "SHIB", "BONK", "FLOKI", "LUNC", "BTT"}
+
+TELEGRAM_CHANNEL = "https://t.me/+VPlOcY2wFGA0NWU1"
+
+def env_bool(name, default=False):
+    return str(os.environ.get(name, str(default))).lower() in {"1","true","yes","on"}
+
+ENABLE_FOMO_ALERTS = env_bool("ENABLE_FOMO_ALERTS", True)
+ENABLE_CONFLUENCE_ALERTS = env_bool("ENABLE_CONFLUENCE_ALERTS", True)
+ENABLE_EARLY_ALERTS = env_bool("ENABLE_EARLY_ALERTS", True)
+
+# === ANTI-SPAM CONTROL ===
+# Default 60s biar scan 3x lebih cepet daripada 180s lama.
+LOOP_SLEEP_SECONDS = int(os.environ.get("LOOP_SLEEP_SECONDS", "60"))
+
+FOMO_GLOBAL_COOLDOWN_SEC = int(os.environ.get("FOMO_GLOBAL_COOLDOWN_SEC", "1800"))
+FOMO_SYMBOL_COOLDOWN_SEC = int(os.environ.get("FOMO_SYMBOL_COOLDOWN_SEC", str(24 * 3600)))
+
+CONFLUENCE_SYMBOL_COOLDOWN_SEC = int(os.environ.get("CONFLUENCE_SYMBOL_COOLDOWN_SEC", str(24 * 3600)))
+CONFLUENCE_MAX_ALERTS_PER_CYCLE = int(os.environ.get("CONFLUENCE_MAX_ALERTS_PER_CYCLE", "1"))
+
+# Early-entry punya cooldown sendiri supaya nggak nabrak alert konfirmasi.
+EARLY_SYMBOL_COOLDOWN_SEC = int(os.environ.get("EARLY_SYMBOL_COOLDOWN_SEC", str(4 * 3600)))
+EARLY_MAX_ALERTS_PER_CYCLE = int(os.environ.get("EARLY_MAX_ALERTS_PER_CYCLE", "2"))
+
+MESSAGE_DUPLICATE_TTL_SEC = int(os.environ.get("MESSAGE_DUPLICATE_TTL_SEC", str(12 * 3600)))
+ACTIVE_SIGNAL_TTL_SEC = int(os.environ.get("ACTIVE_SIGNAL_TTL_SEC", str(72 * 3600)))
+NEWS_REFRESH_SECONDS = int(os.environ.get("NEWS_REFRESH_SECONDS", "900"))
+
+MIN_ALERT_SCORE = int(os.environ.get("MIN_ALERT_SCORE", "68"))
+MIN_ALERT_VOLUME_IDR = float(os.environ.get("MIN_ALERT_VOLUME_IDR", "500000000"))
+MAX_ALERT_RANGE_POS = float(os.environ.get("MAX_ALERT_RANGE_POS", "88"))
+
+# Threshold khusus EARLY ENTRY: dilonggarin biar masuk sebelum pump meledak.
+EARLY_MIN_SCORE = int(os.environ.get("EARLY_MIN_SCORE", "58"))
+EARLY_MIN_VOLUME_IDR = float(os.environ.get("EARLY_MIN_VOLUME_IDR", "300000000"))
+EARLY_MAX_RANGE_POS = float(os.environ.get("EARLY_MAX_RANGE_POS", "70"))  # harus masih di paruh bawah range 24h
+EARLY_MIN_SETUP_STRENGTH = int(os.environ.get("EARLY_MIN_SETUP_STRENGTH", "3"))  # min checklist setup terpenuhi
+
+
+# === STATE ===
+_last_sinyal_date = None
+_last_summary_date = None
+_fomo_sent_symbols = {}
+_confluence_sent_symbols = {}  # track real-time confluence alerts
+_early_sent_symbols = {}  # track EARLY entry alerts (pre-pump)
+_active_signals = {}  # track sinyal beli aktif untuk TP/SL monitor
+_daily_stats = {"tp_hit": 0, "sl_hit": 0, "signals_sent": 0}
+_last_fomo_alert_time = 0  # track last global FOMO alert to prevent spamming
+_message_fingerprints = {}  # Anti-duplicate message fingerprint cache
+_last_news_profile = None
+_last_news_profile_at = 0
+
+
+STATE_FILE = "bot_state.json"
+
+def load_bot_state():
+    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _early_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time, _message_fingerprints
+    if not os.path.exists(STATE_FILE):
+        log("No state file found. Starting fresh.")
+        return
+    try:
+        with open(STATE_FILE, "r") as f:
+            data = json.load(f)
+        _last_sinyal_date = data.get("last_sinyal_date", _last_sinyal_date)
+        _last_summary_date = data.get("last_summary_date", _last_summary_date)
+        _fomo_sent_symbols = data.get("fomo_sent_symbols", _fomo_sent_symbols)
+        _confluence_sent_symbols = data.get("confluence_sent_symbols", _confluence_sent_symbols)
+        _early_sent_symbols = data.get("early_sent_symbols", _early_sent_symbols)
+        _active_signals = data.get("active_signals", _active_signals)
+        _daily_stats = data.get("daily_stats", _daily_stats)
+        _last_fomo_alert_time = data.get("last_fomo_alert_time", _last_fomo_alert_time)
+        _message_fingerprints = data.get("message_fingerprints", _message_fingerprints)
+
+        
+        # Convert _active_signals hit back to set (JSON arrays become lists)
+        for sym in _active_signals:
+            if "hit" in _active_signals[sym] and isinstance(_active_signals[sym]["hit"], list):
+                _active_signals[sym]["hit"] = set(_active_signals[sym]["hit"])
+                
+        log("Bot state successfully loaded from bot_state.json")
+    except Exception as e:
+        log(f"Error loading bot state: {e}")
+
+def save_bot_state():
+    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _early_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time, _message_fingerprints
+    try:
+        # Convert set to list for JSON serialization
+        active_signals_copy = {}
+        for sym, sig in _active_signals.items():
+            sig_copy = sig.copy()
+            if "hit" in sig_copy and isinstance(sig_copy["hit"], set):
+                sig_copy["hit"] = list(sig_copy["hit"])
+            active_signals_copy[sym] = sig_copy
+            
+        data = {
+            "last_sinyal_date": _last_sinyal_date,
+            "last_summary_date": _last_summary_date,
+            "fomo_sent_symbols": _fomo_sent_symbols,
+            "confluence_sent_symbols": _confluence_sent_symbols,
+            "early_sent_symbols": _early_sent_symbols,
+            "active_signals": active_signals_copy,
+            "daily_stats": _daily_stats,
+            "last_fomo_alert_time": _last_fomo_alert_time,
+            "message_fingerprints": _message_fingerprints,
+            "early_sent_symbols": _early_sent_symbols
+        }
+
+        tmp_path = f"{STATE_FILE}.tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(data, f, indent=4)
+        os.replace(tmp_path, STATE_FILE)
+    except Exception as e:
+        log(f"Error saving bot state: {e}")
+
+
+def log(msg):
+    ts = datetime.now(WIB).strftime("%H:%M:%S")
+    print(f"[{ts}] {msg}")
+
+
+def clamp(value, lower, upper):
+    return max(lower, min(upper, value))
+
+
+def is_entry_action(action):
+    """Check if action is a genuine entry signal (not 'JANGAN BELI')."""
+    action = str(action or "").upper()
+    return "BELI KUAT" in action or "CICIL BELI" in action
+
+
+def apply_bot_learning(result):
+    """Adjust score/allocation from historical signal outcomes."""
+    apply_learning_adjustments([result])
+    return result
+
+
+def get_bot_news_profile(force=False):
+    global _last_news_profile, _last_news_profile_at
+    now_ts = time.time()
+    if force or _last_news_profile is None or now_ts - _last_news_profile_at >= NEWS_REFRESH_SECONDS:
+        _last_news_profile = build_news_profile(symbols=list(MAIN_ASSETS.keys()) + list(MICIN_COINS))
+        _last_news_profile_at = now_ts
+    return _last_news_profile
+
+
+def apply_bot_intelligence(result):
+    apply_news_adjustments([result], get_bot_news_profile())
+    apply_learning_adjustments([result])
+    return result
+
+
+def record_bot_learning_signal(result, pair=None, source="bot"):
+    payload = dict(result)
+    payload["pair"] = pair or payload.get("pair")
+    payload["target"] = payload.get("target", payload.get("tp3"))
+    payload["allocation_pct"] = payload.get("allocation_pct", payload.get("alloc_pct", 0))
+    payload["source"] = source
+    return record_signal(payload, is_entry_action)
+
+
+# =============================================================================
+# DATA FETCHING
+# =============================================================================
+def fetch_all_tickers():
+    """Satu fetch untuk semua data dari Indodax menggunakan summaries API"""
+    try:
+        resp = requests.get("https://indodax.com/api/summaries", timeout=10)
+        data = resp.json()
+        tickers = data.get("tickers", {})
+        prices_24h = data.get("prices_24h", {})
+        all_coins = {}
+        for pair, info in tickers.items():
+            if not pair.endswith("_idr"):
+                continue
+            symbol = pair.replace("_idr", "").upper()
+            price = float(info["last"])
+            pair_key = pair.replace("_", "")
+            ref_price = float((prices_24h or {}).get(pair_key, 0))
+            if ref_price > 0:
+                change = ((price - ref_price) / ref_price) * 100
+            else:
+                change = 0.0
+
+            all_coins[symbol] = {
+                "symbol": symbol, "pair": pair,
+                "price": price,
+                "change": round(change, 2),
+                "vol_idr": float(info.get("vol_idr", 0)),
+                "high": float(info.get("high", 0)),
+                "low": float(info.get("low", 0)),
+            }
+        return all_coins
+    except Exception as e:
+        log(f"Fetch error: {e}")
+        return {}
+
+
+def fetch_candles(pair_id, tf="60", lookback_days=21):
+    """Ambil candle historis dari Indodax untuk indikator teknikal."""
+    end_ts = int(time.time())
+    start_ts = end_ts - lookback_days * 86400
+    symbol = pair_id.replace("_", "").upper()
+    url = "https://indodax.com/tradingview/history_v2"
+    try:
+        resp = requests.get(url, params={"from": start_ts, "to": end_ts, "tf": tf, "symbol": symbol}, timeout=8)
+        rows = resp.json()
+    except Exception:
+        return pd.DataFrame()
+    if not isinstance(rows, list) or not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    rename = {"Time": "time", "Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}
+    df = df.rename(columns=rename)
+    required = ["time", "open", "high", "low", "close", "volume"]
+    if not all(c in df.columns for c in required):
+        return pd.DataFrame()
+    for c in required:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=["close"]).sort_values("time")
+    return df.tail(500).reset_index(drop=True)
+
+
+# =============================================================================
+# TECHNICAL INDICATORS
+# =============================================================================
+def compute_rsi(close, period=14):
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
+    rs = gain / loss.replace(0, pd.NA)
+    return float((100 - (100 / (1 + rs))).fillna(50).iloc[-1])
+
+
+def compute_ema(close, span):
+    return close.ewm(span=span, adjust=False).mean()
+
+
+def _candles_with_datetime_index(candles):
+    if candles.empty or "time" not in candles.columns:
+        return pd.DataFrame()
+    df = candles.copy()
+    t = pd.to_numeric(df["time"], errors="coerce")
+    if t.dropna().empty:
+        return pd.DataFrame()
+    unit = "ms" if float(t.dropna().median()) > 1_000_000_000_000 else "s"
+    df["_dt"] = pd.to_datetime(t, unit=unit, errors="coerce", utc=True)
+    return df.dropna(subset=["_dt"]).set_index("_dt").sort_index()
+
+
+def _resample_candles(candles, rule):
+    df = _candles_with_datetime_index(candles)
+    if df.empty:
+        return pd.DataFrame()
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    return df.resample(rule).agg(agg).dropna(subset=["close"]).reset_index(drop=True)
+
+
+def _timeframe_bias(candles):
+    if candles.empty or len(candles) < 12:
+        return "NO DATA", 0
+    close = candles["close"].astype(float)
+    ema_fast = compute_ema(close, 5).iloc[-1]
+    ema_slow = compute_ema(close, 13).iloc[-1]
+    lookback = min(6, len(close) - 1)
+    momentum = (close.iloc[-1] / close.iloc[-1 - lookback] - 1) * 100 if lookback > 0 and close.iloc[-1 - lookback] > 0 else 0
+    gap = (ema_fast - ema_slow) / ema_slow * 100 if ema_slow > 0 else 0
+    if gap > 0.15 and momentum > 0:
+        return "BULLISH", 2
+    if gap > 0 and momentum > -0.6:
+        return "BULLISH BIAS", 1
+    if gap < -0.15 and momentum < 0:
+        return "BEARISH", -2
+    if gap < 0 and momentum < 0.6:
+        return "BEARISH BIAS", -1
+    return "SIDEWAYS", 0
+
+
+def compute_multi_timeframe_confirmation(candles):
+    h4 = _resample_candles(candles, "4h")
+    d1 = _resample_candles(candles, "1D")
+    h4_label, h4_score = _timeframe_bias(h4)
+    d1_label, d1_score = _timeframe_bias(d1)
+    total = h4_score + d1_score
+    if total >= 3:
+        label, adjustment = "ALIGN BULLISH", 7
+    elif total == 2:
+        label, adjustment = "BULLISH BIAS", 4
+    elif total <= -3:
+        label, adjustment = "ALIGN BEARISH", -8
+    elif total == -2:
+        label, adjustment = "BEARISH BIAS", -5
+    else:
+        label, adjustment = "MIXED", 0
+    return {
+        "mtf_label": label,
+        "mtf_4h": h4_label,
+        "mtf_1d": d1_label,
+        "mtf_score": total,
+        "mtf_adjustment": adjustment,
+    }
+
+
+def compute_macd(close):
+    if len(close) < 15:
+        return "netral", 0
+    macd_line = compute_ema(close, 12) - compute_ema(close, 26)
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    hist = float(macd_line.iloc[-1] - signal_line.iloc[-1])
+    prev = float(macd_line.iloc[-2] - signal_line.iloc[-2]) if len(macd_line) > 1 else 0
+    if hist > 0 and prev <= 0:
+        return "bullish cross", hist
+    elif hist > 0:
+        return "bullish", hist
+    elif hist < 0 and prev >= 0:
+        return "bearish cross", hist
+    elif hist < 0:
+        return "bearish", hist
+    return "netral", hist
+
+
+def compute_bollinger(close):
+    if len(close) < 20:
+        return {"bb_signal": "netral", "bb_pct_b": 0.5}
+    mid = float(close.tail(20).mean())
+    std = float(close.tail(20).std())
+    upper = mid + 2 * std
+    lower = mid - 2 * std
+    last = float(close.iloc[-1])
+    pct_b = (last - lower) / (upper - lower) if upper > lower else 0.5
+    if pct_b < 0.15:
+        sig = "oversold"
+    elif pct_b > 0.85:
+        sig = "overbought"
+    else:
+        sig = "netral"
+    return {"bb_signal": sig, "bb_pct_b": round(pct_b, 2)}
+
+
+def compute_supertrend(candles):
+    if candles.empty or len(candles) < 30:
+        return "netral"
+    high = candles["high"].astype(float)
+    low = candles["low"].astype(float)
+    close = candles["close"].astype(float)
+    tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean()
+    ema_fast = close.ewm(span=10, adjust=False).mean()
+    ema_slow = close.ewm(span=30, adjust=False).mean()
+    floor = ((high + low) / 2) - (2.4 * atr)
+    if pd.notna(floor.iloc[-1]) and close.iloc[-1] > floor.iloc[-1] and ema_fast.iloc[-1] > ema_slow.iloc[-1]:
+        return "bullish"
+    elif pd.notna(floor.iloc[-1]):
+        return "bearish"
+    return "netral"
+
+
+def compute_volume_analysis(candles):
+    if candles.empty or len(candles) < 20:
+        return "normal", 1.0
+    vol = candles["volume"].astype(float)
+    avg = vol.tail(20).mean()
+    if avg <= 0:
+        return "normal", 1.0
+    ratio = float(vol.iloc[-1] / avg)
+    if ratio >= 1.8:
+        return "spike", ratio
+    elif ratio >= 1.15:
+        return "kuat", ratio
+    elif ratio >= 0.7:
+        return "normal", ratio
+    return "tipis", ratio
+
+
+def compute_adx(candles):
+    """ADX: ukur kekuatan tren (bukan arah)."""
+    if candles.empty or len(candles) < 28:
+        return {"adx": 25, "trend": "sideways"}
+    hi = candles["high"].astype(float)
+    lo = candles["low"].astype(float)
+    cl = candles["close"].astype(float)
+    tr = pd.concat([hi - lo, (hi - cl.shift(1)).abs(), (lo - cl.shift(1)).abs()], axis=1).max(axis=1)
+    up = hi - hi.shift(1)
+    dn = lo.shift(1) - lo
+    pdm = up.where((up > dn) & (up > 0), 0.0)
+    ndm = dn.where((dn > up) & (dn > 0), 0.0)
+    atr = tr.ewm(alpha=1/14, adjust=False).mean()
+    pdi = 100 * pdm.ewm(alpha=1/14, adjust=False).mean() / atr.replace(0, float('nan'))
+    ndi = 100 * ndm.ewm(alpha=1/14, adjust=False).mean() / atr.replace(0, float('nan'))
+    dx = 100 * abs(pdi - ndi) / (pdi + ndi).replace(0, float('nan'))
+    adx = float(dx.fillna(25).ewm(alpha=1/14, adjust=False).mean().iloc[-1])
+    pdi_v = float(pdi.fillna(0).iloc[-1])
+    ndi_v = float(ndi.fillna(0).iloc[-1])
+    if adx >= 25:
+        trend = "bullish_strong" if pdi_v > ndi_v and adx >= 40 else "bullish" if pdi_v > ndi_v else "bearish_strong" if adx >= 40 else "bearish"
+    else:
+        trend = "sideways"
+    return {"adx": round(adx, 1), "trend": trend}
+
+
+def compute_ml_forecast(candles):
+    """KNN sederhana: prediksi probabilitas naik dari pola historis."""
+    default = {"ml_prob": 50.0, "ml_label": "NO DATA", "ml_conf": "rendah"}
+    if candles.empty or len(candles) < 80:
+        return default
+    close = candles["close"].astype(float)
+    high = candles["high"].astype(float)
+    low = candles["low"].astype(float)
+    volume = candles["volume"].astype(float)
+    ret1 = close.pct_change(1) * 100
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rsi = 100 - (100 / (1 + gain / loss.replace(0, pd.NA)))
+    feat = pd.DataFrame({
+        "ret1": ret1, "ret3": close.pct_change(3)*100, "ret6": close.pct_change(6)*100,
+        "vol12": ret1.rolling(12).std(),
+        "ema_gap": (close.ewm(span=8,adjust=False).mean() - close.ewm(span=21,adjust=False).mean()) / close * 100,
+        "rsi": rsi,
+        "rng": (close - low.rolling(24).min()) / (high.rolling(24).max() - low.rolling(24).min()).replace(0, pd.NA) * 100,
+        "vr": volume / volume.rolling(24).mean().replace(0, pd.NA),
+    })
+    feat["future"] = close.shift(-6) / close * 100 - 100
+    feat = feat.replace([float('inf'), float('-inf')], pd.NA)
+    cols = ["ret1","ret3","ret6","vol12","ema_gap","rsi","rng","vr"]
+    current = feat[cols].dropna().tail(1).astype(float)
+    train = feat.dropna(subset=cols+["future"]).copy()
+    if current.empty or len(train) < 50:
+        return default
+    means = train[cols].mean()
+    stds = train[cols].std().replace(0,1).fillna(1)
+    tx = ((train[cols]-means)/stds).astype(float)
+    cx = ((current.iloc[0]-means)/stds).astype(float)
+    dist = tx.sub(cx, axis=1).pow(2).sum(axis=1).pow(0.5)
+    dist = pd.to_numeric(dist, errors='coerce').dropna()
+    if dist.empty:
+        return default
+    k = int(clamp(round(len(train)**0.5), 12, 35))
+    nearest = train.loc[dist.nsmallest(k).index]
+    w = 1 / (dist.loc[nearest.index] + 0.001)
+    prob = float(((nearest["future"] > 1.0).astype(float) * w).sum() / w.sum() * 100)
+    label = "BULLISH" if prob >= 62 else "BEARISH" if prob <= 42 else "NETRAL"
+    edge = abs(prob - 50)
+    conf = "tinggi" if len(train) >= 180 and edge >= 14 else "sedang" if len(train) >= 90 and edge >= 8 else "rendah"
+    return {"ml_prob": round(prob,1), "ml_label": label, "ml_conf": conf}
+
+
+def compute_backtest(candles):
+    """Test sinyal serupa di data historis: berhasil atau gagal?"""
+    default = {"bt_wr": 0, "bt_trades": 0, "bt_label": "DATA KURANG"}
+    if candles.empty or len(candles) < 90:
+        return default
+    close = candles["close"].astype(float)
+    high = candles["high"].astype(float)
+    low = candles["low"].astype(float)
+    volume = candles["volume"].astype(float)
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rsi = 100 - (100 / (1 + gain / loss.replace(0, pd.NA)))
+    ema8 = close.ewm(span=8, adjust=False).mean()
+    ema21 = close.ewm(span=21, adjust=False).mean()
+    vr = volume / volume.rolling(24).mean().replace(0, pd.NA)
+    sig = ((ema8>ema21) & rsi.between(42,72) & (vr>=0.75)).fillna(False)
+    outcomes = []
+    last_i = -6
+    for i in range(35, len(candles)-7):
+        if not bool(sig.iloc[i]) or i - last_i < 6:
+            continue
+        entry = float(close.iloc[i])
+        if entry <= 0: continue
+        tgt = entry * 1.026
+        stp = entry * 0.978
+        out = None
+        for j in range(i+1, i+7):
+            if float(low.iloc[j]) <= stp: out = -2.2; break
+            if float(high.iloc[j]) >= tgt: out = 2.6; break
+        if out is None:
+            out = float((close.iloc[i+6]-entry)/entry*100)
+        outcomes.append(out)
+        last_i = i
+    if len(outcomes) < 6:
+        return default
+    wins = [x for x in outcomes if x > 0]
+    wr = len(wins)/len(outcomes)*100
+    label = "TERUJI" if wr >= 58 and len(outcomes) >= 14 else "CUKUP" if wr >= 50 else "LEMAH"
+    return {"bt_wr": round(wr,1), "bt_trades": len(outcomes), "bt_label": label}
+
+
+def build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr):
+    """Komite bull/bear sederhana: approve, approve kecil, tunggu, atau tolak."""
+    bull = bear = 0
+    if score >= 75: bull += 18
+    elif score >= 65: bull += 10
+    else: bear += 8
+    if ml["ml_prob"] >= 62: bull += 12
+    elif ml["ml_prob"] <= 42: bear += 12
+    if bt["bt_trades"] >= 10 and bt["bt_wr"] >= 58: bull += 14
+    elif bt["bt_trades"] >= 10 and bt["bt_label"] == "LEMAH": bear += 16
+    if adx_data["trend"] in ("bullish_strong","bullish"): bull += 7
+    elif adx_data["trend"] in ("bearish_strong","bearish"): bear += 9
+    if supertrend == "bullish": bull += 7
+    elif supertrend == "bearish": bear += 9
+    if rsi >= 78: bear += 8
+    if vol_idr < 100_000_000: bear += 12
+    elif vol_idr >= 5_000_000_000: bull += 5
+    net = int(clamp(50 + bull - bear, 0, 100))
+    if risk_level == "TINGGI" or bear >= bull + 18:
+        return "TOLAK", net, 0
+    elif bear >= bull + 5 or net < 48:
+        return "TUNGGU", net, 0
+    elif risk_level == "SEDANG":
+        return "APPROVE KECIL", net, 0.55
+    return "APPROVE", net, 1.0
+
+
+def compute_ema200_trend(candles):
+    if candles.empty or len(candles) < 220:
+        return {
+            "ema200_ok": False,
+            "ema200": None,
+            "trend_side": "NO DATA"
+        }
+    close = candles["close"].astype(float)
+    ema200 = close.ewm(span=200, adjust=False).mean()
+    last_price = float(close.iloc[-1])
+    last_ema200 = float(ema200.iloc[-1])
+    if last_price > last_ema200:
+        side = "BULLISH"
+        ok = True
+    else:
+        side = "BEARISH"
+        ok = False
+    return {
+        "ema200_ok": ok,
+        "ema200": last_ema200,
+        "trend_side": side
+    }
+
+
+def compute_volume_anomaly(candles, threshold=1.2):
+    if candles.empty or len(candles) < 22:
+        return {
+            "volume_ok": False,
+            "volume_ratio": 1.0
+        }
+
+    closed = candles.iloc[:-1]
+    volume = closed["volume"].astype(float)
+
+    avg20 = volume.tail(21).iloc[:-1].mean()
+    last_vol = float(volume.iloc[-1])
+
+    if avg20 <= 0:

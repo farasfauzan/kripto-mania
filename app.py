@@ -20,6 +20,7 @@ from intelligence_engine import (
 import journal_store
 import smart_engine
 import ai_pilot
+import pump_scanner
 
 # =============================================================================
 # CONFIG & CONSTANTS
@@ -4015,6 +4016,274 @@ def render_education_tab():
     )
 
 
+# =============================================================================
+# PUMP DETECTOR TAB
+# =============================================================================
+def render_pump_detector_tab(tickers, prices_24h):
+    """Tab Pump Detector: scan seluruh koin Indodax untuk mendeteksi pump."""
+    st.markdown("## 🔥 Pump Detector Scanner")
+    st.markdown(
+        "Scan otomatis **500+ koin Indodax** untuk mendeteksi koin yang menunjukkan "
+        "tanda-tanda **akan pump** (pre-pump setup). Gunakan sebagai radar awal, "
+        "selalu konfirmasi dengan analisis mandiri."
+    )
+
+    col_btn, col_info = st.columns([1, 2])
+    with col_btn:
+        run_scan = st.button(
+            "🔍 Scan Pump Sekarang",
+            use_container_width=True,
+            type="primary",
+            key="btn_pump_scan",
+            help="Scan seluruh koin di Indodax (estimasi 1-2 menit)"
+        )
+    with col_info:
+        st.markdown(
+            '<div style="padding:0.6rem 1rem;background:#1e293b;border-radius:10px;'
+            'border:1px solid #334155;font-size:0.8rem;color:#94a3b8">'
+            '⚡ <strong>4-Layer Filter:</strong> Ticker → 15m Setup → 1H Deep Analysis → Pump Score<br>'
+            '🎯 Hanya koin dengan <strong>Grade A/B/C</strong> yang ditampilkan'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Cek apakah ada hasil di session state (cache)
+    if "pump_results" not in st.session_state:
+        st.session_state["pump_results"] = None
+        st.session_state["pump_scan_time"] = None
+
+    if run_scan:
+        progress = st.progress(0, text="🔍 Memulai scan pump...")
+        def progress_cb(current, total, message):
+            progress.progress(current / total, text=message)
+
+        with st.spinner("Scanning..."):
+            results = pump_scanner.run_pump_scan(tickers, prices_24h, progress_callback=progress_cb)
+
+        st.session_state["pump_results"] = results
+        from datetime import datetime, timezone, timedelta
+        WIB = timezone(timedelta(hours=7))
+        st.session_state["pump_scan_time"] = datetime.now(WIB).strftime("%H:%M:%S WIB")
+        progress.empty()
+        st.rerun()
+
+    results = st.session_state.get("pump_results")
+    scan_time = st.session_state.get("pump_scan_time")
+
+    if results is None:
+        st.info("👆 Klik tombol di atas untuk memulai scan pump. Proses memakan waktu ~1-2 menit.")
+        return
+
+    if not results:
+        st.warning("Tidak ditemukan koin dengan setup pump yang valid saat ini. Coba scan lagi nanti.")
+        return
+
+    # Header hasil
+    st.markdown(
+        f'<div style="text-align:center;margin:1rem 0">'
+        f'<span style="background:#047857;color:white;padding:0.35rem 1rem;border-radius:20px;'
+        f'font-size:0.85rem;font-weight:700">'
+        f'🔥 {len(results)} koin terdeteksi · Scan {scan_time}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Render each pump result card
+    for idx, item in enumerate(results):
+        render_pump_card(item, idx)
+
+    # Summary table
+    st.markdown("### 📊 Ringkasan Hasil Scan")
+    table_data = []
+    for r in results:
+        deep = r.get("deep_analysis", {})
+        setup = r.get("setup_15m", {})
+        table_data.append({
+            "Symbol": r["symbol"],
+            "Pump %": r["pump_probability"],
+            "Grade": r["pump_grade"],
+            "Timeframe": r["pump_timeframe"],
+            "Harga": format_price(r["price"]),
+            "Chg 24h": f"{r['change']:+.2f}%",
+            "Volume": format_idr(r["vol_idr"]),
+            "Score": deep.get("score", 0),
+            "RSI": deep.get("rsi_1h", 50),
+            "R:R": deep.get("risk_reward", "-"),
+            "Trigger": " · ".join(setup.get("triggers", [])),
+        })
+    df = pd.DataFrame(table_data)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def render_pump_card(item: dict, idx: int):
+    """Render satu card hasil pump scan."""
+    deep = item.get("deep_analysis", {})
+    setup = item.get("setup_15m", {})
+    scores = item.get("pump_scores", {})
+    symbol = item["symbol"]
+    pump_prob = item["pump_probability"]
+    grade = item["pump_grade"]
+    timeframe = item["pump_timeframe"]
+    price = item["price"]
+    change = item["change"]
+    vol_idr = item["vol_idr"]
+
+    # Colors based on grade
+    grade_colors = {
+        "A": ("#dc2626", "#fef2f2", "linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%)", "🔥🔥🔥"),
+        "B": ("#ea580c", "#fff7ed", "linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)", "🔥🔥"),
+        "C": ("#ca8a04", "#fefce8", "linear-gradient(135deg, #fefce8 0%, #fef9c3 100%)", "🔥"),
+        "D": ("#64748b", "#f8fafc", "linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)", ""),
+    }
+    gc, gbg, ggr, gfire = grade_colors.get(grade, grade_colors["D"])
+
+    # Pump probability bar
+    bar_color = "#dc2626" if pump_prob >= 75 else "#ea580c" if pump_prob >= 60 else "#ca8a04"
+
+    # Trigger pills
+    triggers = setup.get("triggers", [])
+    trigger_pills = "".join(
+        f'<span style="display:inline-block;background:#e2e8f0;color:#334155;padding:2px 8px;'
+        f'border-radius:10px;font-size:0.7rem;font-weight:700;margin:2px">{t}</span>'
+        for t in triggers
+    )
+
+    # Score breakdown
+    score_items = ""
+    for label, val in [("Momentum", scores.get("momentum", 0)), ("Volume", scores.get("volume", 0)),
+                       ("Technical", scores.get("technical", 0)), ("Forecast", scores.get("forecast", 0))]:
+        bar_w = val * 4  # scale to 100
+        score_items += (
+            f'<div style="display:flex;align-items:center;gap:6px;margin:2px 0">'
+            f'<span style="font-size:0.65rem;color:#64748b;width:60px">{label}</span>'
+            f'<div style="flex:1;background:#e2e8f0;border-radius:4px;height:6px">'
+            f'<div style="width:{bar_w}%;background:{bar_color};border-radius:4px;height:6px"></div>'
+            f'</div>'
+            f'<span style="font-size:0.65rem;color:#334155;font-weight:700;width:25px">{val}</span>'
+            f'</div>'
+        )
+
+    pair_upper = item.get("pair", "").upper().replace("_", "")
+    buy_link = f"https://indodax.com/market/{pair_upper}?ref=narwanpratanta"
+    ch_sign = "+" if change >= 0 else ""
+    ch_color = "#047857" if change >= 0 else "#b91c1c"
+
+    # Category
+    category = COIN_CATEGORIES.get(symbol, "Lainnya")
+    cat_color = CATEGORY_COLORS.get(category, "#6b7280")
+
+    st.markdown(
+        f"""
+        <div style="background:{ggr};border:2px solid {gc}22;border-radius:16px;
+                    padding:1.2rem;margin-bottom:1rem;position:relative;overflow:hidden">
+            <!-- Grade Badge -->
+            <div style="position:absolute;top:12px;right:12px;background:{gc};
+                        color:white;padding:4px 14px;border-radius:20px;
+                        font-size:0.8rem;font-weight:900;letter-spacing:1px">
+                {gfire} GRADE {grade}
+            </div>
+
+            <!-- Header -->
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:0.8rem">
+                <div style="font-size:1.5rem;font-weight:900;color:#0f172a">{symbol}</div>
+                <span style="background:{cat_color}22;color:{cat_color};padding:2px 10px;
+                             border-radius:8px;font-size:0.7rem;font-weight:700">{category}</span>
+            </div>
+
+            <!-- Price & Change -->
+            <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:0.6rem">
+                <span style="font-size:1.1rem;font-weight:800;color:#0f172a">{format_price(price)}</span>
+                <span style="font-size:0.9rem;font-weight:700;color:{ch_color}">{ch_sign}{change:.2f}%</span>
+                <span style="font-size:0.75rem;color:#64748b">Vol {format_idr(vol_idr)}</span>
+            </div>
+
+            <!-- Pump Probability Bar -->
+            <div style="margin-bottom:0.8rem">
+                <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                    <span style="font-size:0.75rem;font-weight:700;color:#334155">Pump Probability</span>
+                    <span style="font-size:0.9rem;font-weight:900;color:{gc}">{pump_prob}%</span>
+                </div>
+                <div style="background:#e2e8f0;border-radius:8px;height:10px;overflow:hidden">
+                    <div style="width:{pump_prob}%;background:linear-gradient(90deg,{bar_color},{gc});
+                                border-radius:8px;height:10px;transition:width 0.5s ease"></div>
+                </div>
+                <div style="text-align:right;font-size:0.7rem;color:#64748b;margin-top:2px">
+                    Est. pump dalam {timeframe}
+                </div>
+            </div>
+
+            <!-- Trigger Pills -->
+            <div style="margin-bottom:0.8rem">
+                <span style="font-size:0.7rem;color:#64748b;font-weight:700">TRIGGER:</span>
+                {trigger_pills}
+            </div>
+
+            <!-- Score Breakdown -->
+            <div style="background:white;border-radius:10px;padding:0.6rem;margin-bottom:0.8rem;
+                        border:1px solid #e2e8f0">
+                <div style="font-size:0.7rem;font-weight:700;color:#334155;margin-bottom:4px">
+                    Score Breakdown (maks 25 per kategori)
+                </div>
+                {score_items}
+            </div>
+
+            <!-- Entry & TP/SL -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:0.5rem">
+                <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:0.5rem;text-align:center">
+                    <div style="font-size:0.65rem;color:#166534;font-weight:700">🎯 ENTRY ZONE</div>
+                    <div style="font-size:0.8rem;font-weight:800;color:#047857">
+                        {format_price(deep.get('entry_zone_low'))} – {format_price(deep.get('entry_zone_high'))}
+                    </div>
+                </div>
+                <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;padding:0.5rem;text-align:center">
+                    <div style="font-size:0.65rem;color:#991b1b;font-weight:700">🛑 STOP LOSS</div>
+                    <div style="font-size:0.8rem;font-weight:800;color:#b91c1c">
+                        {format_price(deep.get('stop_loss'))}
+                    </div>
+                </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:0.5rem">
+                <div style="background:white;border:1px solid #e2e8f0;border-radius:8px;padding:0.4rem;text-align:center">
+                    <div style="font-size:0.6rem;color:#64748b;font-weight:700">TP1</div>
+                    <div style="font-size:0.75rem;font-weight:700;color:#047857">{format_price(deep.get('tp1'))}</div>
+                </div>
+                <div style="background:white;border:1px solid #e2e8f0;border-radius:8px;padding:0.4rem;text-align:center">
+                    <div style="font-size:0.6rem;color:#64748b;font-weight:700">TP2</div>
+                    <div style="font-size:0.75rem;font-weight:700;color:#047857">{format_price(deep.get('tp2'))}</div>
+                </div>
+                <div style="background:white;border:1px solid #e2e8f0;border-radius:8px;padding:0.4rem;text-align:center">
+                    <div style="font-size:0.6rem;color:#64748b;font-weight:700">TP3</div>
+                    <div style="font-size:0.75rem;font-weight:700;color:#047857">{format_price(deep.get('tp3'))}</div>
+                </div>
+            </div>
+
+            <!-- Technical Summary -->
+            <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:0.5rem">
+                <span class="metric-chip"><span class="metric-label">Score</span>
+                    <span class="metric-value">{deep.get('score', 0)}</span></span>
+                <span class="metric-chip"><span class="metric-label">RSI</span>
+                    <span class="metric-value">{deep.get('rsi_1h', 50):.0f}</span></span>
+                <span class="metric-chip"><span class="metric-label">MACD</span>
+                    <span class="metric-value">{deep.get('macd_signal', 'netral')}</span></span>
+                <span class="metric-chip"><span class="metric-label">SuperT</span>
+                    <span class="metric-value">{deep.get('supertrend', 'netral')}</span></span>
+                <span class="metric-chip"><span class="metric-label">ADX</span>
+                    <span class="metric-value">{deep.get('adx', 0):.0f} {deep.get('adx_trend', '')}</span></span>
+                <span class="metric-chip"><span class="metric-label">R:R</span>
+                    <span class="metric-value" style="color:#047857;font-weight:900">{deep.get('risk_reward', '-')}</span></span>
+            </div>
+
+            <!-- CTA Button -->
+            <a href="{buy_link}" target="_blank" style="display:block;text-align:center;
+                      background:{gc};color:white;padding:0.6rem;border-radius:10px;
+                      font-weight:800;font-size:0.85rem;text-decoration:none;
+                      margin-top:0.5rem">Entry di Indodax →</a>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_donation():
     with st.expander("💖 Dukung Project Ini (Donasi)"):
         st.markdown("Bantu saya terus mengembangkan tools ini:")
@@ -4174,13 +4443,15 @@ def main():
     render_learning_panel(learning_profile)
     render_fomo_alerts(tickers, prices_24h, market_stats, news_profile, learning_profile)
 
-    tab_pilot, tab1, tab_pf, tab_st, tab2, tab3, tab4, tab5, tab6, tab_edu = st.tabs([
-        "🤖 AI Auto-Pilot", "Rekomendasi Beli", "Portofolio Saya", "Statistik Bot",
+    tab_pilot, tab_pump, tab1, tab_pf, tab_st, tab2, tab3, tab4, tab5, tab6, tab_edu = st.tabs([
+        "🤖 AI Auto-Pilot", "🔥 Pump Detector", "Rekomendasi Beli", "Portofolio Saya", "Statistik Bot",
         "Semua Aset", "Micin/Meme", "Analisis Detail", "Scan Koin Lain", "Tanya AI Advisor",
         "Cara Baca Sinyal",
     ])
     with tab_pilot:
         render_pilot_tab(market_stats, all_results, news_profile, learning_profile, tickers, prices_24h)
+    with tab_pump:
+        render_pump_detector_tab(tickers, prices_24h)
     with tab1:
         render_rekomendasi_list(all_results, "Rekomendasi Beli Hari Ini", max_items=20)
     with tab_pf:
