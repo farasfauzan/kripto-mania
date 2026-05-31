@@ -14,5 +14,8 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 7860
 
-# Run bot daemon in background, and Streamlit app in foreground
-CMD ["sh", "-c", "python telegram_bot.py & exec streamlit run app.py --server.port 7860 --server.address 0.0.0.0"]
+# Run bot daemon in background (auto-restart kalau crash), Streamlit di foreground.
+# Loop restart penting di HF Spaces: kalau bot crash, Space tetap "Running" karena
+# yang dipantau cuma streamlit — tanpa loop ini bot bisa mati diam-diam.
+CMD ["sh", "-c", "(while true; do echo '[boot] starting telegram_bot.py'; python telegram_bot.py; echo '[boot] telegram_bot.py exited, restart in 10s'; sleep 10; done) & exec streamlit run app.py --server.port 7860 --server.address 0.0.0.0"]
+
