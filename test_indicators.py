@@ -139,6 +139,28 @@ check("ml label valid", ml["ml_label"] in {"BULLISH", "BEARISH", "NETRAL", "NO D
 check("ml conf valid", ml["ml_conf"] in {"tinggi", "sedang", "rendah"}, ml["ml_conf"])
 check("ml data kurang NO DATA", ci.compute_ml_forecast(TINY)["ml_label"] == "NO DATA")
 
+# Walk-forward: key baru ada + shrinkage jujur
+check("ml punya key walk-forward", {"ml_wf_acc", "ml_wf_n", "ml_prob_raw"} <= set(ml))
+# Data acak murni -> KNN tidak punya skill -> prob harus DICIUTKAN mendekati 50
+rng_rand = np.random.default_rng(123)
+rand_close = 10_000 + np.cumsum(rng_rand.normal(0, 50, 300))  # random walk, tak terprediksi
+rand = pd.DataFrame({
+    "time": (pd.Series(range(300)) * 3600 + 1_600_000_000).astype(int),
+    "open": rand_close + rng_rand.normal(0, 10, 300),
+    "high": rand_close + np.abs(rng_rand.normal(0, 30, 300)),
+    "low": rand_close - np.abs(rng_rand.normal(0, 30, 300)),
+    "close": rand_close,
+    "volume": np.abs(rng_rand.normal(1000, 200, 300)) + 1,
+})
+ml_rand = ci.compute_ml_forecast(rand)
+# prob hasil shrinkage harus lebih dekat ke 50 daripada prob mentah (kecuali sudah di 50)
+shrunk_closer = abs(ml_rand["ml_prob"] - 50) <= abs(ml_rand["ml_prob_raw"] - 50) + 1e-9
+check("ml shrinkage menciutkan ke 50 saat data acak", shrunk_closer,
+      f"raw={ml_rand['ml_prob_raw']} shrunk={ml_rand['ml_prob']}")
+check("ml prob hasil tetap 0..100", 0 <= ml_rand["ml_prob"] <= 100)
+# wf_acc kalau ada harus 0..100
+check("ml wf_acc valid range", ml_rand["ml_wf_acc"] is None or 0 <= ml_rand["ml_wf_acc"] <= 100)
+
 # =============================================================================
 # compute_backtest
 # =============================================================================

@@ -11,6 +11,7 @@ masing-masing file menyimpan versinya sendiri.
 
 import time
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -232,9 +233,70 @@ def compute_adx(candles):
     return {"adx": round(adx, 1), "trend": trend}
 
 
+def _knn_predict(train_X, train_future, query_x, k):
+    """Prediksi probabilitas naik (>1%) via KNN tertimbang jarak. Vektorized.
+
+    train_X: ndarray (n, f) terstandardisasi; train_future: ndarray (n,) % depan;
+    query_x: ndarray (f,) terstandardisasi. Mengembalikan prob 0..100.
+    """
+    if len(train_X) < k or k <= 0:
+        return 50.0
+    dist = np.sqrt(((train_X - query_x) ** 2).sum(axis=1))
+    idx = np.argpartition(dist, k - 1)[:k]
+    w = 1.0 / (dist[idx] + 0.001)
+    up = (train_future[idx] > 1.0).astype(float)
+    denom = w.sum()
+    if denom <= 0:
+        return 50.0
+    return float((up * w).sum() / denom * 100)
+
+
+def _walk_forward_skill(train_X, train_future, k, horizon=6, n_test=40):
+    """Ukur skill KNN secara out-of-sample (walk-forward, tanpa look-ahead).
+
+    Untuk tiap baris validasi terbaru, prediksi HANYA memakai baris yang
+    outcome-nya sudah diketahui sebelum titik prediksi (q + horizon <= p).
+    Mengembalikan (directional_accuracy_pct, n) atau (None, 0) bila data kurang.
+    """
+    n = len(train_X)
+    if n < 60:
+        return None, 0
+    n_test = int(min(n_test, max(0, (n - 30) // 2)))
+    if n_test < 15:
+        return None, 0
+    start = n - n_test
+    hits = 0
+    total = 0
+    for p in range(start, n):
+        usable = p - horizon  # outcome baris q diketahui di q+horizon <= p
+        if usable < 30:
+            continue
+        kk = int(min(k, max(8, round(usable ** 0.5))))
+        prob = _knn_predict(train_X[:usable], train_future[:usable], train_X[p], kk)
+        actual_up = train_future[p] > 1.0
+        pred_up = prob >= 50.0
+        if pred_up == bool(actual_up):
+            hits += 1
+        total += 1
+    if total < 15:
+        return None, 0
+    return round(hits / total * 100, 1), total
+
+
 def compute_ml_forecast(candles):
-    """KNN sederhana: prediksi probabilitas naik dari pola historis."""
-    default = {"ml_prob": 50.0, "ml_label": "NO DATA", "ml_conf": "rendah"}
+    """KNN: prediksi probabilitas naik, DIVALIDASI walk-forward (jujur).
+
+    Perbaikan kejujuran: probabilitas mentah KNN dikecilkan ke arah 50%
+    (coin-flip) sesuai SKILL yang terbukti out-of-sample. Kalau model tidak
+    punya skill (akurasi walk-forward ~50%), "72% naik" tidak lagi ditampilkan
+    apa adanya — diciutkan supaya tidak menipu. Confidence juga menuntut bukti
+    skill, bukan sekadar banyak data.
+
+    Key lama (ml_prob/ml_label/ml_conf) tetap ada; tambah ml_wf_acc (akurasi
+    walk-forward %), ml_wf_n (jumlah uji), ml_prob_raw (sebelum shrinkage).
+    """
+    default = {"ml_prob": 50.0, "ml_label": "NO DATA", "ml_conf": "rendah",
+               "ml_wf_acc": None, "ml_wf_n": 0, "ml_prob_raw": 50.0}
     if candles.empty or len(candles) < 80:
         return default
     close = candles["close"].astype(float)
@@ -263,20 +325,47 @@ def compute_ml_forecast(candles):
         return default
     means = train[cols].mean()
     stds = train[cols].std().replace(0,1).fillna(1)
-    tx = ((train[cols]-means)/stds).astype(float)
-    cx = ((current.iloc[0]-means)/stds).astype(float)
-    dist = tx.sub(cx, axis=1).pow(2).sum(axis=1).pow(0.5)
-    dist = pd.to_numeric(dist, errors='coerce').dropna()
-    if dist.empty:
-        return default
+    train_X = ((train[cols]-means)/stds).astype(float).to_numpy()
+    train_future = train["future"].astype(float).to_numpy()
+    query_x = ((current.iloc[0]-means)/stds).astype(float).to_numpy()
     k = int(clamp(round(len(train)**0.5), 12, 35))
-    nearest = train.loc[dist.nsmallest(k).index]
-    w = 1 / (dist.loc[nearest.index] + 0.001)
-    prob = float(((nearest["future"] > 1.0).astype(float) * w).sum() / w.sum() * 100)
+
+    prob_raw = _knn_predict(train_X, train_future, query_x, k)
+
+    # Validasi walk-forward: seberapa akurat KNN ini out-of-sample?
+    wf_acc, wf_n = _walk_forward_skill(train_X, train_future, k)
+
+    # Shrinkage ke 50% sesuai skill terbukti. Tanpa skill -> probabilitas jujur
+    # mendekati coin-flip. Dengan skill kuat -> dipertahankan apa adanya.
+    if wf_acc is None:
+        skill_factor = 0.5          # skill belum teruji: setengah jalan
+    elif wf_acc >= 58:
+        skill_factor = 1.0
+    elif wf_acc >= 53:
+        skill_factor = 0.75
+    elif wf_acc >= 48:
+        skill_factor = 0.45
+    else:
+        skill_factor = 0.25         # lebih buruk dari coin-flip
+    prob = 50.0 + (prob_raw - 50.0) * skill_factor
+
     label = "BULLISH" if prob >= 62 else "BEARISH" if prob <= 42 else "NETRAL"
     edge = abs(prob - 50)
-    conf = "tinggi" if len(train) >= 180 and edge >= 14 else "sedang" if len(train) >= 90 and edge >= 8 else "rendah"
-    return {"ml_prob": round(prob,1), "ml_label": label, "ml_conf": conf}
+    # Confidence menuntut BUKTI skill walk-forward, bukan cuma ukuran data.
+    if wf_acc is not None and wf_acc >= 58 and wf_n >= 20 and edge >= 10:
+        conf = "tinggi"
+    elif wf_acc is not None and wf_acc >= 53 and wf_n >= 15 and edge >= 6:
+        conf = "sedang"
+    else:
+        conf = "rendah"
+    return {
+        "ml_prob": round(prob, 1),
+        "ml_label": label,
+        "ml_conf": conf,
+        "ml_wf_acc": wf_acc,
+        "ml_wf_n": wf_n,
+        "ml_prob_raw": round(prob_raw, 1),
+    }
 
 
 def compute_backtest(candles, fee_pct_per_side=0.3, slippage_pct_per_side=0.1):
