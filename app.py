@@ -320,6 +320,7 @@ from core.indicators import (
     compute_ema,
     compute_ema200_trend,
     compute_macd,
+    compute_market_regime,
     compute_ml_forecast,
     compute_multi_timeframe_confirmation,
     compute_rsi,
@@ -1525,7 +1526,7 @@ def compute_atr(candles, period=14):
     return float(tr.rolling(period).mean().iloc[-1])
 
 
-def analyze_coin_advanced(symbol, data, candles, market_stats):
+def analyze_coin_advanced(symbol, data, candles, market_stats, market_regime=None):
     """Analisis lengkap satu koin menggunakan semua indikator teknikal."""
     price = data["price"]
     change = data["change"]
@@ -1615,6 +1616,9 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     # Market mode adjustment
     mode = market_stats.get("mode", "normal") if market_stats else "normal"
     mode_rules = MARKET_MODE_RULES.get(mode, MARKET_MODE_RULES["normal"])
+    # Regime BTC: peredam global. Default netral kalau tidak disuplai.
+    regime = market_regime or {"regime": "NO DATA", "regime_adjustment": 0, "allow_aggressive": True}
+    regime_adj = regime.get("regime_adjustment", 0)
     base = (
         50
         + change * 4.2
@@ -1631,6 +1635,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         - fomo_penalty
         - micin_penalty
         + mode_rules.get("score_adjustment", 0)
+        + regime_adj
     )
     score = int(clamp(round(base), 0, 100))
 
@@ -1662,6 +1667,11 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     if mtf["mtf_adjustment"] <= -5 and action in ("BELI KUAT", "CICIL BELI"):
         action = "WATCH"
         emoji = "⚪"
+
+    # Regime guard: kalau BTC sedang RISK_OFF (market global jatuh), jangan
+    # kasih sinyal agresif untuk altcoin — turunkan "BELI KUAT" jadi "CICIL BELI".
+    if not regime.get("allow_aggressive", True) and action == "BELI KUAT":
+        action, emoji = "CICIL BELI", "🟡"
 
     # Risk level
     risk_pts = 0
@@ -1762,6 +1772,9 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
         "adx": adx_data["adx"], "adx_trend": adx_data["trend"],
         "ml_prob": ml["ml_prob"], "ml_label": ml["ml_label"], "ml_conf": ml["ml_conf"],
         "bt_wr": bt["bt_wr"], "bt_trades": bt["bt_trades"], "bt_label": bt["bt_label"],
+        "bt_oos_wr": bt.get("bt_oos_wr"), "bt_avg_net_pct": bt.get("bt_avg_net_pct"),
+        "bt_cost_pct": bt.get("bt_cost_pct"),
+        "btc_regime": regime.get("regime"), "btc_regime_adjustment": regime.get("regime_adjustment", 0),
         "verdict": verdict, "verdict_net": verdict_net,
         "vol_label": vol_label, "risk_level": risk_level,
         "tp1": tp1, "tp2": tp2, "target": target, "stop_loss": stop_loss,
@@ -2090,11 +2103,17 @@ def analyze_assets(assets_data, market_stats, tickers=None):
     # Fetch all candles in parallel to prevent 15-second loading delay
     pairs_list = [data["pair"] for data in assets_data.values()]
     candles_map = _cached_fetch_candles_parallel(tuple(pairs_list))
-    
+
+    # Regime pasar global dari BTC, dihitung SEKALI lalu dipakai semua koin.
+    # Kalau BTC ambruk, altcoin diberi peredam skor (hindari beli saat market jatuh).
+    btc_pair = MAIN_ASSETS.get("BTC", ("btc_idr",))[0]
+    btc_candles = candles_map.get(btc_pair, pd.DataFrame())
+    market_regime = compute_market_regime(btc_candles)
+
     for idx, (symbol, data) in enumerate(assets_data.items()):
         pair = data["pair"]
         candles = candles_map.get(pair, pd.DataFrame())
-        result = analyze_coin_advanced(symbol, data, candles, market_stats)
+        result = analyze_coin_advanced(symbol, data, candles, market_stats, market_regime)
         results.append(result)
         if total > 0:
             progress_bar.progress((idx + 1) / total, text=f"📊 {symbol} ({idx+1}/{total})")

@@ -200,6 +200,54 @@ vt = ci.build_verdict(90, 55, "bullish", "bullish", adx, ml, bt, "TINGGI", 6_000
 check("verdict risk TINGGI -> TOLAK", vt[0] == "TOLAK", vt[0])
 check("verdict risk TINGGI alloc 0", vt[2] == 0)
 
+# Out-of-sample decay: bt dgn oos jeblok harus lebih bearish dari oos sehat
+bt_stale = {"bt_wr": 60, "bt_trades": 20, "bt_label": "TERUJI", "bt_oos_wr": 30}
+bt_fresh = {"bt_wr": 60, "bt_trades": 20, "bt_label": "TERUJI", "bt_oos_wr": 62}
+_, net_stale, _ = ci.build_verdict(70, 55, "bullish", "bullish", adx, ml, bt_stale, "RENDAH", 6_000_000_000)
+_, net_fresh, _ = ci.build_verdict(70, 55, "bullish", "bullish", adx, ml, bt_fresh, "RENDAH", 6_000_000_000)
+check("verdict OOS jeblok < OOS sehat", net_stale < net_fresh, f"stale={net_stale} fresh={net_fresh}")
+# Kompatibilitas: bt tanpa key oos tetap jalan (pemanggil lama)
+bt_legacy = {"bt_wr": 60, "bt_trades": 20, "bt_label": "TERUJI"}
+v_legacy = ci.build_verdict(70, 55, "bullish", "bullish", adx, ml, bt_legacy, "RENDAH", 6_000_000_000)
+check("verdict kompatibel bt tanpa oos", v_legacy[0] in {"APPROVE", "APPROVE KECIL", "TUNGGU", "TOLAK"})
+
+# =============================================================================
+# compute_market_regime (filter kondisi BTC)
+# =============================================================================
+# Fixture realistis: penurunan bertahap yg tetap di atas lantai harga, supaya
+# momentum & EMA mencerminkan downtrend nyata (bukan flatline di clip floor).
+def make_regime_candles(direction, n=120, seed=11, start=60_000.0):
+    rng = np.random.default_rng(seed)
+    drift = {"up": 0.004, "down": -0.004, "flat": 0.0}[direction]
+    rets = rng.normal(drift, 0.012, n)
+    close = start * np.cumprod(1 + rets)
+    close = np.clip(close, 1.0, None)
+    high = close * (1 + np.abs(rng.normal(0, 0.004, n)))
+    low = close * (1 - np.abs(rng.normal(0, 0.004, n)))
+    open_ = close * (1 + rng.normal(0, 0.002, n))
+    vol = np.abs(rng.normal(1000, 150, n)) + 1
+    times = (pd.Series(range(n)) * 3600 + 1_600_000_000).astype(int)
+    return pd.DataFrame(
+        {"time": times, "open": open_, "high": high, "low": low, "close": close, "volume": vol}
+    )
+
+
+BTC_UP = make_regime_candles("up", seed=21)
+BTC_DOWN = make_regime_candles("down", seed=22)
+reg_up = ci.compute_market_regime(BTC_UP)
+reg_dn = ci.compute_market_regime(BTC_DOWN)
+reg_empty = ci.compute_market_regime(EMPTY)
+reg_tiny = ci.compute_market_regime(TINY)
+check("regime key lengkap", {"regime", "regime_adjustment", "allow_aggressive", "btc_momentum_pct", "note"} <= set(reg_up))
+check("regime uptrend RISK_ON", reg_up["regime"] == "RISK_ON", str(reg_up))
+check("regime downtrend RISK_OFF", reg_dn["regime"] == "RISK_OFF", str(reg_dn))
+check("regime RISK_OFF tahan agresif", reg_dn["allow_aggressive"] is False)
+check("regime RISK_OFF adjustment negatif", reg_dn["regime_adjustment"] < 0)
+check("regime RISK_ON adjustment positif", reg_up["regime_adjustment"] > 0)
+check("regime empty NO DATA netral", reg_empty["regime"] == "NO DATA" and reg_empty["regime_adjustment"] == 0)
+check("regime data kurang tidak menghukum", reg_tiny["regime_adjustment"] == 0)
+check("regime adjustment dalam range", -8 <= reg_dn["regime_adjustment"] <= 4)
+
 # =============================================================================
 # fetch_candles — kontrak bentuk output (tanpa jaringan: tidak dipanggil live)
 # =============================================================================

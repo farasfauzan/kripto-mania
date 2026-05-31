@@ -245,17 +245,17 @@ def compute_ml_forecast(candles):
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean()
-    rsi = 100 - (100 / (1 + gain / loss.replace(0, pd.NA)))
+    rsi = 100 - (100 / (1 + gain / loss.replace(0, float("nan"))))
     feat = pd.DataFrame({
         "ret1": ret1, "ret3": close.pct_change(3)*100, "ret6": close.pct_change(6)*100,
         "vol12": ret1.rolling(12).std(),
         "ema_gap": (close.ewm(span=8,adjust=False).mean() - close.ewm(span=21,adjust=False).mean()) / close * 100,
         "rsi": rsi,
-        "rng": (close - low.rolling(24).min()) / (high.rolling(24).max() - low.rolling(24).min()).replace(0, pd.NA) * 100,
-        "vr": volume / volume.rolling(24).mean().replace(0, pd.NA),
+        "rng": (close - low.rolling(24).min()) / (high.rolling(24).max() - low.rolling(24).min()).replace(0, float("nan")) * 100,
+        "vr": volume / volume.rolling(24).mean().replace(0, float("nan")),
     })
     feat["future"] = close.shift(-6) / close * 100 - 100
-    feat = feat.replace([float('inf'), float('-inf')], pd.NA)
+    feat = feat.replace([float('inf'), float('-inf')], float("nan"))
     cols = ["ret1","ret3","ret6","vol12","ema_gap","rsi","rng","vr"]
     current = feat[cols].dropna().tail(1).astype(float)
     train = feat.dropna(subset=cols+["future"]).copy()
@@ -366,6 +366,18 @@ def build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_le
     elif ml["ml_prob"] <= 42: bear += 12
     if bt["bt_trades"] >= 10 and bt["bt_wr"] >= 58: bull += 14
     elif bt["bt_trades"] >= 10 and bt["bt_label"] == "LEMAH": bear += 16
+    # Out-of-sample decay: kalau winrate di 30% data terakhir jeblok jauh di
+    # bawah keseluruhan, pola mulai basi (regime berubah) -> hukum.
+    # Pakai .get agar kompatibel dgn pemanggil/bt lama tanpa key ini.
+    bt_oos = bt.get("bt_oos_wr")
+    if bt["bt_trades"] >= 12 and bt_oos is not None:
+        oos_gap = bt["bt_wr"] - bt_oos
+        if oos_gap >= 25:
+            bear += 10   # pola jelas memburuk di periode terbaru
+        elif oos_gap >= 15:
+            bear += 5
+        elif bt_oos >= 60 and bt["bt_wr"] >= 55:
+            bull += 4    # tetap kuat termasuk out-of-sample
     if adx_data["trend"] in ("bullish_strong","bullish"): bull += 7
     elif adx_data["trend"] in ("bearish_strong","bearish"): bear += 9
     if supertrend == "bullish": bull += 7
@@ -588,4 +600,71 @@ def compute_confluence_signal(candles):
         "pinbar": pinbar,
         "dynamic": dynamic,
         "sr": sr,
+    }
+
+
+# =============================================================================
+# MARKET REGIME FILTER (kondisi BTC)
+# =============================================================================
+def compute_market_regime(btc_candles):
+    """Klasifikasi kondisi pasar global dari candle BTC.
+
+    Di crypto, kalau BTC ambruk hampir semua altcoin ikut turun — jadi menilai
+    altcoin tanpa melihat BTC itu buta sebelah. Fungsi ini mengembalikan label
+    regime + penyesuaian skor yang bisa ditambahkan ke koin lain:
+
+      RISK_ON   : BTC sehat (di atas EMA50, momentum positif) -> boleh agresif
+      NEUTRAL   : BTC sideways -> netral
+      RISK_OFF  : BTC lemah (di bawah EMA50, momentum negatif) -> tahan diri
+      NO DATA   : candle kurang -> netral, tidak menghukum
+
+    `regime_adjustment` sengaja konservatif (range -8..+4): meredam, bukan
+    mendikte. `allow_aggressive` dipakai untuk gate sinyal "BELI KUAT".
+    """
+    default = {
+        "regime": "NO DATA",
+        "regime_adjustment": 0,
+        "allow_aggressive": True,
+        "btc_momentum_pct": 0.0,
+        "note": "Data BTC belum cukup; regime dianggap netral.",
+    }
+    if btc_candles is None or btc_candles.empty or len(btc_candles) < 55:
+        return default
+
+    close = btc_candles["close"].astype(float)
+    ema50 = close.ewm(span=50, adjust=False).mean()
+    price = float(close.iloc[-1])
+    ema_now = float(ema50.iloc[-1])
+    above_ema = price > ema_now
+
+    lookback = min(24, len(close) - 1)
+    ref = float(close.iloc[-1 - lookback])
+    momentum = ((price - ref) / ref * 100) if ref > 0 else 0.0
+
+    adx = compute_adx(btc_candles)
+    trend = adx.get("trend", "sideways")
+
+    if above_ema and momentum > 1.0 and trend not in ("bearish", "bearish_strong"):
+        regime = "RISK_ON"
+        adjustment = 4
+        allow_aggressive = True
+        note = f"BTC sehat (+{momentum:.1f}% & di atas EMA50). Boleh cari entry."
+    elif (not above_ema) and momentum < -1.0:
+        regime = "RISK_OFF"
+        # Lebih dalam penurunannya, lebih besar peredamannya
+        adjustment = -8 if (momentum < -4.0 or trend == "bearish_strong") else -5
+        allow_aggressive = False
+        note = f"BTC lemah ({momentum:.1f}% & di bawah EMA50). Tahan diri, entry kecil."
+    else:
+        regime = "NEUTRAL"
+        adjustment = 0
+        allow_aggressive = True
+        note = "BTC sideways. Nilai tiap koin apa adanya."
+
+    return {
+        "regime": regime,
+        "regime_adjustment": adjustment,
+        "allow_aggressive": allow_aggressive,
+        "btc_momentum_pct": round(momentum, 2),
+        "note": note,
     }
