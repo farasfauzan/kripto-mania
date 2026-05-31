@@ -305,10 +305,29 @@ def clamp(value, min_val, max_val):
     return max(min_val, min(value, max_val))
 
 
-def is_entry_action(action):
-    """Check if action is a genuine entry signal (not 'JANGAN BELI')."""
-    action = str(action or "").upper()
-    return "BELI KUAT" in action or "CICIL BELI" in action
+# Indikator teknikal & analisis sinyal: sumber kebenaran tunggal di core.indicators
+# (sebelumnya diduplikasi byte-for-byte di app.py & telegram_bot.py).
+from core.indicators import (
+    build_verdict,
+    compute_adx,
+    compute_backtest,
+    compute_bollinger,
+    compute_confluence_signal,
+    compute_dynamic_walls,
+    compute_ema,
+    compute_ema200_trend,
+    compute_macd,
+    compute_ml_forecast,
+    compute_multi_timeframe_confirmation,
+    compute_rsi,
+    compute_static_sr,
+    compute_supertrend,
+    compute_volume_analysis,
+    compute_volume_anomaly,
+    detect_bullish_pinbar,
+    fetch_candles,
+    is_entry_action,
+)
 
 
 def _bot_split_text(text, max_len=TELEGRAM_MAX_LENGTH):
@@ -537,8 +556,62 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
     @import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css');
-    body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stSidebar"], p, div, button, input, textarea, label {
+
+    /* =========================================================================
+       DESIGN SYSTEM — single source of truth (premium light fintech theme).
+       Semua warna, radius, shadow, dan motion didefinisikan sekali di sini.
+       ========================================================================= */
+    :root {
+        /* Surfaces & ink */
+        --bg-app: #f4f6fb;
+        --bg-tint-a: rgba(16, 185, 129, 0.05);
+        --bg-tint-b: rgba(59, 130, 246, 0.05);
+        --surface: #ffffff;
+        --surface-muted: #f7f9fc;
+        --surface-inset: #f1f5f9;
+        --ink: #0b1220;
+        --ink-soft: #475569;
+        --ink-faint: #7c889b;
+        --hairline: #e7ecf3;
+        --hairline-strong: #dbe3ee;
+
+        /* Brand & semantic */
+        --brand: #0f9d76;
+        --brand-strong: #047857;
+        --brand-deep: #065f46;
+        --brand-tint: #ecfdf5;
+        --brand-tint-border: #bbf7d0;
+        --up: #16a34a;
+        --down: #e11d48;
+        --warn: #d97706;
+        --info: #2563eb;
+        --accent-gold: #f59e0b;
+
+        /* Radius scale */
+        --r-xs: 8px;
+        --r-sm: 10px;
+        --r-md: 14px;
+        --r-lg: 18px;
+        --r-pill: 999px;
+
+        /* Shadow scale — soft, layered, "expensive" depth */
+        --sh-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+        --sh-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.05);
+        --sh-md: 0 2px 6px rgba(15, 23, 42, 0.05), 0 12px 28px rgba(15, 23, 42, 0.07);
+        --sh-lg: 0 8px 24px rgba(15, 23, 42, 0.08), 0 24px 60px rgba(15, 23, 42, 0.10);
+        --sh-brand: 0 8px 24px rgba(4, 120, 87, 0.20);
+
+        /* Motion */
+        --ease: cubic-bezier(0.22, 1, 0.36, 1);
+        --t-fast: 0.16s var(--ease);
+        --t-base: 0.24s var(--ease);
+    }
+
+    body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stSidebar"],
+    p, div, button, input, textarea, label {
         font-family: 'Plus Jakarta Sans', sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
     }
     .material-icons, .material-symbols-rounded, .material-symbols-outlined,
     [class*="material-icons"], [class*="material-symbols"] {
@@ -553,348 +626,81 @@ st.markdown(
         -webkit-font-feature-settings: 'liga' !important;
         -webkit-font-smoothing: antialiased !important;
     }
+
+    /* App canvas: airy near-white with whisper-soft brand auras */
     .stApp {
-        background: linear-gradient(180deg, #f8fafc 0%, #eef4ff 48%, #e8f7ef 100%);
-        color: #0f172a;
-    }
-    .block-container { padding-top: 1.4rem; }
-    .buy-button {
-        display: inline-block;
-        background: linear-gradient(180deg, #22c55e, #16a34a);
-        color: white !important;
-        text-decoration: none;
-        padding: 16px 48px;
-        border-radius: 16px;
-        font-weight: 800;
-        font-size: 1.2rem;
-        transition: all 0.25s ease;
-        border: none;
-        box-shadow: 0 4px 24px rgba(34, 197, 94, 0.45);
-        letter-spacing: 0.02em;
-    }
-    .buy-button:hover {
-        transform: translateY(-2px) scale(1.03);
-        box-shadow: 0 8px 36px rgba(34, 197, 94, 0.65);
-    }
-    .buy-button-sm {
-        display: inline-block;
-        background: #22c55e;
-        color: white !important;
-        text-decoration: none;
-        padding: 10px 24px;
-        border-radius: 12px;
-        font-weight: 700;
-        font-size: 0.9rem;
-        transition: all 0.2s ease;
-    }
-    .buy-button-sm:hover { background: #16a34a; transform: scale(1.04); }
-    .buy-button-sm.neutral {
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        color: #bbb !important;
-    }
-    .buy-button-sm.neutral:hover {
-        background: rgba(255, 255, 255, 0.12);
-        color: white !important;
-    }
-    .rekomendasi-hero {
-        background: linear-gradient(135deg, #022c22, #064e3b, #065f46);
-        border: 2px solid #10b981;
-        border-radius: 28px;
-        padding: 2.5rem 2rem;
-        text-align: center;
-        margin: 1rem 0;
-        position: relative;
-        overflow: hidden;
-    }
-    .rekomendasi-hero::before {
-        content: '';
-        position: absolute;
-        top: -50%;
-        left: -50%;
-        width: 200%;
-        height: 200%;
-        background: radial-gradient(circle, rgba(16,185,129,0.08) 0%, transparent 60%);
-        animation: heroGlow 4s ease-in-out infinite;
-    }
-    @keyframes heroGlow {
-        0%, 100% { transform: translate(0, 0); }
-        50% { transform: translate(10px, -10px); }
-    }
-    .rekomendasi-card {
-        background: linear-gradient(180deg, #1a1a1a, #111111);
-        border: 2px solid #222;
-        border-radius: 20px;
-        padding: 1.5rem 1rem;
-        text-align: center;
-        transition: all 0.3s ease;
-        position: relative;
-    }
-    .rekomendasi-card:hover {
-        border-color: #10b981;
-        box-shadow: 0 0 30px rgba(16, 185, 129, 0.18);
-        transform: translateY(-3px);
-    }
-    .profit-badge {
-        background: linear-gradient(135deg, #22c55e, #16a34a);
-        color: white;
-        padding: 6px 18px;
-        border-radius: 99px;
-        font-weight: 800;
-        display: inline-block;
-        font-size: 0.9rem;
-        box-shadow: 0 2px 12px rgba(34,197,94,0.3);
-    }
-    .loss-badge {
-        background: linear-gradient(135deg, #ef4444, #dc2626);
-        color: white;
-        padding: 6px 18px;
-        border-radius: 99px;
-        font-weight: 800;
-        display: inline-block;
-        font-size: 0.9rem;
-        box-shadow: 0 2px 12px rgba(239,68,68,0.3);
-    }
-    .neutral-badge {
-        background: linear-gradient(135deg, #6b7280, #4b5563);
-        color: white;
-        padding: 6px 18px;
-        border-radius: 99px;
-        font-weight: 800;
-        display: inline-block;
-        font-size: 0.9rem;
-    }
-    .price-tag {
-        font-size: 2.2rem;
-        font-weight: 900;
-        background: linear-gradient(135deg, #fbbf24, #f59e0b);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-    }
-    section[data-testid="stSidebar"] {
-        background-color: #ffffff !important;
-        border-right: 1px solid #dbeafe;
-    }
-    h1 { font-size: 2.6rem !important; font-weight: 900 !important; text-align: center; }
-    h2 { font-weight: 800 !important; }
-    h3 { font-weight: 700 !important; }
-    .stat-card {
-        background: #111;
-        border: 1px solid #222;
-        border-radius: 16px;
-        padding: 1rem;
-        text-align: center;
-    }
-    .stat-value {
-        font-size: clamp(1.05rem, 1.8vw, 1.5rem);
-        font-weight: 900;
-        white-space: nowrap;
-        overflow-wrap: normal;
-        line-height: 1.15;
-    }
-    .stat-label {
-        font-size: 0.75rem;
-        color: #888;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        margin-top: 4px;
-    }
-    .ad-banner {
-        background: linear-gradient(135deg, #1a1a2e, #16213e);
-        border: 1px solid #2a2a4a;
-        border-radius: 16px;
-        padding: 1rem 1.5rem;
-        text-align: center;
-    }
-    .pro-card {
-        background: linear-gradient(135deg, #1e1b4b, #312e81);
-        border: 2px solid #6366f1;
-        border-radius: 20px;
-        padding: 2rem;
-        text-align: center;
-    }
-    .stDataFrame { border: 1px solid #dbeafe !important; border-radius: 14px !important; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; background-color: transparent; }
-    .stTabs [data-baseweb="tab"] {
-        background-color: #ffffff;
-        border: 1px solid #dbeafe;
-        border-radius: 12px 12px 0 0;
-        padding: 12px 28px;
-        color: #475569;
-        font-weight: 600;
-    }
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #10b981, #059669) !important;
-        color: white !important;
-    }
-    [data-testid="stMetricValue"] { font-weight: 900 !important; }
-    hr { border-color: #dbeafe !important; }
-    .wallet-text {
-        font-family: 'Courier New', monospace;
-        font-size: 0.65rem;
-        word-break: break-all;
-        color: #666;
-    }
-    .freshness-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        background: #111;
-        border: 1px solid #333;
-        border-radius: 99px;
-        padding: 6px 16px;
-        font-size: 0.8rem;
-        color: #888;
-    }
-    .freshness-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        display: inline-block;
-    }
-    .freshness-dot.live { background: #22c55e; animation: pulse 2s infinite; }
-    .freshness-dot.stale { background: #f59e0b; }
-    .freshness-dot.offline { background: #ef4444; }
-    .app-loading-screen {
-        position: fixed;
-        inset: 0;
-        z-index: 999999;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 1.25rem;
         background:
-            linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(232, 247, 239, 0.96)),
-            linear-gradient(135deg, #f8fafc, #dbeafe 48%, #dcfce7);
-    }
-    .app-loading-panel {
-        width: min(460px, 92vw);
-        background: #ffffff;
-        border: 1px solid #dbeafe;
-        border-radius: 18px;
-        padding: 1.4rem;
-        box-shadow: 0 24px 70px rgba(15, 23, 42, 0.16);
-    }
-    .app-loading-top {
-        display: grid;
-        grid-template-columns: 74px 1fr;
-        gap: 1rem;
-        align-items: center;
-    }
-    .app-loading-symbol {
-        position: relative;
-        width: 64px;
-        height: 64px;
-        display: grid;
-        place-items: center;
-    }
-    .app-loading-ring {
-        position: absolute;
-        inset: 0;
-        border-radius: 50%;
-        border: 4px solid #dbeafe;
-        border-top-color: #22c55e;
-        border-right-color: #fbbf24;
-        animation: loaderSpin 0.9s linear infinite;
-    }
-    .app-loading-coin {
-        width: 42px;
-        height: 42px;
-        border-radius: 50%;
-        display: grid;
-        place-items: center;
-        background: linear-gradient(135deg, #fbbf24, #22c55e);
-        color: #ffffff;
-        font-size: 1.4rem;
-        font-weight: 900;
-        box-shadow: 0 8px 24px rgba(34, 197, 94, 0.22);
-    }
-    .app-loading-kicker {
-        margin: 0 0 0.2rem 0;
-        color: #059669;
-        font-size: 0.72rem;
-        font-weight: 900;
-        letter-spacing: 0.12em;
-    }
-    .app-loading-title {
-        margin: 0;
-        color: #0f172a;
-        font-size: 1.2rem;
-        line-height: 1.25;
-        font-weight: 900;
-    }
-    .app-loading-detail {
-        margin: 0.35rem 0 0 0;
-        color: #64748b;
-        font-size: 0.88rem;
-        line-height: 1.45;
-        font-weight: 600;
-    }
-    .app-loading-bars {
-        display: grid;
-        grid-template-columns: 1.2fr 0.8fr 1fr;
-        gap: 0.45rem;
-        margin-top: 1.15rem;
-    }
-    .app-loading-bars span {
-        height: 8px;
-        border-radius: 999px;
-        background: linear-gradient(90deg, #22c55e, #fbbf24, #3b82f6);
-        background-size: 220% 100%;
-        animation: loaderBar 1.15s ease-in-out infinite;
-    }
-    .app-loading-bars span:nth-child(2) { animation-delay: 0.13s; }
-    .app-loading-bars span:nth-child(3) { animation-delay: 0.26s; }
-    @keyframes loaderSpin { to { transform: rotate(360deg); } }
-    @keyframes loaderBar {
-        0%, 100% { opacity: 0.35; background-position: 0% 50%; transform: scaleX(0.82); }
-        50% { opacity: 1; background-position: 100% 50%; transform: scaleX(1); }
-    }
-    @media (max-width: 480px) {
-        .app-loading-panel { padding: 1rem; }
-        .app-loading-top { grid-template-columns: 58px 1fr; gap: 0.8rem; }
-        .app-loading-symbol { width: 52px; height: 52px; }
-        .app-loading-coin { width: 34px; height: 34px; font-size: 1.1rem; }
-        .app-loading-title { font-size: 1rem; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-        .app-loading-ring, .app-loading-bars span { animation: none; }
-    }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-    .fomo-card {
-        border-radius: 16px;
-        padding: 1.2rem 0.8rem;
-        text-align: center;
-        margin-bottom: 0.5rem;
-        border: 2px solid #fbbf24;
-    }
-    @media (max-width: 768px) {
-        h1 { font-size: 1.6rem !important; }
-        .price-tag { font-size: 1.5rem; }
-        .buy-button { padding: 12px 28px; font-size: 1rem; }
-        .rekomendasi-hero { padding: 1.5rem 1rem; }
-    }
-    .stApp {
-        background: radial-gradient(circle at 15% 50%, rgba(16, 185, 129, 0.08), transparent 25%),
-                    radial-gradient(circle at 85% 30%, rgba(59, 130, 246, 0.08), transparent 25%),
-                    linear-gradient(180deg, #09090b 0%, #111827 100%) !important;
-        color: #e2e8f0 !important;
+            radial-gradient(1200px 600px at 12% -5%, var(--bg-tint-a), transparent 55%),
+            radial-gradient(1000px 560px at 92% 0%, var(--bg-tint-b), transparent 50%),
+            var(--bg-app) !important;
+        color: var(--ink);
     }
     .block-container {
         max-width: 1240px;
-        padding-top: 1.1rem !important;
-        padding-bottom: 2rem !important;
+        padding-top: 1.4rem !important;
+        padding-bottom: 2.4rem !important;
     }
+
+    h1 { font-size: 2.4rem !important; font-weight: 900 !important; letter-spacing: -0.02em; }
+    h2 { font-weight: 800 !important; letter-spacing: -0.015em; }
+    h3 { font-weight: 700 !important; letter-spacing: -0.01em; }
+    [data-testid="stMetricValue"] { font-weight: 900 !important; }
+    hr { border-color: var(--hairline) !important; }
+
+    /* ---- Primary buy CTA ---- */
+    .buy-button {
+        display: inline-block;
+        background: linear-gradient(180deg, var(--brand), var(--brand-strong));
+        color: #fff !important;
+        text-decoration: none;
+        padding: 15px 44px;
+        border-radius: var(--r-md);
+        font-weight: 800;
+        font-size: 1.12rem;
+        letter-spacing: 0.01em;
+        border: none;
+        box-shadow: var(--sh-brand);
+        transition: transform var(--t-base), box-shadow var(--t-base);
+    }
+    .buy-button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 14px 36px rgba(4, 120, 87, 0.30);
+    }
+    .buy-button-sm {
+        display: inline-block;
+        background: var(--brand-strong);
+        color: #fff !important;
+        text-decoration: none;
+        padding: 0.62rem 1rem;
+        border-radius: var(--r-xs);
+        font-weight: 800;
+        font-size: 0.9rem;
+        box-shadow: var(--sh-xs);
+        transition: transform var(--t-fast), background var(--t-fast), box-shadow var(--t-fast);
+    }
+    .buy-button-sm:hover {
+        background: var(--brand-deep);
+        transform: translateY(-1px);
+        box-shadow: var(--sh-sm);
+    }
+    .buy-button-sm.neutral {
+        background: var(--surface-muted);
+        border: 1px solid var(--hairline-strong);
+        color: var(--ink-soft) !important;
+        box-shadow: none;
+    }
+    .buy-button-sm.neutral:hover { background: var(--surface-inset); color: var(--ink) !important; }
+
+    /* ---- App header (premium glass-light bar) ---- */
     .app-shell-header {
-        background: rgba(15, 23, 42, 0.65) !important;
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        border-radius: 8px;
-        padding: 1.35rem 1.4rem;
-        margin-bottom: 0.8rem;
-        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.3);
+        background: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(255,255,255,0.78));
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-lg);
+        padding: 1.5rem 1.6rem;
+        margin-bottom: 1rem;
+        box-shadow: var(--sh-md);
     }
     .app-brand-row {
         display: flex;
@@ -903,27 +709,29 @@ st.markdown(
         gap: 1rem;
         flex-wrap: wrap;
     }
-    .app-title {
-        color: #f8fafc !important;
-        font-size: 2.25rem;
-        line-height: 1.05;
+    .app-kicker {
+        color: var(--brand-strong) !important;
+        font-size: 0.72rem;
         font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        margin-bottom: 0.4rem;
+    }
+    .app-title {
+        color: var(--ink) !important;
+        font-size: 2.2rem;
+        line-height: 1.04;
+        font-weight: 900;
+        letter-spacing: -0.025em;
         margin: 0;
     }
     .app-subtitle {
-        color: #94a3b8 !important;
+        color: var(--ink-soft) !important;
         font-size: 0.96rem;
-        font-weight: 600;
-        margin: 0.45rem 0 0;
+        font-weight: 500;
+        margin: 0.5rem 0 0;
         max-width: 720px;
-    }
-    .app-kicker {
-        color: #10b981 !important;
-        font-size: 0.74rem;
-        font-weight: 900;
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        margin-bottom: 0.25rem;
+        line-height: 1.5;
     }
     .quick-links {
         display: flex;
@@ -936,90 +744,129 @@ st.markdown(
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-height: 36px;
-        border-radius: 8px;
-        padding: 0.48rem 0.78rem;
-        background: #ffffff;
-        border: 1px solid #dbe7f3;
-        color: #0f766e !important;
-        font-size: 0.8rem;
+        min-height: 38px;
+        border-radius: var(--r-sm);
+        padding: 0.5rem 0.9rem;
+        background: var(--surface);
+        border: 1px solid var(--hairline-strong);
+        color: var(--brand-strong) !important;
+        font-size: 0.82rem;
         font-weight: 800;
         text-decoration: none !important;
+        box-shadow: var(--sh-xs);
+        transition: transform var(--t-fast), box-shadow var(--t-fast), background var(--t-fast);
     }
+    .quick-link:hover { transform: translateY(-1px); box-shadow: var(--sh-sm); }
     .quick-link.primary {
-        background: #0f766e;
-        border-color: #0f766e;
-        color: #ffffff !important;
+        background: linear-gradient(180deg, var(--brand), var(--brand-strong));
+        border-color: transparent;
+        color: #fff !important;
+        box-shadow: var(--sh-brand);
     }
+
+    /* ---- Market mode banner ---- */
     .mode-banner {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 0.8rem;
+        gap: 0.9rem;
         flex-wrap: wrap;
-        background: #ffffff;
-        border: 1px solid var(--mode-color);
-        border-left: 5px solid var(--mode-color);
-        border-radius: 8px;
-        padding: 0.9rem 1rem;
-        margin: 0.65rem 0 1rem;
-        box-shadow: 0 12px 34px rgba(15, 23, 42, 0.06);
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        border-left: 4px solid var(--mode-color);
+        border-radius: var(--r-md);
+        padding: 0.95rem 1.1rem;
+        margin: 0.7rem 0 1rem;
+        box-shadow: var(--sh-sm);
     }
-    .mode-title {
-        color: var(--mode-color);
-        font-weight: 900;
-        font-size: 0.98rem;
-    }
-    .mode-desc {
-        color: #64748b;
-        font-size: 0.9rem;
-        font-weight: 600;
-    }
+    .mode-title { color: var(--mode-color); font-weight: 900; font-size: 1rem; }
+    .mode-desc { color: var(--ink-soft); font-size: 0.9rem; font-weight: 500; }
+
+    /* ---- Stat cards ---- */
     .stat-card {
-        background: #ffffff !important;
-        border: 1px solid #dbe7f3 !important;
-        border-radius: 8px !important;
-        padding: 0.95rem 0.8rem !important;
-        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-md);
+        padding: 1rem 0.85rem;
+        text-align: center;
+        box-shadow: var(--sh-sm);
+        transition: transform var(--t-base), box-shadow var(--t-base);
+    }
+    .stat-card:hover { transform: translateY(-2px); box-shadow: var(--sh-md); }
+    .stat-value {
+        font-size: clamp(1.05rem, 1.8vw, 1.5rem);
+        font-weight: 900;
+        white-space: nowrap;
+        line-height: 1.15;
+        letter-spacing: -0.01em;
     }
     .stat-label {
-        color: #64748b !important;
-        letter-spacing: 0.08em !important;
+        font-size: 0.72rem;
+        color: var(--ink-faint);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        font-weight: 800;
+        margin-top: 5px;
     }
+
+    /* ---- Hero (rich emerald accent panel; intentional dark-on-light contrast) ---- */
     .rekomendasi-hero {
-        background: #0f172a !important;
-        border: 1px solid #1e293b !important;
-        border-radius: 8px !important;
-        padding: 1.1rem 1.2rem !important;
-        text-align: left !important;
-        margin: 1rem 0 0.75rem !important;
+        position: relative;
+        overflow: hidden;
+        background: linear-gradient(135deg, #043b30 0%, #065f46 55%, #047857 100%);
+        border: 1px solid rgba(16, 185, 129, 0.35);
+        border-radius: var(--r-lg);
+        padding: 1.4rem 1.5rem;
+        text-align: left;
+        margin: 1rem 0 0.85rem;
+        box-shadow: 0 18px 44px rgba(4, 59, 48, 0.28);
     }
-    .rekomendasi-hero::before { display: none !important; }
+    .rekomendasi-hero::before {
+        content: '';
+        position: absolute;
+        top: -60%;
+        right: -20%;
+        width: 60%;
+        height: 220%;
+        background: radial-gradient(circle, rgba(255,255,255,0.10) 0%, transparent 65%);
+        animation: heroGlow 7s ease-in-out infinite;
+        pointer-events: none;
+    }
+    @keyframes heroGlow {
+        0%, 100% { transform: translate(0, 0); opacity: 0.7; }
+        50% { transform: translate(-16px, 14px); opacity: 1; }
+    }
     .hero-title {
-        color: #ffffff;
-        font-size: 1.35rem;
-        line-height: 1.2;
+        position: relative;
+        color: #fff;
+        font-size: 1.4rem;
+        line-height: 1.18;
         margin: 0;
         font-weight: 900;
+        letter-spacing: -0.015em;
     }
     .hero-meta {
+        position: relative;
         color: #a7f3d0;
-        margin: 0.25rem 0 0;
+        margin: 0.3rem 0 0;
         font-weight: 700;
         font-size: 0.9rem;
     }
+
+    /* ---- Recommendation card ---- */
     .rekomendasi-card {
-        background: #ffffff !important;
-        border: 1px solid #dbe7f3 !important;
-        border-radius: 8px !important;
-        padding: 1rem !important;
-        text-align: left !important;
-        box-shadow: 0 14px 38px rgba(15, 23, 42, 0.07);
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-md);
+        padding: 1.15rem;
+        text-align: left;
+        box-shadow: var(--sh-sm);
+        transition: transform var(--t-base), box-shadow var(--t-base), border-color var(--t-base);
     }
     .rekomendasi-card:hover {
-        border-color: #10b981 !important;
-        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.10) !important;
-        transform: translateY(-2px) !important;
+        border-color: rgba(15, 157, 118, 0.45);
+        box-shadow: var(--sh-lg);
+        transform: translateY(-3px);
     }
     .coin-card-head {
         display: flex;
@@ -1028,36 +875,21 @@ st.markdown(
         gap: 1rem;
         flex-wrap: wrap;
     }
-    .coin-left {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        min-width: 220px;
-    }
+    .coin-left { display: flex; align-items: center; gap: 0.8rem; min-width: 220px; }
     .coin-avatar {
-        width: 44px;
-        height: 44px;
-        border-radius: 8px;
+        width: 46px;
+        height: 46px;
+        border-radius: var(--r-sm);
         display: grid;
         place-items: center;
-        background: #ecfdf5;
-        border: 1px solid #bbf7d0;
-        color: #047857;
+        background: linear-gradient(135deg, var(--brand-tint), #d1fae5);
+        border: 1px solid var(--brand-tint-border);
+        color: var(--brand-strong);
         font-weight: 900;
         font-size: 0.9rem;
     }
-    .coin-symbol {
-        color: #0f172a;
-        font-weight: 900;
-        font-size: 1.24rem;
-        line-height: 1;
-    }
-    .coin-category {
-        color: #64748b;
-        font-size: 0.78rem;
-        font-weight: 700;
-        margin-top: 0.2rem;
-    }
+    .coin-symbol { color: var(--ink); font-weight: 900; font-size: 1.26rem; line-height: 1; letter-spacing: -0.01em; }
+    .coin-category { color: var(--ink-faint); font-size: 0.78rem; font-weight: 700; margin-top: 0.22rem; }
     .coin-price-wrap {
         display: flex;
         align-items: center;
@@ -1066,274 +898,393 @@ st.markdown(
         flex-wrap: wrap;
     }
     .price-tag {
-        color: #0f172a !important;
+        color: var(--ink) !important;
         background: none !important;
         -webkit-text-fill-color: initial !important;
         font-size: 1.55rem !important;
         line-height: 1.05;
         font-weight: 900;
+        letter-spacing: -0.02em;
     }
+
+    /* ---- Badges & signal pills ---- */
     .profit-badge, .loss-badge, .neutral-badge {
-        border-radius: 8px !important;
-        padding: 0.35rem 0.55rem !important;
-        box-shadow: none !important;
-        font-size: 0.8rem !important;
+        display: inline-block;
+        border-radius: var(--r-pill);
+        padding: 0.32rem 0.7rem;
+        font-weight: 800;
+        font-size: 0.8rem;
+        box-shadow: none;
     }
+    .profit-badge { background: var(--brand-tint); color: var(--brand-strong); border: 1px solid var(--brand-tint-border); }
+    .loss-badge { background: #fff1f2; color: var(--down); border: 1px solid #fecdd3; }
+    .neutral-badge { background: var(--surface-inset); color: var(--ink-soft); border: 1px solid var(--hairline-strong); }
     .signal-pill {
         display: inline-flex;
         align-items: center;
-        border-radius: 8px;
-        padding: 0.4rem 0.62rem;
-        font-size: 0.78rem;
+        border-radius: var(--r-pill);
+        padding: 0.34rem 0.7rem;
+        font-size: 0.76rem;
         font-weight: 900;
+        letter-spacing: 0.01em;
         margin-top: 0.6rem;
     }
-    .signal-buy { color: #047857; background: #ecfdf5; border: 1px solid #bbf7d0; }
-    .signal-watch { color: #b45309; background: #fffbeb; border: 1px solid #fde68a; }
-    .signal-avoid { color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; }
+    .signal-buy { color: var(--brand-strong); background: var(--brand-tint); border: 1px solid var(--brand-tint-border); }
+    .signal-watch { color: var(--warn); background: #fffbeb; border: 1px solid #fde68a; }
+    .signal-avoid { color: #be123c; background: #fff1f2; border: 1px solid #fecdd3; }
+
+    /* ---- Metric chips ---- */
     .metrics-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
-        gap: 0.5rem;
-        margin-top: 0.85rem;
+        gap: 0.55rem;
+        margin-top: 0.95rem;
     }
     .metric-chip {
-        background: #f8fafc;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 0.58rem 0.65rem;
+        background: var(--surface-muted);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-sm);
+        padding: 0.6rem 0.7rem;
         min-height: 64px;
+        transition: background var(--t-fast), border-color var(--t-fast);
     }
+    .metric-chip:hover { background: var(--surface-inset); border-color: var(--hairline-strong); }
     .metric-label {
-        color: #64748b;
+        color: var(--ink-faint);
         display: block;
-        font-size: 0.66rem;
+        font-size: 0.65rem;
         font-weight: 900;
         letter-spacing: 0.08em;
         text-transform: uppercase;
     }
     .metric-value {
-        color: #0f172a;
+        color: var(--ink);
         display: block;
         font-size: 0.95rem;
         font-weight: 900;
-        margin-top: 0.22rem;
+        margin-top: 0.24rem;
         word-break: break-word;
     }
+
+    /* ---- Sections inside cards ---- */
     .card-section {
-        margin-top: 0.72rem;
-        padding: 0.72rem;
-        border-radius: 8px;
-        background: #f8fafc;
-        border: 1px solid #e2e8f0;
+        margin-top: 0.78rem;
+        padding: 0.8rem;
+        border-radius: var(--r-sm);
+        background: var(--surface-muted);
+        border: 1px solid var(--hairline);
     }
-    .section-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 0.7rem;
-        flex-wrap: wrap;
-    }
+    .section-row { display: flex; justify-content: space-between; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
     .section-label {
-        color: #64748b;
-        font-size: 0.68rem;
+        color: var(--ink-faint);
+        font-size: 0.67rem;
         font-weight: 900;
         letter-spacing: 0.08em;
         text-transform: uppercase;
     }
-    .section-strong {
-        color: #0f172a;
-        font-size: 0.86rem;
-        font-weight: 900;
-    }
+    .section-strong { color: var(--ink); font-size: 0.86rem; font-weight: 900; }
+
+    /* ---- Scenario boxes ---- */
     .scenario-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 0.55rem;
-        margin-top: 0.72rem;
+        gap: 0.6rem;
+        margin-top: 0.78rem;
     }
-    .scenario-grid.scenario-grid-3 {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
+    .scenario-grid.scenario-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .scenario-box {
-        border-radius: 8px;
-        padding: 0.7rem;
-        border: 1px solid;
+        border-radius: var(--r-sm);
+        padding: 0.75rem;
+        border: 1px solid var(--hairline);
         min-height: 108px;
+        transition: transform var(--t-fast), box-shadow var(--t-fast);
     }
-    .scenario-title {
-        font-size: 0.68rem;
-        font-weight: 900;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-    }
-    .scenario-action {
-        color: #334155;
-        font-size: 0.8rem;
-        font-weight: 700;
-        margin-top: 0.35rem;
-        min-height: 34px;
-    }
-    .scenario-price {
-        font-size: 0.95rem;
-        font-weight: 900;
-        margin-top: 0.25rem;
-    }
+    .scenario-box:hover { transform: translateY(-2px); box-shadow: var(--sh-sm); }
+    .scenario-title { font-size: 0.67rem; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; }
+    .scenario-action { color: var(--ink-soft); font-size: 0.8rem; font-weight: 700; margin-top: 0.35rem; min-height: 34px; }
+    .scenario-price { font-size: 0.95rem; font-weight: 900; margin-top: 0.25rem; letter-spacing: -0.01em; }
+
+    /* ---- Confluence checklist ---- */
     .check-list {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: 0.35rem;
-        margin-top: 0.45rem;
+        gap: 0.4rem;
+        margin-top: 0.5rem;
     }
     .check-row {
         display: flex;
         justify-content: space-between;
         align-items: center;
         gap: 0.5rem;
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 0.38rem 0.48rem;
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-xs);
+        padding: 0.42rem 0.55rem;
         font-size: 0.75rem;
         font-weight: 800;
     }
-    .check-ok { color: #047857; }
-    .check-no { color: #94a3b8; }
+    .check-ok { color: var(--brand-strong); }
+    .check-no { color: var(--ink-faint); }
+
+    /* ---- Learning panel ---- */
     .learning-panel {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 1rem;
         flex-wrap: wrap;
-        background: #ffffff;
-        border: 1px solid #bfdbfe;
-        border-left: 5px solid #2563eb;
-        border-radius: 8px;
-        padding: 0.9rem 1rem;
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        border-left: 4px solid var(--info);
+        border-radius: var(--r-md);
+        padding: 0.95rem 1.1rem;
         margin: 0.8rem 0 1rem;
-        box-shadow: 0 12px 34px rgba(15, 23, 42, 0.06);
+        box-shadow: var(--sh-sm);
     }
-    .learning-title {
-        color: #0f172a;
-        font-size: 1rem;
-        font-weight: 900;
-        margin-top: 0.18rem;
-    }
-    .learning-note {
-        color: #64748b;
-        font-size: 0.84rem;
-        font-weight: 700;
-        margin-top: 0.25rem;
-    }
+    .learning-title { color: var(--ink); font-size: 1rem; font-weight: 900; margin-top: 0.18rem; letter-spacing: -0.01em; }
+    .learning-note { color: var(--ink-soft); font-size: 0.84rem; font-weight: 600; margin-top: 0.25rem; }
     .learning-stats {
         display: grid;
         grid-template-columns: repeat(3, minmax(76px, 1fr));
-        gap: 0.5rem;
+        gap: 0.55rem;
         min-width: min(360px, 100%);
     }
     .learning-stats div {
         background: #eff6ff;
         border: 1px solid #dbeafe;
-        border-radius: 8px;
-        padding: 0.55rem 0.65rem;
+        border-radius: var(--r-sm);
+        padding: 0.6rem 0.65rem;
         text-align: center;
     }
-    .learning-stats span {
-        display: block;
-        color: #1d4ed8;
-        font-size: 1.05rem;
-        font-weight: 900;
-        line-height: 1.1;
-    }
+    .learning-stats span { display: block; color: #1d4ed8; font-size: 1.05rem; font-weight: 900; line-height: 1.1; }
     .learning-stats small {
         display: block;
-        color: #64748b;
-        font-size: 0.66rem;
-        font-weight: 900;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        margin-top: 0.18rem;
-    }
-    .news-panel {
-        background: #ffffff;
-        border: 1px solid #fed7aa;
-        border-left: 5px solid #f97316;
-        border-radius: 8px;
-        padding: 0.9rem 1rem;
-        margin: 0.8rem 0 1rem;
-        box-shadow: 0 12px 34px rgba(15, 23, 42, 0.06);
-    }
-    .news-list {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 0.5rem;
-        margin-top: 0.65rem;
-    }
-    .news-headline {
-        display: block;
-        color: #0f172a !important;
-        background: #fff7ed;
-        border: 1px solid #fed7aa;
-        border-radius: 8px;
-        padding: 0.55rem 0.65rem;
-        font-size: 0.8rem;
-        font-weight: 800;
-        text-decoration: none !important;
-        line-height: 1.35;
-    }
-    .news-headline span {
-        display: block;
-        color: #c2410c;
+        color: var(--ink-faint);
         font-size: 0.65rem;
         font-weight: 900;
         letter-spacing: 0.08em;
         text-transform: uppercase;
-        margin-bottom: 0.16rem;
+        margin-top: 0.2rem;
     }
-    .buy-button-sm {
-        border-radius: 8px !important;
-        padding: 0.62rem 1rem !important;
-        background: #047857 !important;
-        box-shadow: none !important;
+
+    /* ---- News panel ---- */
+    .news-panel {
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        border-left: 4px solid var(--accent-gold);
+        border-radius: var(--r-md);
+        padding: 0.95rem 1.1rem;
+        margin: 0.8rem 0 1rem;
+        box-shadow: var(--sh-sm);
     }
-    .buy-button-sm.neutral {
-        background: #f8fafc !important;
-        border: 1px solid #cbd5e1 !important;
-        color: #334155 !important;
+    .news-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 0.55rem;
+        margin-top: 0.7rem;
     }
-    .freshness-badge {
-        background: #ffffff !important;
-        color: #475569 !important;
-        border: 1px solid #dbe7f3 !important;
-        border-radius: 8px !important;
-        box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+    .news-headline {
+        display: block;
+        color: var(--ink) !important;
+        background: #fffaf2;
+        border: 1px solid #fde7c8;
+        border-radius: var(--r-xs);
+        padding: 0.6rem 0.7rem;
+        font-size: 0.8rem;
+        font-weight: 700;
+        text-decoration: none !important;
+        line-height: 1.4;
+        transition: transform var(--t-fast), box-shadow var(--t-fast);
     }
+    .news-headline:hover { transform: translateY(-1px); box-shadow: var(--sh-sm); }
+    .news-headline span {
+        display: block;
+        color: #c2410c;
+        font-size: 0.64rem;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 0.18rem;
+    }
+
+    /* ---- Sidebar ---- */
+    section[data-testid="stSidebar"] {
+        background: var(--surface) !important;
+        border-right: 1px solid var(--hairline);
+    }
+
+    /* ---- Promo / pro cards ---- */
+    .ad-banner {
+        background: linear-gradient(135deg, #0f172a, #1e293b);
+        border: 1px solid #243047;
+        border-radius: var(--r-md);
+        padding: 1rem 1.5rem;
+        text-align: center;
+    }
+    .pro-card {
+        background: linear-gradient(135deg, #1e1b4b, #312e81);
+        border: 1px solid #4338ca;
+        border-radius: var(--r-lg);
+        padding: 2rem;
+        text-align: center;
+        box-shadow: var(--sh-md);
+    }
+
+    /* ---- Tabs ---- */
+    .stDataFrame { border: 1px solid var(--hairline) !important; border-radius: var(--r-md) !important; }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; background-color: transparent; }
+    .stTabs [data-baseweb="tab"] {
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-sm) var(--r-sm) 0 0;
+        padding: 11px 26px;
+        color: var(--ink-soft);
+        font-weight: 700;
+        transition: color var(--t-fast), background var(--t-fast);
+    }
+    .stTabs [data-baseweb="tab"]:hover { color: var(--ink); background: var(--surface-muted); }
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, var(--brand), var(--brand-strong)) !important;
+        color: #fff !important;
+        border-color: transparent !important;
+    }
+
+    /* ---- Primary Streamlit buttons ---- */
     div.stButton > button[kind="primary"] {
-        background: #047857 !important;
-        border: 1px solid #047857 !important;
-        color: #ffffff !important;
-        border-radius: 8px !important;
+        background: linear-gradient(180deg, var(--brand), var(--brand-strong)) !important;
+        border: 1px solid transparent !important;
+        color: #fff !important;
+        border-radius: var(--r-sm) !important;
         font-weight: 900 !important;
-        min-height: 42px;
-        box-shadow: 0 12px 30px rgba(4, 120, 87, 0.18);
+        min-height: 44px;
+        box-shadow: var(--sh-brand);
+        transition: transform var(--t-fast), box-shadow var(--t-fast);
     }
     div.stButton > button[kind="primary"]:hover {
-        background: #065f46 !important;
-        border-color: #065f46 !important;
+        transform: translateY(-1px);
+        box-shadow: 0 12px 30px rgba(4, 120, 87, 0.28) !important;
     }
+
+    /* ---- Misc chips ---- */
+    .wallet-text { font-family: 'SFMono-Regular', 'Courier New', monospace; font-size: 0.66rem; word-break: break-all; color: var(--ink-faint); }
+    .freshness-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        background: var(--surface);
+        color: var(--ink-soft);
+        border: 1px solid var(--hairline-strong);
+        border-radius: var(--r-pill);
+        padding: 6px 14px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        box-shadow: var(--sh-xs);
+    }
+    .freshness-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .freshness-dot.live { background: var(--up); animation: pulse 2s infinite; }
+    .freshness-dot.stale { background: var(--accent-gold); }
+    .freshness-dot.offline { background: var(--down); }
+
     .fomo-card {
-        background: #ffffff !important;
-        border-radius: 8px !important;
-        border-width: 1px !important;
-        box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
+        background: var(--surface);
+        border-radius: var(--r-md);
+        border: 1px solid #fde68a;
+        padding: 1.2rem 0.85rem;
+        text-align: center;
+        margin-bottom: 0.5rem;
+        box-shadow: var(--sh-sm);
     }
+
+    /* ---- Loading screen ---- */
+    .app-loading-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 999999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.25rem;
+        background:
+            radial-gradient(900px 480px at 15% 0%, var(--bg-tint-a), transparent 55%),
+            radial-gradient(800px 460px at 90% 10%, var(--bg-tint-b), transparent 50%),
+            var(--bg-app);
+    }
+    .app-loading-panel {
+        width: min(460px, 92vw);
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-lg);
+        padding: 1.5rem;
+        box-shadow: var(--sh-lg);
+    }
+    .app-loading-top { display: grid; grid-template-columns: 74px 1fr; gap: 1rem; align-items: center; }
+    .app-loading-symbol { position: relative; width: 64px; height: 64px; display: grid; place-items: center; }
+    .app-loading-ring {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        border: 4px solid var(--surface-inset);
+        border-top-color: var(--brand);
+        border-right-color: var(--accent-gold);
+        animation: loaderSpin 0.9s linear infinite;
+    }
+    .app-loading-coin {
+        width: 42px;
+        height: 42px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(135deg, var(--accent-gold), var(--brand));
+        color: #fff;
+        font-size: 1.4rem;
+        font-weight: 900;
+        box-shadow: var(--sh-brand);
+    }
+    .app-loading-kicker { margin: 0 0 0.2rem 0; color: var(--brand-strong); font-size: 0.72rem; font-weight: 900; letter-spacing: 0.14em; }
+    .app-loading-title { margin: 0; color: var(--ink); font-size: 1.2rem; line-height: 1.25; font-weight: 900; letter-spacing: -0.01em; }
+    .app-loading-detail { margin: 0.35rem 0 0 0; color: var(--ink-soft); font-size: 0.88rem; line-height: 1.45; font-weight: 500; }
+    .app-loading-bars { display: grid; grid-template-columns: 1.2fr 0.8fr 1fr; gap: 0.45rem; margin-top: 1.15rem; }
+    .app-loading-bars span {
+        height: 8px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, var(--brand), var(--accent-gold), var(--info));
+        background-size: 220% 100%;
+        animation: loaderBar 1.15s ease-in-out infinite;
+    }
+    .app-loading-bars span:nth-child(2) { animation-delay: 0.13s; }
+    .app-loading-bars span:nth-child(3) { animation-delay: 0.26s; }
+
+    @keyframes loaderSpin { to { transform: rotate(360deg); } }
+    @keyframes loaderBar {
+        0%, 100% { opacity: 0.35; background-position: 0% 50%; transform: scaleX(0.82); }
+        50% { opacity: 1; background-position: 100% 50%; transform: scaleX(1); }
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* ---- Responsive ---- */
     @media (max-width: 768px) {
-        .app-title { font-size: 1.65rem; }
-        .app-shell-header { padding: 1rem; }
+        h1 { font-size: 1.7rem !important; }
+        .app-title { font-size: 1.7rem; }
+        .app-shell-header { padding: 1.1rem; }
         .quick-links { justify-content: flex-start; }
         .coin-price-wrap { justify-content: flex-start; }
         .scenario-grid { grid-template-columns: 1fr; }
-        .price-tag { font-size: 1.25rem !important; }
+        .price-tag { font-size: 1.3rem !important; }
+        .buy-button { padding: 12px 28px; font-size: 1rem; }
+        .rekomendasi-hero { padding: 1.2rem; }
+    }
+    @media (max-width: 480px) {
+        .app-loading-panel { padding: 1.1rem; }
+        .app-loading-top { grid-template-columns: 58px 1fr; gap: 0.8rem; }
+        .app-loading-symbol { width: 52px; height: 52px; }
+        .app-loading-coin { width: 34px; height: 34px; font-size: 1.1rem; }
+        .app-loading-title { font-size: 1rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .app-loading-ring, .app-loading-bars span, .rekomendasi-hero::before,
+        .freshness-dot.live { animation: none !important; }
+        .buy-button, .quick-link, .stat-card, .rekomendasi-card, .scenario-box,
+        .buy-button-sm, .news-headline { transition: none !important; }
     }
     button[title="View fullscreen"] { display: none !important; }
     </style>
@@ -1464,7 +1415,6 @@ def extract_asset_data(tickers, prices_24h, asset_dict):
     return result
 
 
-
 def format_idr(value):
     if value is None or value == 0:
         return "Rp0"
@@ -1492,322 +1442,11 @@ def format_price(value):
 # =============================================================================
 # TECHNICAL INDICATORS (dari telegram_bot.py asli)
 # =============================================================================
-def compute_rsi(close, period=14):
-    delta = close.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
-    rs = gain / loss.replace(0, pd.NA)
-    return float((100 - (100 / (1 + rs))).fillna(50).iloc[-1])
-
-
-def compute_ema(close, span):
-    return close.ewm(span=span, adjust=False).mean()
-
-
-def _candles_with_datetime_index(candles):
-    if candles.empty or "time" not in candles.columns:
-        return pd.DataFrame()
-    df = candles.copy()
-    t = pd.to_numeric(df["time"], errors="coerce")
-    if t.dropna().empty:
-        return pd.DataFrame()
-    unit = "ms" if float(t.dropna().median()) > 1_000_000_000_000 else "s"
-    df["_dt"] = pd.to_datetime(t, unit=unit, errors="coerce", utc=True)
-    return df.dropna(subset=["_dt"]).set_index("_dt").sort_index()
-
-
-def _resample_candles(candles, rule):
-    df = _candles_with_datetime_index(candles)
-    if df.empty:
-        return pd.DataFrame()
-    agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
-    return df.resample(rule).agg(agg).dropna(subset=["close"]).reset_index(drop=True)
-
-
-def _timeframe_bias(candles):
-    if candles.empty or len(candles) < 12:
-        return "NO DATA", 0
-    close = candles["close"].astype(float)
-    ema_fast = compute_ema(close, 5).iloc[-1]
-    ema_slow = compute_ema(close, 13).iloc[-1]
-    lookback = min(6, len(close) - 1)
-    momentum = (close.iloc[-1] / close.iloc[-1 - lookback] - 1) * 100 if lookback > 0 and close.iloc[-1 - lookback] > 0 else 0
-    gap = (ema_fast - ema_slow) / ema_slow * 100 if ema_slow > 0 else 0
-    if gap > 0.15 and momentum > 0:
-        return "BULLISH", 2
-    if gap > 0 and momentum > -0.6:
-        return "BULLISH BIAS", 1
-    if gap < -0.15 and momentum < 0:
-        return "BEARISH", -2
-    if gap < 0 and momentum < 0.6:
-        return "BEARISH BIAS", -1
-    return "SIDEWAYS", 0
-
-
-def compute_multi_timeframe_confirmation(candles):
-    h4 = _resample_candles(candles, "4h")
-    d1 = _resample_candles(candles, "1D")
-    h4_label, h4_score = _timeframe_bias(h4)
-    d1_label, d1_score = _timeframe_bias(d1)
-    total = h4_score + d1_score
-    if total >= 3:
-        label, adjustment = "ALIGN BULLISH", 7
-    elif total == 2:
-        label, adjustment = "BULLISH BIAS", 4
-    elif total <= -3:
-        label, adjustment = "ALIGN BEARISH", -8
-    elif total == -2:
-        label, adjustment = "BEARISH BIAS", -5
-    else:
-        label, adjustment = "MIXED", 0
-    return {
-        "mtf_label": label,
-        "mtf_4h": h4_label,
-        "mtf_1d": d1_label,
-        "mtf_score": total,
-        "mtf_adjustment": adjustment,
-    }
-
-
-def compute_macd(close):
-    if len(close) < 15:
-        return "netral", 0
-    macd_line = compute_ema(close, 12) - compute_ema(close, 26)
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
-    hist = float(macd_line.iloc[-1] - signal_line.iloc[-1])
-    prev = float(macd_line.iloc[-2] - signal_line.iloc[-2]) if len(macd_line) > 1 else 0
-    if hist > 0 and prev <= 0:
-        return "bullish cross", hist
-    elif hist > 0:
-        return "bullish", hist
-    elif hist < 0 and prev >= 0:
-        return "bearish cross", hist
-    elif hist < 0:
-        return "bearish", hist
-    return "netral", hist
-
-
-def compute_bollinger(close):
-    if len(close) < 20:
-        return {"bb_signal": "netral", "bb_pct_b": 0.5}
-    mid = float(close.tail(20).mean())
-    std = float(close.tail(20).std())
-    upper = mid + 2 * std
-    lower = mid - 2 * std
-    last = float(close.iloc[-1])
-    pct_b = (last - lower) / (upper - lower) if upper > lower else 0.5
-    if pct_b < 0.15:
-        sig = "oversold"
-    elif pct_b > 0.85:
-        sig = "overbought"
-    else:
-        sig = "netral"
-    return {"bb_signal": sig, "bb_pct_b": round(pct_b, 2)}
-
-
-def compute_supertrend(candles):
-    if candles.empty or len(candles) < 30:
-        return "netral"
-    high = candles["high"].astype(float)
-    low = candles["low"].astype(float)
-    close = candles["close"].astype(float)
-    tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
-    atr = tr.rolling(14).mean()
-    ema_fast = close.ewm(span=10, adjust=False).mean()
-    ema_slow = close.ewm(span=30, adjust=False).mean()
-    floor = ((high + low) / 2) - (2.4 * atr)
-    if pd.notna(floor.iloc[-1]) and close.iloc[-1] > floor.iloc[-1] and ema_fast.iloc[-1] > ema_slow.iloc[-1]:
-        return "bullish"
-    elif pd.notna(floor.iloc[-1]):
-        return "bearish"
-    return "netral"
-
-
-def compute_volume_analysis(candles):
-    if candles.empty or len(candles) < 20:
-        return "normal", 1.0
-    vol = candles["volume"].astype(float)
-    avg = vol.tail(20).mean()
-    if avg <= 0:
-        return "normal", 1.0
-    ratio = float(vol.iloc[-1] / avg)
-    if ratio >= 1.8:
-        return "spike", ratio
-    elif ratio >= 1.15:
-        return "kuat", ratio
-    elif ratio >= 0.7:
-        return "normal", ratio
-    return "tipis", ratio
-
-
-def compute_adx(candles):
-    """ADX: ukur kekuatan tren (bukan arah)."""
-    if candles.empty or len(candles) < 28:
-        return {"adx": 25, "trend": "sideways"}
-    hi = candles["high"].astype(float)
-    lo = candles["low"].astype(float)
-    cl = candles["close"].astype(float)
-    tr = pd.concat([hi - lo, (hi - cl.shift(1)).abs(), (lo - cl.shift(1)).abs()], axis=1).max(axis=1)
-    up = hi - hi.shift(1)
-    dn = lo.shift(1) - lo
-    pdm = up.where((up > dn) & (up > 0), 0.0)
-    ndm = dn.where((dn > up) & (dn > 0), 0.0)
-    atr = tr.ewm(alpha=1/14, adjust=False).mean()
-    pdi = 100 * pdm.ewm(alpha=1/14, adjust=False).mean() / atr.replace(0, float('nan'))
-    ndi = 100 * ndm.ewm(alpha=1/14, adjust=False).mean() / atr.replace(0, float('nan'))
-    dx = 100 * abs(pdi - ndi) / (pdi + ndi).replace(0, float('nan'))
-    adx = float(dx.fillna(25).ewm(alpha=1/14, adjust=False).mean().iloc[-1])
-    pdi_v = float(pdi.fillna(0).iloc[-1])
-    ndi_v = float(ndi.fillna(0).iloc[-1])
-    if adx >= 25:
-        trend = "bullish_strong" if pdi_v > ndi_v and adx >= 40 else "bullish" if pdi_v > ndi_v else "bearish_strong" if adx >= 40 else "bearish"
-    else:
-        trend = "sideways"
-    return {"adx": round(adx, 1), "trend": trend}
-
-
-def compute_ml_forecast(candles):
-    """KNN sederhana: prediksi probabilitas naik dari pola historis."""
-    default = {"ml_prob": 50.0, "ml_label": "NO DATA", "ml_conf": "rendah"}
-    if candles.empty or len(candles) < 80:
-        return default
-    close = candles["close"].astype(float)
-    high = candles["high"].astype(float)
-    low = candles["low"].astype(float)
-    volume = candles["volume"].astype(float)
-    ret1 = close.pct_change(1) * 100
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
-    rsi = 100 - (100 / (1 + gain / loss.replace(0, pd.NA)))
-    feat = pd.DataFrame({
-        "ret1": ret1, "ret3": close.pct_change(3)*100, "ret6": close.pct_change(6)*100,
-        "vol12": ret1.rolling(12).std(),
-        "ema_gap": (close.ewm(span=8,adjust=False).mean() - close.ewm(span=21,adjust=False).mean()) / close * 100,
-        "rsi": rsi,
-        "rng": (close - low.rolling(24).min()) / (high.rolling(24).max() - low.rolling(24).min()).replace(0, pd.NA) * 100,
-        "vr": volume / volume.rolling(24).mean().replace(0, pd.NA),
-    })
-    feat["future"] = close.shift(-6) / close * 100 - 100
-    feat = feat.replace([float('inf'), float('-inf')], pd.NA)
-    cols = ["ret1","ret3","ret6","vol12","ema_gap","rsi","rng","vr"]
-    current = feat[cols].dropna().tail(1).astype(float)
-    train = feat.dropna(subset=cols+["future"]).copy()
-    if current.empty or len(train) < 50:
-        return default
-    means = train[cols].mean()
-    stds = train[cols].std().replace(0,1).fillna(1)
-    tx = ((train[cols]-means)/stds).astype(float)
-    cx = ((current.iloc[0]-means)/stds).astype(float)
-    dist = tx.sub(cx, axis=1).pow(2).sum(axis=1).pow(0.5)
-    dist = pd.to_numeric(dist, errors='coerce').dropna()
-    if dist.empty:
-        return default
-    k = int(clamp(round(len(train)**0.5), 12, 35))
-    nearest = train.loc[dist.nsmallest(k).index]
-    w = 1 / (dist.loc[nearest.index] + 0.001)
-    prob = float(((nearest["future"] > 1.0).astype(float) * w).sum() / w.sum() * 100)
-    label = "BULLISH" if prob >= 62 else "BEARISH" if prob <= 42 else "NETRAL"
-    edge = abs(prob - 50)
-    conf = "tinggi" if len(train) >= 180 and edge >= 14 else "sedang" if len(train) >= 90 and edge >= 8 else "rendah"
-    return {"ml_prob": round(prob,1), "ml_label": label, "ml_conf": conf}
-
-
-def compute_backtest(candles):
-    """Test sinyal serupa di data historis: berhasil atau gagal?"""
-    default = {"bt_wr": 0, "bt_trades": 0, "bt_label": "DATA KURANG"}
-    if candles.empty or len(candles) < 90:
-        return default
-    close = candles["close"].astype(float)
-    high = candles["high"].astype(float)
-    low = candles["low"].astype(float)
-    volume = candles["volume"].astype(float)
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
-    rsi = 100 - (100 / (1 + gain / loss.replace(0, pd.NA)))
-    ema8 = close.ewm(span=8, adjust=False).mean()
-    ema21 = close.ewm(span=21, adjust=False).mean()
-    vr = volume / volume.rolling(24).mean().replace(0, pd.NA)
-    sig = ((ema8>ema21) & rsi.between(42,72) & (vr>=0.75)).fillna(False)
-    outcomes = []
-    last_i = -6
-    for i in range(35, len(candles)-7):
-        if not bool(sig.iloc[i]) or i - last_i < 6:
-            continue
-        entry = float(close.iloc[i])
-        if entry <= 0: continue
-        tgt = entry * 1.026
-        stp = entry * 0.978
-        out = None
-        for j in range(i+1, i+7):
-            if float(low.iloc[j]) <= stp: out = -2.2; break
-            if float(high.iloc[j]) >= tgt: out = 2.6; break
-        if out is None:
-            out = float((close.iloc[i+6]-entry)/entry*100)
-        outcomes.append(out)
-        last_i = i
-    if len(outcomes) < 6:
-        return default
-    wins = [x for x in outcomes if x > 0]
-    wr = len(wins)/len(outcomes)*100
-    label = "TERUJI" if wr >= 58 and len(outcomes) >= 14 else "CUKUP" if wr >= 50 else "LEMAH"
-    return {"bt_wr": round(wr,1), "bt_trades": len(outcomes), "bt_label": label}
-
-
-def build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr):
-    """Komite bull/bear sederhana: approve, approve kecil, tunggu, atau tolak."""
-    bull = bear = 0
-    if score >= 75: bull += 18
-    elif score >= 65: bull += 10
-    else: bear += 8
-    if ml["ml_prob"] >= 62: bull += 12
-    elif ml["ml_prob"] <= 42: bear += 12
-    if bt["bt_trades"] >= 10 and bt["bt_wr"] >= 58: bull += 14
-    elif bt["bt_trades"] >= 10 and bt["bt_label"] == "LEMAH": bear += 16
-    if adx_data["trend"] in ("bullish_strong","bullish"): bull += 7
-    elif adx_data["trend"] in ("bearish_strong","bearish"): bear += 9
-    if supertrend == "bullish": bull += 7
-    elif supertrend == "bearish": bear += 9
-    if rsi >= 78: bear += 8
-    if vol_idr < 100_000_000: bear += 12
-    elif vol_idr >= 5_000_000_000: bull += 5
-    net = int(clamp(50 + bull - bear, 0, 100))
-    if risk_level == "TINGGI" or bear >= bull + 18:
-        return "TOLAK", net, 0
-    elif bear >= bull + 5 or net < 48:
-        return "TUNGGU", net, 0
-    elif risk_level == "SEDANG":
-        return "APPROVE KECIL", net, 0.55
-    return "APPROVE", net, 1.0
 
 
 # =============================================================================
 # CANDLE FETCHING
 # =============================================================================
-def fetch_candles(pair_id, tf="60", lookback_days=21):
-    """Ambil candle historis dari Indodax untuk indikator teknikal."""
-    end_ts = int(time.time())
-    start_ts = end_ts - lookback_days * 86400
-    symbol = pair_id.replace("_", "").upper()
-    url = "https://indodax.com/tradingview/history_v2"
-    try:
-        resp = requests.get(url, params={"from": start_ts, "to": end_ts, "tf": tf, "symbol": symbol}, timeout=8)
-        rows = resp.json()
-    except Exception:
-        return pd.DataFrame()
-    if not isinstance(rows, list) or not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    rename = {"Time": "time", "Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}
-    df = df.rename(columns=rename)
-    required = ["time", "open", "high", "low", "close", "volume"]
-    if not all(c in df.columns for c in required):
-        return pd.DataFrame()
-    for c in required:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["close"]).sort_values("time")
-    return df.tail(500).reset_index(drop=True)
 
 
 # =============================================================================
@@ -1865,211 +1504,6 @@ def compute_market_stats(tickers, prices_24h):
         "avg_change": round(avg_change, 2),
         "total_vol": total_vol,
         "mode": mode,
-    }
-
-
-def compute_ema200_trend(candles):
-    if candles.empty or len(candles) < 220:
-        return {
-            "ema200_ok": False,
-            "ema200": None,
-            "trend_side": "NO DATA"
-        }
-    close = candles["close"].astype(float)
-    ema200 = close.ewm(span=200, adjust=False).mean()
-    last_price = float(close.iloc[-1])
-    last_ema200 = float(ema200.iloc[-1])
-    if last_price > last_ema200:
-        side = "BULLISH"
-        ok = True
-    else:
-        side = "BEARISH"
-        ok = False
-    return {
-        "ema200_ok": ok,
-        "ema200": last_ema200,
-        "trend_side": side
-    }
-
-
-def compute_volume_anomaly(candles, threshold=1.2):
-    if candles.empty or len(candles) < 22:
-        return {
-            "volume_ok": False,
-            "volume_ratio": 1.0
-        }
-
-    closed = candles.iloc[:-1]
-    volume = closed["volume"].astype(float)
-
-    avg20 = volume.tail(21).iloc[:-1].mean()
-    last_vol = float(volume.iloc[-1])
-
-    if avg20 <= 0:
-        return {
-            "volume_ok": False,
-            "volume_ratio": 1.0
-        }
-
-    ratio = last_vol / avg20
-
-    return {
-        "volume_ok": ratio >= threshold,
-        "volume_ratio": round(ratio, 2)
-    }
-
-
-def detect_bullish_pinbar(candles):
-    if candles.empty or len(candles) < 3:
-        return {
-            "pinbar_ok": False,
-            "pinbar_type": "NO DATA"
-        }
-
-    closed = candles.iloc[:-1]
-    c = closed.iloc[-1]
-
-    open_ = float(c["open"])
-    high = float(c["high"])
-    low = float(c["low"])
-    close = float(c["close"])
-
-    candle_range = high - low
-    body = abs(close - open_)
-    upper_shadow = high - max(open_, close)
-    lower_shadow = min(open_, close) - low
-
-    if candle_range <= 0:
-        return {
-            "pinbar_ok": False,
-            "pinbar_type": "INVALID"
-        }
-
-    body_pct = body / candle_range
-    lower_pct = lower_shadow / candle_range
-    upper_pct = upper_shadow / candle_range
-
-    bullish_pinbar = (
-        lower_pct >= 0.45 and
-        body_pct <= 0.35 and
-        close > open_ and
-        upper_pct <= 0.35
-    )
-
-    return {
-        "pinbar_ok": bullish_pinbar,
-        "pinbar_type": "BULLISH_PINBAR" if bullish_pinbar else "NO_REJECTION"
-    }
-
-
-def compute_dynamic_walls(candles, tolerance_pct=1.0):
-    if candles.empty or len(candles) < 100:
-        return {
-            "dynamic_wall_ok": False,
-            "wall_type": "NO DATA"
-        }
-    close = candles["close"].astype(float)
-    last_price = float(close.iloc[-1])
-    ma99 = float(close.rolling(99).mean().iloc[-1])
-    mid = float(close.tail(20).mean())
-    std = float(close.tail(20).std())
-    upper_bb = mid + 2 * std
-    lower_bb = mid - 2 * std
-    def near(a, b):
-        if b <= 0:
-            return False
-        return abs(a - b) / b * 100 <= tolerance_pct
-    near_ma99 = near(last_price, ma99)
-    near_lower_bb = near(last_price, lower_bb)
-    near_upper_bb = near(last_price, upper_bb)
-    ok = near_ma99 or near_lower_bb
-    if near_lower_bb:
-        wall_type = "LOWER_BB"
-    elif near_ma99:
-        wall_type = "MA99"
-    elif near_upper_bb:
-        wall_type = "UPPER_BB"
-    else:
-        wall_type = "NONE"
-    return {
-        "dynamic_wall_ok": ok,
-        "wall_type": wall_type,
-        "ma99": ma99,
-        "lower_bb": lower_bb,
-        "upper_bb": upper_bb
-    }
-
-
-def compute_static_sr(candles, tolerance_pct=1.2):
-    if candles.empty or len(candles) < 100:
-        return {
-            "sr_ok": False,
-            "sr_type": "NO DATA",
-            "support": None,
-            "resistance": None,
-        }
-
-    closed = candles.iloc[:-1] if len(candles) > 101 else candles
-    recent = closed.tail(100)
-
-    last_price = float(recent["close"].iloc[-1])
-    support = float(recent["low"].min())
-    resistance = float(recent["high"].max())
-
-    near_support = abs(last_price - support) / support * 100 <= tolerance_pct if support > 0 else False
-    near_resistance = abs(last_price - resistance) / resistance * 100 <= tolerance_pct if resistance > 0 else False
-
-    return {
-        "sr_ok": near_support,
-        "sr_type": "SUPPORT" if near_support else "RESISTANCE" if near_resistance else "NONE",
-        "support": support,
-        "resistance": resistance,
-    }
-
-
-def compute_confluence_signal(candles):
-    ema200 = compute_ema200_trend(candles)
-    volume = compute_volume_anomaly(candles, threshold=1.2)
-    pinbar = detect_bullish_pinbar(candles)
-    dynamic = compute_dynamic_walls(candles, tolerance_pct=1.0)
-    sr = compute_static_sr(candles, tolerance_pct=1.2)
-    checks = {
-        "Trend EMA200": ema200["ema200_ok"],
-        "Volume 1.2x MA20": volume["volume_ok"],
-        "Bullish Pinbar": pinbar["pinbar_ok"],
-        "Dynamic Wall": dynamic["dynamic_wall_ok"],
-        "Static Support": sr["sr_ok"],
-    }
-    passed = sum(1 for v in checks.values() if v)
-    total = len(checks)
-    if passed == 5:
-        label = "VALID 5/5"
-        strength = "SANGAT KUAT"
-        allow_entry = True
-    elif passed == 4:
-        label = "VALID 4/5"
-        strength = "KUAT"
-        allow_entry = True
-    elif passed == 3:
-        label = "VALID 3/5"
-        strength = "PANTAU"
-        allow_entry = False
-    else:
-        label = f"INVALID {passed}/5"
-        strength = "TOLAK"
-        allow_entry = False
-    return {
-        "confluence_passed": passed,
-        "confluence_total": total,
-        "confluence_label": label,
-        "confluence_strength": strength,
-        "allow_entry": allow_entry,
-        "checks": checks,
-        "ema200": ema200,
-        "volume": volume,
-        "pinbar": pinbar,
-        "dynamic": dynamic,
-        "sr": sr,
     }
 
 
@@ -2409,7 +1843,6 @@ def analyze_coin_advanced(symbol, data, candles, market_stats):
     }
 
 
-
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_fetch_candles_parallel(pairs_list):
     """Fetch candles for all pairs in parallel to save time (cache 5 menit)."""
@@ -2736,8 +2169,6 @@ def render_news_panel(profile):
         """,
         unsafe_allow_html=True,
     )
-
-
 
 
 # =============================================================================
@@ -3263,7 +2694,6 @@ def render_rekomendasi_card(item, idx, key_prefix=""):
                     st.info(insight_text)
                 except Exception as e:
                     st.error(f"Gagal menghubungi AI: {e}")
-
 
 
 def render_rekomendasi_list(results, title, max_items=10):
