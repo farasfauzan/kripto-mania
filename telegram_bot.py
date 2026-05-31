@@ -19,6 +19,7 @@ from learning_engine import apply_learning_adjustments, record_signal, train_fro
 from news_engine import apply_news_adjustments, build_news_profile
 from ai_pilot import generate_signal_insight
 from core.applog import get_logger
+from core.committee import build_committee, committee_summary_line
 
 _LOGGER = get_logger("bot")
 
@@ -550,6 +551,8 @@ def send_sinyal_harian(all_coins):
             lines.append(f"   🛑 Stop loss {format_idr(s['stop_loss'])}  ·  trailing {s['trailing_pct']}%")
             lines.append(f"   💰 Alokasi {s['alloc_pct']}% modal")
             lines.append(f"   📋 Kenapa: {_why_line(s)}")
+            _com = build_committee(s)
+            lines.append(f"   🧑‍⚖️ {committee_summary_line(_com)}")
             lines.append(f"   👉 [BELI DI INDODAX]({link})")
             lines.append("")
             # Track for TP/SL monitoring

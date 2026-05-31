@@ -335,6 +335,7 @@ from core.indicators import (
 )
 from core.analysis import compute_allocation, compute_risk_level, compute_trade_levels, decide_action
 from core import calibration as calibration_engine
+from core.committee import build_committee
 
 
 def _bot_split_text(text, max_len=TELEGRAM_MAX_LENGTH):
@@ -2439,6 +2440,29 @@ def render_rekomendasi_card(item, idx, key_prefix=""):
             f'</div>'
         )
 
+    # Komite agen: lapisan penjelas transparan (tidak mengubah keputusan).
+    committee = build_committee(item)
+    _vote_color = {"BULLISH": "#047857", "BEARISH": "#b91c1c", "NETRAL": "#64748b"}
+    _vote_icon = {"BULLISH": "▲", "BEARISH": "▼", "NETRAL": "•"}
+    committee_rows = ""
+    for ag in committee["agents"]:
+        c = _vote_color.get(ag["vote"], "#64748b")
+        ic = _vote_icon.get(ag["vote"], "•")
+        committee_rows += (
+            f'<div class="check-row" style="display:block">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center">'
+            f'<span>{ag["name"]}</span>'
+            f'<span style="color:{c};font-weight:900">{ic} {ag["vote"]}</span></div>'
+            f'<div style="color:#64748b;font-weight:600;font-size:0.68rem;margin-top:0.15rem">{ag["reason"]}</div>'
+            f'</div>'
+        )
+    _cons = committee["consensus"]
+    committee_color = "#047857" if _cons == "SETUJU NAIK" else "#b91c1c" if _cons == "SETUJU TURUN" else "#b45309"
+    committee_meta = (
+        f"{committee['bull_votes']} naik · {committee['bear_votes']} turun · "
+        f"{committee['neutral_votes']} netral"
+    )
+
     st.markdown(
         dedent(f"""
         <div class="rekomendasi-card" style="margin-bottom:0.8rem">
@@ -2598,6 +2622,17 @@ def render_rekomendasi_card(item, idx, key_prefix=""):
                     <div class="scenario-action">{fail_action}</div>
                     <div class="scenario-price" style="color:#b91c1c">{visible_price(item.get('fail_price', 0))}</div>
                     <div style="font-size:0.7rem;color:#64748b;margin-top:0.18rem;font-weight:800">-{item.get('fail_loss', 0):.2f}%</div>
+                </div>
+            </div>
+
+            <div class="card-section">
+                <div class="section-row">
+                    <span class="section-label">🧑‍⚖️ Komite agen (penjelas keputusan)</span>
+                    <span class="section-strong" style="color:{committee_color}">{_cons} · {committee_meta}</span>
+                </div>
+                <div class="check-list" style="margin-top:0.5rem">{committee_rows}</div>
+                <div style="color:#94a3b8;font-size:0.66rem;font-weight:700;margin-top:0.4rem">
+                    Suara agen ini menjelaskan alasan, bukan menggantikan keputusan akhir (action di atas).
                 </div>
             </div>
 
