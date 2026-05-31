@@ -41,7 +41,7 @@ def _persist_dir() -> str:
     restart -> learning tidak pernah terkumpul, panel selalu kosong.
 
     Prioritas:
-      1. env SIGNAL_JOURNAL_DIR (override manual)
+      1. env SIGNAL_JOURNAL_DIR (override manual — mis. path mount bucket)
       2. /data (HF persistent storage) — dipakai hanya kalau ada & bisa ditulis
       3. "" (working dir) — perilaku lama, fallback aman
     """
@@ -369,9 +369,20 @@ def _migrate_json_to_sqlite() -> None:
 # BACKEND DETECTION
 # =============================================================================
 def _detect_backend() -> str:
-    """Pilih sqlite kalau bisa write ke directory; fallback JSON."""
+    """Pilih sqlite kalau bisa write ke directory; fallback JSON.
+
+    Override lewat env SIGNAL_JOURNAL_BACKEND=json|sqlite. Penting untuk storage
+    bucket / network FS (HF Storage Buckets): SQLite mode WAL butuh file locking
+    yang sering TIDAK didukung di mount objek -> bisa 'database is locked' atau
+    korup diam-diam. Di kasus itu, set SIGNAL_JOURNAL_BACKEND=json (tulis atomik
+    via temp+rename, aman di bucket).
+    """
     global _BACKEND
     if _BACKEND is not None:
+        return _BACKEND
+    forced = os.environ.get("SIGNAL_JOURNAL_BACKEND", "").strip().lower()
+    if forced == "json":
+        _BACKEND = "json"
         return _BACKEND
     try:
         conn = _connect()
