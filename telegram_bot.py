@@ -195,6 +195,7 @@ from core.indicators import (
     fetch_candles,
     is_entry_action,
 )
+from core.analysis import compute_base_score, compute_risk_level, decide_action
 
 
 def apply_bot_learning(result):
@@ -307,100 +308,30 @@ def analyze_coin(symbol, data, candles):
     confluence = compute_confluence_signal(candles)
     mtf = compute_multi_timeframe_confirmation(candles)
 
-    # --- SCORING ---
-    liquidity_bonus = min(16, vol_idr / 1_000_000_000)
-    fomo_penalty = 9 if range_pos > 88 and change > 8 else 0
-    micin_penalty = 6 if symbol in MICIN_COINS else 0
-
-    tech_score = 0
-    tech_score += clamp(ema_trend_pct * 3, -12, 12)
-    tech_score += 8 if macd_signal == "bullish cross" else 5 if macd_signal == "bullish" else -8 if macd_signal == "bearish cross" else -5 if macd_signal == "bearish" else 0
-    tech_score += 6 if 45 <= rsi <= 68 else -7 if rsi > 78 else -4 if rsi < 30 else 0
-    tech_score += 5 if supertrend == "bullish" else -6 if supertrend == "bearish" else 0
-    tech_score += 4 if vol_label in ("spike", "kuat") else -3 if vol_label == "tipis" else 0
-
-    bb_bonus = 7 if bb["bb_signal"] == "oversold" else -5 if bb["bb_signal"] == "overbought" else 0
-
-    # ADX bonus
-    adx_bonus = 5 if adx_data["trend"] in ("bullish_strong","bullish") else -5 if adx_data["trend"] in ("bearish_strong","bearish") else 0
-
-    # ML adjustment
-    ml_adj = (ml["ml_prob"] - 50) * 0.28
-    if ml["ml_conf"] == "rendah": ml_adj *= 0.45
-    elif ml["ml_conf"] == "sedang": ml_adj *= 0.75
-
-    # Backtest adjustment
-    bt_adj = 0
-    if bt["bt_trades"] >= 6:
-        bt_adj = (bt["bt_wr"] - 50) * 0.12
-
-    momentum = change
-    base = (
-        50
-        + momentum * 4.2
-        + liquidity_bonus
-        + tech_score * 0.65
-        + bb_bonus
-        + adx_bonus
-        + ml_adj
-        + bt_adj
-        + mtf["mtf_adjustment"]
-        - fomo_penalty
-        - micin_penalty
+    # --- SCORING & KEPUTUSAN (terpadu via core.analysis: identik dgn web) ---
+    base, _components = compute_base_score(
+        change=change, ema_trend_pct=ema_trend_pct, macd_signal=macd_signal,
+        rsi=rsi, supertrend=supertrend, vol_label=vol_label,
+        bb_signal=bb["bb_signal"], adx_trend=adx_data["trend"], ml=ml, bt=bt,
+        mtf_adjustment=mtf["mtf_adjustment"], vol_idr=vol_idr, symbol=symbol,
+        is_micin=(symbol in MICIN_COINS), range_pos=range_pos,
     )
+    momentum = change
     score = int(clamp(round(base), 0, 100))
 
-    # Action — threshold yang realistis agar sinyal bisa lolos
-    if score >= 78 and momentum > 1.0:
-        action, emoji = "BELI KUAT", "🟢"
-    elif score >= 62 and momentum > 0:
-        action, emoji = "CICIL BELI", "🟡"
-    elif score >= 50:
-        action, emoji = "WATCH", "⚪"
-    elif score >= 35:
-        action, emoji = "JANGAN BELI", "🔴"
-    else:
-        action, emoji = "HINDARI", "⛔"
+    # Risk level (sebelum verdict, dibutuhkan committee)
+    risk_level = compute_risk_level(change, vol_idr, rsi, macd_signal, supertrend, range_pos, ml, bt)
 
-    # Confluence Gate: Entry hanya diperbolehkan jika minimal 3 dari 5 indikator valid
-    # (sebelumnya 4/5 — terlalu ketat, hampir mustahil terpenuhi bersamaan)
-    if confluence["confluence_passed"] < 3:
-        if action in ("BELI KUAT", "CICIL BELI"):
-            action = "JANGAN BELI"
-            emoji = "🔴"
-    elif confluence["confluence_passed"] < 4:
-        if action == "BELI KUAT":
-            action, emoji = "CICIL BELI", "🟡"
-
-    # Anti-FOMO Filter: Jangan asal masuk jika sudah sangat dekat harga tertinggi 24h
-    # (threshold dinaikkan dari 85/5% ke 92/8% agar tidak terlalu agresif memblokir)
-    if range_pos > 92 and change > 8:
-        if action in ("BELI KUAT", "CICIL BELI"):
-            action = "WATCH"
-            emoji = "⚪"
-
-    # Multi-timeframe guard: jangan agresif jika 4H/1D kompak bearish KUAT.
-    # (threshold dari -5 ke -8, agar sinyal bearish ringan tidak langsung blokir)
-    if mtf["mtf_adjustment"] <= -8 and action == "BELI KUAT":
-        action, emoji = "CICIL BELI", "🟡"
-
-    # Risk level
-    risk_pts = 0
-    if abs(change) >= 10: risk_pts += 2
-    elif abs(change) >= 5: risk_pts += 1
-    if vol_idr < 100_000_000: risk_pts += 2
-    elif vol_idr < 1_000_000_000: risk_pts += 1
-    if rsi > 78: risk_pts += 1
-    if macd_signal == "bearish cross": risk_pts += 1
-    if supertrend == "bearish": risk_pts += 1
-    if range_pos > 85: risk_pts += 1
-    if ml["ml_label"] == "BEARISH" and ml["ml_conf"] != "rendah": risk_pts += 1
-    if bt["bt_label"] == "LEMAH" and bt["bt_trades"] >= 10: risk_pts += 1
-
-    risk_level = "TINGGI" if risk_pts >= 4 else "SEDANG" if risk_pts >= 2 else "RENDAH"
-
-    # Verdict
+    # Verdict committee
     verdict, verdict_net, size_mult = build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr)
+
+    # Keputusan action + semua gate (threshold, confluence, anti-FOMO, MTF, verdict)
+    # IDENTIK dengan web — tidak akan ada lagi sinyal bertentangan utk koin yg sama.
+    action, emoji = decide_action(
+        score=score, change=change, confluence=confluence, range_pos=range_pos,
+        mtf_adjustment=mtf["mtf_adjustment"], regime_allow_aggressive=True,
+        verdict=verdict,
+    )
 
     # Dynamic TP/SL
     gain_pct = clamp(3 + max(momentum, 0) * 0.75 + (score - 60) * 0.22, 2, 18)

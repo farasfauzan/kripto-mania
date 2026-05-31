@@ -332,6 +332,7 @@ from core.indicators import (
     fetch_candles,
     is_entry_action,
 )
+from core.analysis import compute_risk_level, decide_action
 from core import calibration as calibration_engine
 
 
@@ -1639,63 +1640,20 @@ def analyze_coin_advanced(symbol, data, candles, market_stats, market_regime=Non
     )
     score = int(clamp(round(base), 0, 100))
 
-    # Action
-    if score >= 80 and change > 1:
-        action, emoji = "BELI KUAT", "🟢"
-    elif score >= 65 and change > 0:
-        action, emoji = "CICIL BELI", "🟡"
-    elif score >= 50:
-        action, emoji = "WATCH", "⚪"
-    elif score >= 35:
-        action, emoji = "JANGAN BELI", "🔴"
-    else:
-        action, emoji = "HINDARI", "⛔"
+    # Risk level (dibutuhkan committee verdict)
+    risk_level = compute_risk_level(change, vol_idr, rsi, macd_signal, supertrend, range_pos, ml, bt)
 
-    # Confluence Gate: Entry hanya diperbolehkan jika minimal 4 dari 5 indikator valid
-    if not confluence["allow_entry"]:
-        if action in ("BELI KUAT", "CICIL BELI"):
-            action = "WATCH" if confluence["confluence_passed"] >= 3 else "JANGAN BELI"
-            emoji = "⚪" if confluence["confluence_passed"] >= 3 else "🔴"
-            
-    # Anti-FOMO Filter: Jangan asal masuk jika sudah terlalu dekat harga tertinggi 24h
-    if range_pos > 85 and change > 5:
-        if action in ("BELI KUAT", "CICIL BELI"):
-            action = "WATCH"
-            emoji = "⚪"
-
-    # Multi-timeframe guard: jangan agresif jika 4H/1D kompak bearish.
-    if mtf["mtf_adjustment"] <= -5 and action in ("BELI KUAT", "CICIL BELI"):
-        action = "WATCH"
-        emoji = "⚪"
-
-    # Regime guard: kalau BTC sedang RISK_OFF (market global jatuh), jangan
-    # kasih sinyal agresif untuk altcoin — turunkan "BELI KUAT" jadi "CICIL BELI".
-    if not regime.get("allow_aggressive", True) and action == "BELI KUAT":
-        action, emoji = "CICIL BELI", "🟡"
-
-    # Risk level
-    risk_pts = 0
-    if abs(change) >= 10: risk_pts += 2
-    elif abs(change) >= 5: risk_pts += 1
-    if vol_idr < 100_000_000: risk_pts += 2
-    elif vol_idr < 1_000_000_000: risk_pts += 1
-    if rsi > 78: risk_pts += 1
-    if macd_signal == "bearish cross": risk_pts += 1
-    if supertrend == "bearish": risk_pts += 1
-    if range_pos > 85: risk_pts += 1
-    if ml["ml_label"] == "BEARISH" and ml["ml_conf"] != "rendah": risk_pts += 1
-    if bt["bt_label"] == "LEMAH" and bt["bt_trades"] >= 10: risk_pts += 1
-
-    risk_level = "TINGGI" if risk_pts >= 4 else "SEDANG" if risk_pts >= 2 else "RENDAH"
-
-    # Verdict
+    # Verdict committee
     verdict, verdict_net, size_mult = build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr)
 
-    # Laraskan rekomendasi tindakan berdasarkan komite verdict
-    if verdict == "TOLAK":
-        action, emoji = "JANGAN BELI", "🔴"
-    elif verdict == "TUNGGU" and is_entry_action(action):
-        action, emoji = "WATCH", "⚪"
+    # Keputusan action + semua gate (threshold, confluence, anti-FOMO, MTF,
+    # regime, verdict) — terpadu via core.analysis, IDENTIK dengan bot Telegram.
+    action, emoji = decide_action(
+        score=score, change=change, confluence=confluence, range_pos=range_pos,
+        mtf_adjustment=mtf["mtf_adjustment"],
+        regime_allow_aggressive=regime.get("allow_aggressive", True),
+        verdict=verdict,
+    )
 
     # --- ENTRY ZONE & TWO STEPS AHEAD (adaptive: pakai swing S/R + ATR riil) ---
     # Two Steps Ahead pakai swing high/low riil dari intel; fallback otomatis ke ATR jika swing kosong
