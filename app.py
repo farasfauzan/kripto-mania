@@ -328,6 +328,7 @@ from core.indicators import (
     fetch_candles,
     is_entry_action,
 )
+from core import calibration as calibration_engine
 
 
 def _bot_split_text(text, max_len=TELEGRAM_MAX_LENGTH):
@@ -3176,6 +3177,100 @@ def render_portfolio_tab(tickers, all_results):
 
 
 # =============================================================================
+# KALIBRASI PROBABILITAS — apakah ramalan jujur?
+# =============================================================================
+def render_calibration_panel():
+    """Bandingkan probabilitas ramalan vs hasil aktual dari signal journal.
+
+    Menjawab: saat web bilang '70% naik', apakah benar ~70% yang naik?
+    Ini yang membedakan model yang pintar beneran vs yang cuma terlihat pintar.
+    """
+    journal = load_learning_journal()
+    pairs = calibration_engine.extract_pairs_from_journal(journal)
+    report = calibration_engine.build_calibration_report(pairs)
+
+    st.markdown("### Kalibrasi ramalan (kejujuran probabilitas)")
+    st.caption(
+        "Membandingkan probabilitas yang diramalkan saat sinyal dibuat dengan hasil "
+        "nyatanya. Tujuannya menilai apakah angka persen bisa dipercaya — bukan klaim akurasi."
+    )
+
+    if report["sample_count"] < 20:
+        st.info(
+            f"Butuh minimal 20 sinyal tertutup yang menyimpan probabilitas ramalan untuk "
+            f"menilai kalibrasi. Saat ini baru {report['sample_count']}. Panel ini akan terisi "
+            "otomatis seiring sinyal baru ditutup (TP/SL/expired)."
+        )
+        return
+
+    grade_color = {
+        "tinggi": "#047857",
+        "sedang": "#b45309",
+        "rendah": "#b91c1c",
+    }.get(report["confidence"], "#64748b")
+
+    cols = st.columns(3)
+    with cols[0]:
+        st.markdown(
+            f"""<div class="stat-card"><div class="stat-value" style="color:{grade_color};font-size:1rem">{report['grade']}</div>
+            <div class="stat-label">Status kalibrasi</div></div>""",
+            unsafe_allow_html=True,
+        )
+    with cols[1]:
+        brier = report["brier_score"]
+        # Brier: <0.20 baik, 0.25 = nebak. Makin kecil makin baik.
+        bcolor = "#047857" if brier is not None and brier <= 0.20 else "#b45309" if brier is not None and brier <= 0.25 else "#b91c1c"
+        st.markdown(
+            f"""<div class="stat-card"><div class="stat-value" style="color:{bcolor}">{brier if brier is not None else '—'}</div>
+            <div class="stat-label">Brier score (↓ baik)</div></div>""",
+            unsafe_allow_html=True,
+        )
+    with cols[2]:
+        ece = report["ece"]
+        ece_pct = f"{ece*100:.1f}%" if ece is not None else "—"
+        ecolor = "#047857" if ece is not None and ece <= 0.05 else "#b45309" if ece is not None and ece <= 0.12 else "#b91c1c"
+        st.markdown(
+            f"""<div class="stat-card"><div class="stat-value" style="color:{ecolor}">{ece_pct}</div>
+            <div class="stat-label">Calib. error (↓ baik)</div></div>""",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        f"""<div style="background:#ffffff;border:1px solid #e2e8f0;border-left:4px solid {grade_color};
+                    border-radius:8px;padding:0.75rem 1rem;margin:0.6rem 0;color:#334155;
+                    font-size:0.86rem;font-weight:600">{report['note']}</div>""",
+        unsafe_allow_html=True,
+    )
+
+    # Reliability table: prediksi vs aktual per bucket
+    buckets = report["buckets"]
+    if buckets:
+        st.markdown("#### Reliability per bucket probabilitas")
+        st.caption(
+            "Kolom 'Diramalkan' vs 'Aktual naik' idealnya berdekatan. Selisih besar = "
+            "ramalan di rentang itu kurang bisa dipercaya."
+        )
+        df_buckets = pd.DataFrame([
+            {
+                "Rentang": f"{int(b['bin_low']*100)}–{int(b['bin_high']*100)}%",
+                "Jumlah sinyal": b["count"],
+                "Diramalkan (rata2)": f"{b['avg_predicted']:.0f}%",
+                "Aktual naik": f"{b['actual_freq']:.0f}%",
+                "Selisih": f"{b['gap']:+.0f}%",
+            }
+            for b in buckets
+        ])
+        st.dataframe(df_buckets, use_container_width=True, hide_index=True)
+
+        # Chart: prediksi vs aktual (garis ideal = diagonal)
+        chart_df = pd.DataFrame({
+            "Diramalkan": [b["avg_predicted"] for b in buckets],
+            "Aktual": [b["actual_freq"] for b in buckets],
+        })
+        st.line_chart(chart_df, x="Diramalkan", y="Aktual", use_container_width=True, height=240)
+
+
+# =============================================================================
 # STATISTIK BOT TAB (quantstats metrics dari signal journal)
 # =============================================================================
 def render_stats_tab():
@@ -3276,6 +3371,9 @@ def render_stats_tab():
         st.caption("Asumsi 1 unit modal di-compounding setiap trade. Datar = belum profit, naik kanan = healthy.")
         df_eq = pd.DataFrame({"trade": list(range(len(eq))), "equity": eq})
         st.line_chart(df_eq, x="trade", y="equity", use_container_width=True, height=280)
+
+    # Kalibrasi probabilitas: seberapa jujur ramalan?
+    render_calibration_panel()
 
     # Library status
     avail = smart_engine.is_available()

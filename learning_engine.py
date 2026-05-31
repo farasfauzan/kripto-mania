@@ -271,6 +271,13 @@ def record_signal(item, is_entry_action, now=None):
 
     price = _as_float(_item_value(item, "price", "entry", default=0))
     target = _as_float(_item_value(item, "target", "tp3", default=0))
+    # Simpan probabilitas ramalan SAAT sinyal dibuat, supaya nanti bisa
+    # dibandingkan dengan hasil aktual (kalibrasi). Prioritas: ramalan 6 jam
+    # (step1), fallback ke probabilitas ML/KNN. Tanpa ini, kalibrasi tidak
+    # punya data untuk menilai kejujuran ramalan.
+    forecast_prob = _as_float(
+        _item_value(item, "forecast_step1_prob", "ml_prob", default=0)
+    )
     journal["signals"].append({
         "symbol": symbol,
         "pair": item.get("pair"),
@@ -290,6 +297,7 @@ def record_signal(item, is_entry_action, now=None):
         "min_price": price,
         "max_gain_pct": 0.0,
         "max_drawdown_pct": 0.0,
+        "forecast_prob": round(forecast_prob, 1) if forecast_prob > 0 else None,
         "source": item.get("source", "bot"),
     })
     save_journal(journal)

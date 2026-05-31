@@ -279,9 +279,27 @@ def compute_ml_forecast(candles):
     return {"ml_prob": round(prob,1), "ml_label": label, "ml_conf": conf}
 
 
-def compute_backtest(candles):
-    """Test sinyal serupa di data historis: berhasil atau gagal?"""
-    default = {"bt_wr": 0, "bt_trades": 0, "bt_label": "DATA KURANG"}
+def compute_backtest(candles, fee_pct_per_side=0.3, slippage_pct_per_side=0.1):
+    """Uji pola sinyal di data historis — SUDAH realistis (biaya + out-of-sample).
+
+    Perbaikan dari versi lama yang membuat winrate terlihat lebih bagus dari
+    kenyataan:
+      1. BIAYA NYATA: tiap trade dikurangi fee + slippage pulang-pergi
+         (default Indodax taker 0.3%/sisi + slippage 0.1%/sisi = 0.8% PP).
+         `bt_wr` sekarang adalah winrate BERSIH (net), bukan kotor.
+      2. OUT-OF-SAMPLE: trade dibagi kronologis 70% awal / 30% akhir.
+         `bt_oos_wr` = winrate net di 30% terakhir (deteksi pola yang sudah
+         basi / regime decay). Kalau oos jauh < is, pola mulai tidak relevan.
+
+    Key lama (`bt_wr`, `bt_trades`, `bt_label`) tetap ada agar build_verdict &
+    UI tidak rusak; `bt_wr` kini bermakna NET (lebih jujur, lebih konservatif).
+    """
+    round_trip_cost = 2.0 * (fee_pct_per_side + slippage_pct_per_side)
+    default = {
+        "bt_wr": 0, "bt_trades": 0, "bt_label": "DATA KURANG",
+        "bt_wr_gross": 0, "bt_oos_wr": 0, "bt_avg_net_pct": 0.0,
+        "bt_cost_pct": round(round_trip_cost, 2),
+    }
     if candles.empty or len(candles) < 90:
         return default
     close = candles["close"].astype(float)
@@ -291,12 +309,12 @@ def compute_backtest(candles):
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean()
-    rsi = 100 - (100 / (1 + gain / loss.replace(0, pd.NA)))
+    rsi = 100 - (100 / (1 + gain / loss.replace(0, float("nan"))))
     ema8 = close.ewm(span=8, adjust=False).mean()
     ema21 = close.ewm(span=21, adjust=False).mean()
-    vr = volume / volume.rolling(24).mean().replace(0, pd.NA)
+    vr = volume / volume.rolling(24).mean().replace(0, float("nan"))
     sig = ((ema8>ema21) & rsi.between(42,72) & (vr>=0.75)).fillna(False)
-    outcomes = []
+    gross_outcomes = []
     last_i = -6
     for i in range(35, len(candles)-7):
         if not bool(sig.iloc[i]) or i - last_i < 6:
@@ -311,14 +329,31 @@ def compute_backtest(candles):
             if float(high.iloc[j]) >= tgt: out = 2.6; break
         if out is None:
             out = float((close.iloc[i+6]-entry)/entry*100)
-        outcomes.append(out)
+        gross_outcomes.append(out)
         last_i = i
-    if len(outcomes) < 6:
+    if len(gross_outcomes) < 6:
         return default
-    wins = [x for x in outcomes if x > 0]
-    wr = len(wins)/len(outcomes)*100
-    label = "TERUJI" if wr >= 58 and len(outcomes) >= 14 else "CUKUP" if wr >= 50 else "LEMAH"
-    return {"bt_wr": round(wr,1), "bt_trades": len(outcomes), "bt_label": label}
+    # Biaya pulang-pergi dikurangkan dari tiap trade → return bersih
+    net_outcomes = [g - round_trip_cost for g in gross_outcomes]
+    wins_net = [x for x in net_outcomes if x > 0]
+    wins_gross = [x for x in gross_outcomes if x > 0]
+    wr = len(wins_net) / len(net_outcomes) * 100
+    wr_gross = len(wins_gross) / len(gross_outcomes) * 100
+    avg_net = sum(net_outcomes) / len(net_outcomes)
+    # Out-of-sample: 30% trade terakhir (kronologis)
+    split = int(len(net_outcomes) * 0.7)
+    oos = net_outcomes[split:]
+    oos_wr = (len([x for x in oos if x > 0]) / len(oos) * 100) if oos else 0.0
+    label = "TERUJI" if wr >= 58 and len(net_outcomes) >= 14 else "CUKUP" if wr >= 50 else "LEMAH"
+    return {
+        "bt_wr": round(wr, 1),
+        "bt_trades": len(net_outcomes),
+        "bt_label": label,
+        "bt_wr_gross": round(wr_gross, 1),
+        "bt_oos_wr": round(oos_wr, 1),
+        "bt_avg_net_pct": round(avg_net, 2),
+        "bt_cost_pct": round(round_trip_cost, 2),
+    }
 
 
 def build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr):
