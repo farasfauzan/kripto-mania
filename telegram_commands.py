@@ -10,6 +10,10 @@ import requests
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 
+from core.applog import get_logger
+
+_LOGGER = get_logger("cmd")
+
 # Import dari telegram_bot (yang load config)
 # Kita re-implement minimal functions needed
 
@@ -71,9 +75,9 @@ def send_telegram_message(text, notify=False, force=False):
             resp = requests.post(url, json=payload, timeout=10)
             result = resp.json()
             if not result.get("ok"):
-                print(f"[CMD] Telegram error: {result.get('description', '')}")
+                _LOGGER.error("Telegram error: %s", result.get('description', ''))
         except Exception as e:
-            print(f"[CMD] Send error: {e}")
+            _LOGGER.error("Send error: %s", e)
         if i < len(chunks) - 1:
             time.sleep(0.3)
     return True
@@ -123,7 +127,7 @@ def _fetch_all_tickers():
             }
         return all_coins
     except Exception as e:
-        print(f"[CMD] Fetch error: {e}")
+        _LOGGER.error("Fetch error: %s", e)
         return {}
 
 
@@ -263,7 +267,7 @@ def cmd_scan(telegram_bot_module=None):
     lines.append("⚠️ Bukan saran keuangan. DYOR.")
 
     send_telegram_message("\n".join(lines), notify=True)
-    print(f"[CMD] /scan executed — {buy_count} buy signals found")
+    _LOGGER.info("/scan executed — %s buy signals found", buy_count)
     return True
 
 
@@ -370,7 +374,7 @@ def cmd_top(telegram_bot_module=None):
     lines.append("⚠️ Bukan saran keuangan. DYOR.")
 
     send_telegram_message("\n".join(lines), notify=True)
-    print("[CMD] /top executed")
+    _LOGGER.info("/top executed")
     return True
 
 
@@ -474,7 +478,7 @@ def cmd_portfolio():
     lines.append("📌 Monitor: bot akan notif otomatis saat TP/SL kena.")
 
     send_telegram_message("\n".join(lines), notify=True)
-    print(f"[CMD] /portfolio — {len(_active_signals)} active positions")
+    _LOGGER.info("/portfolio — %s active positions", len(_active_signals))
     return True
 
 
@@ -518,7 +522,7 @@ def cmd_journal():
     lines.append("⚠️ Bukan saran keuangan. DYOR.")
 
     send_telegram_message("\n".join(lines), notify=True)
-    print(f"[CMD] /journal — WR: {wr:.1f}%")
+    _LOGGER.info("/journal — WR: %.1f%%", wr)
     return True
 
 
@@ -566,7 +570,7 @@ def cmd_stats():
     lines.append("💡 Semakin banyak data, semakin akurat.")
 
     send_telegram_message("\n".join(lines), notify=True)
-    print("[CMD] /stats executed")
+    _LOGGER.info("/stats executed")
     return True
 
 
@@ -613,7 +617,7 @@ def cmd_weather():
     lines.append(f"Total koin: {len(all_coins)}")
 
     send_telegram_message("\n".join(lines), notify=True)
-    print(f"[CMD] /weather — mode: {mode}")
+    _LOGGER.info("/weather — mode: %s", mode)
     return True
 
 

@@ -18,6 +18,9 @@ from keep_alive import keep_alive
 from learning_engine import apply_learning_adjustments, record_signal, train_from_prices
 from news_engine import apply_news_adjustments, build_news_profile
 from ai_pilot import generate_signal_insight
+from core.applog import get_logger
+
+_LOGGER = get_logger("bot")
 
 # === CONFIG ===
 def _get_api_key(key_name):
@@ -163,9 +166,10 @@ def save_bot_state():
         log(f"Error saving bot state: {e}")
 
 
-def log(msg):
-    ts = datetime.now(WIB).strftime("%H:%M:%S")
-    print(f"[{ts}] {msg}")
+def log(msg, level="info"):
+    """Log terstruktur (default INFO). Kompatibel: pemanggilan lama log(msg)
+    tetap jalan; bisa juga log(msg, "warning") / log(msg, "error")."""
+    getattr(_LOGGER, level, _LOGGER.info)(msg)
 
 
 def clamp(value, lower, upper):
@@ -262,7 +266,7 @@ def fetch_all_tickers():
             }
         return all_coins
     except Exception as e:
-        log(f"Fetch error: {e}")
+        log(f"Fetch error: {e}", "error")
         return {}
 
 
@@ -445,9 +449,9 @@ def send_message(text, notify=False, force=False):
                 resp2 = requests.post(url, json=payload, timeout=10)
                 result = resp2.json()
             if not result.get("ok"):
-                log(f"Telegram error: {result}")
+                log(f"Telegram error: {result}", "error")
         except Exception as e:
-            log(f"Send error: {e}")
+            log(f"Send error: {e}", "error")
         if i < len(chunks) - 1:
             time.sleep(0.3)
     return True
@@ -1716,5 +1720,5 @@ if __name__ == "__main__":
             break
         except Exception as e:
             consecutive_errors += 1
-            log(f"Crash: {e} -- restarting in 10s...")
+            log(f"Crash: {e} -- restarting in 10s...", "error")
             time.sleep(10)
