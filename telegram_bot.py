@@ -105,7 +105,22 @@ _last_news_profile = None
 _last_news_profile_at = 0
 
 
-STATE_FILE = "bot_state.json"
+def _state_file_path():
+    """Simpan bot_state di direktori persisten kalau ada (HF /data), supaya
+    state bot tidak hilang tiap restart. Fallback ke working dir."""
+    override = os.environ.get("SIGNAL_JOURNAL_DIR")
+    for base in (override, "/data"):
+        if not base:
+            continue
+        try:
+            if os.path.isdir(base) and os.access(base, os.W_OK):
+                return os.path.join(base, "bot_state.json")
+        except OSError:
+            pass
+    return "bot_state.json"
+
+
+STATE_FILE = _state_file_path()
 
 def load_bot_state():
     global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _early_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time, _message_fingerprints

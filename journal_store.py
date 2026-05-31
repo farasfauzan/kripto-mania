@@ -32,11 +32,50 @@ from typing import Any
 
 WIB = timezone(timedelta(hours=7))
 
-JSON_PATH = os.environ.get("SIGNAL_JOURNAL_FILE", "signal_journal.json")
-DB_PATH = os.environ.get(
-    "SIGNAL_JOURNAL_DB",
-    os.path.splitext(JSON_PATH)[0] + ".db" if JSON_PATH.endswith(".json") else "signal_journal.db",
-)
+
+def _persist_dir() -> str:
+    """Direktori penyimpanan yang BERTAHAN antar restart, kalau ada.
+
+    Hugging Face Spaces dgn persistent storage me-mount disk di /data. Tanpa
+    ini, filesystem container EPHEMERAL: signal_journal.db hilang tiap rebuild/
+    restart -> learning tidak pernah terkumpul, panel selalu kosong.
+
+    Prioritas:
+      1. env SIGNAL_JOURNAL_DIR (override manual)
+      2. /data (HF persistent storage) — dipakai hanya kalau ada & bisa ditulis
+      3. "" (working dir) — perilaku lama, fallback aman
+    """
+    override = os.environ.get("SIGNAL_JOURNAL_DIR")
+    if override:
+        try:
+            os.makedirs(override, exist_ok=True)
+            if os.access(override, os.W_OK):
+                return override
+        except OSError:
+            pass
+    hf_data = "/data"
+    try:
+        if os.path.isdir(hf_data) and os.access(hf_data, os.W_OK):
+            return hf_data
+    except OSError:
+        pass
+    return ""
+
+
+def _resolve(default_name: str, env_value: str | None) -> str:
+    """Kalau path eksplisit diberi lewat env, hormati apa adanya. Kalau tidak,
+    taruh di direktori persisten bila tersedia (fallback ke working dir)."""
+    if env_value:
+        return env_value
+    base = _persist_dir()
+    return os.path.join(base, default_name) if base else default_name
+
+
+JSON_PATH = _resolve("signal_journal.json", os.environ.get("SIGNAL_JOURNAL_FILE"))
+# DB default: turunkan dari JSON_PATH (ganti .json -> .db) supaya keduanya
+# satu folder; atau hormati SIGNAL_JOURNAL_DB kalau diset eksplisit.
+_db_default = (os.path.splitext(JSON_PATH)[0] + ".db") if JSON_PATH.endswith(".json") else "signal_journal.db"
+DB_PATH = os.environ.get("SIGNAL_JOURNAL_DB", _db_default)
 ENABLED = str(os.environ.get("ENABLE_SIGNAL_LEARNING", "true")).lower() in {"1", "true", "yes", "on"}
 MAX_ENTRIES = int(os.environ.get("SIGNAL_JOURNAL_MAX", "5000"))
 
