@@ -44,7 +44,11 @@ def _item_value(item, *keys, default=None):
 
 def build_profile(journal=None):
     journal = journal or load_journal()
-    signals = journal.get("signals", [])
+    all_signals = journal.get("signals", [])
+    # Pisahkan paper-trade ("andai beli" dari early signal) dari sinyal nyata,
+    # supaya learning sinyal sungguhan tidak tercemar eksperimen early.
+    signals = [s for s in all_signals if s.get("source") != "early"]
+    paper = [s for s in all_signals if s.get("source") == "early"]
     closed = [s for s in signals if s.get("status") in {"TARGET", "TP", "SL", "EXPIRED"}]
     wins = [s for s in closed if s.get("outcome") == "WIN"]
     losses = [s for s in closed if s.get("outcome") == "LOSS"]
@@ -71,6 +75,10 @@ def build_profile(journal=None):
         reverse=True,
     )[:3]
 
+    # Statistik paper-trade ("andai beli") — terpisah, hanya untuk info.
+    paper_closed = [s for s in paper if s.get("status") in {"TARGET", "TP", "SL", "EXPIRED"}]
+    paper_wins = [s for s in paper_closed if s.get("outcome") == "WIN"]
+
     return {
         "enabled": SIGNAL_LEARNING_ENABLED,
         "total_signals": len(signals),
@@ -81,6 +89,11 @@ def build_profile(journal=None):
         "winrate": round(len(wins) / len(closed) * 100, 1) if closed else None,
         "by_symbol": by_symbol,
         "best_symbols": best_symbols,
+        # Paper-trade ("andai beli") dari early signal
+        "paper_active": len([s for s in paper if s.get("status") == "OPEN"]),
+        "paper_closed": len(paper_closed),
+        "paper_wins": len(paper_wins),
+        "paper_winrate": round(len(paper_wins) / len(paper_closed) * 100, 1) if paper_closed else None,
         "updated_at": journal.get("updated_at"),
     }
 
@@ -173,7 +186,26 @@ def apply_learning_adjustments(items, profile=None):
     return items
 
 
-def train_from_prices(price_items, now=None):
+def _maybe_collect_paper(sig, collector):
+    """Kalau sinyal yg baru ditutup adalah paper-trade (source=early), masukkan
+    ke collector supaya pemanggil (bot) bisa kabari hasil "andai beli"-nya."""
+    if collector is None or sig.get("source") != "early":
+        return
+    entry = _as_float(sig.get("entry"))
+    last = _as_float(sig.get("last_price"), entry)
+    pnl = round((last - entry) / entry * 100, 2) if entry > 0 else 0.0
+    collector.append({
+        "symbol": sig.get("symbol"),
+        "status": sig.get("status"),
+        "outcome": sig.get("outcome"),
+        "entry": entry,
+        "exit": last,
+        "pnl_pct": pnl,
+        "max_gain_pct": _as_float(sig.get("max_gain_pct")),
+    })
+
+
+def train_from_prices(price_items, now=None, closed_collector=None):
     journal = load_journal()
     if not SIGNAL_LEARNING_ENABLED:
         return build_profile(journal)
@@ -231,16 +263,19 @@ def train_from_prices(price_items, now=None):
             sig["outcome"] = "WIN"
             sig["closed_at"] = now.isoformat()
             changed = True
+            _maybe_collect_paper(sig, closed_collector)
         elif stop_loss > 0 and new_min <= stop_loss:
             sig["status"] = "SL"
             sig["outcome"] = "WIN" if sig.get("tp1_hit") else "LOSS"
             sig["closed_at"] = now.isoformat()
             changed = True
+            _maybe_collect_paper(sig, closed_collector)
         elif age_hours >= SIGNAL_LEARNING_TTL_HOURS:
             sig["status"] = "TP" if sig.get("tp1_hit") else "EXPIRED"
             sig["outcome"] = "WIN" if sig.get("tp1_hit") else "LOSS"
             sig["closed_at"] = now.isoformat()
             changed = True
+            _maybe_collect_paper(sig, closed_collector)
 
     if changed:
         save_journal(journal)
@@ -299,6 +334,69 @@ def record_signal(item, is_entry_action, now=None):
         "max_drawdown_pct": 0.0,
         "forecast_prob": round(forecast_prob, 1) if forecast_prob > 0 else None,
         "source": item.get("source", "bot"),
+    })
+    save_journal(journal)
+    return build_profile(journal)
+
+
+def record_paper_signal(item, now=None):
+    """Catat sinyal EARLY sebagai paper-trade ("andai beli"), source="early".
+
+    Berbeda dari record_signal: TIDAK menuntut confluence>=4 / alokasi>0,
+    karena early signal memang sinyal dini sebelum konfirmasi penuh. Tujuannya
+    melacak "seandainya beli koin ini, kena TP atau SL?" tanpa uang asli, dan
+    TERPISAH dari learning sinyal nyata (build_profile mengecualikan source=early).
+    """
+    if not SIGNAL_LEARNING_ENABLED:
+        return None
+    journal = load_journal()
+    now = now or datetime.now(WIB)
+    symbol = item.get("symbol")
+    if not symbol:
+        return None
+
+    # Jangan dobel: skip kalau sudah ada paper-trade OPEN utk simbol ini.
+    if any(
+        s.get("symbol") == symbol and s.get("source") == "early" and s.get("status") == "OPEN"
+        for s in journal.get("signals", [])
+    ):
+        return None
+
+    # Dedupe waktu: jangan catat paper-trade simbol sama terlalu rapat.
+    last_same = next(
+        (s for s in reversed(journal.get("signals", []))
+         if s.get("symbol") == symbol and s.get("source") == "early"),
+        None,
+    )
+    if last_same:
+        opened_at = _parse_iso_datetime(last_same.get("opened_at"))
+        if opened_at and (now - opened_at).total_seconds() < SIGNAL_LEARNING_DEDUPE_HOURS * 3600:
+            return None
+
+    price = _as_float(_item_value(item, "price", "entry", default=0))
+    if price <= 0:
+        return None
+    journal["signals"].append({
+        "symbol": symbol,
+        "pair": item.get("pair"),
+        "action": item.get("action", "EARLY"),
+        "entry": price,
+        "score": int(_as_float(item.get("score"))),
+        "allocation_pct": 0.0,
+        "tp1": _as_float(item.get("tp1")),
+        "tp2": _as_float(item.get("tp2")),
+        "target": _as_float(_item_value(item, "target", "tp3", default=0)),
+        "stop_loss": _as_float(_item_value(item, "stop_loss", "sl", default=0)),
+        "opened_at": now.isoformat(),
+        "status": "OPEN",
+        "outcome": None,
+        "tp1_hit": False,
+        "max_price": price,
+        "min_price": price,
+        "max_gain_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "forecast_prob": _as_float(_item_value(item, "forecast_step1_prob", "ml_prob", default=0)) or None,
+        "source": "early",
     })
     save_journal(journal)
     return build_profile(journal)

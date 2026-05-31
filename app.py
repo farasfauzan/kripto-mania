@@ -1840,7 +1840,11 @@ def _parse_iso_datetime(value):
 
 
 def build_learning_profile(journal):
-    signals = journal.get("signals", [])
+    all_signals = journal.get("signals", [])
+    # Pisahkan paper-trade (source=early) dari sinyal nyata agar stats learning
+    # web tidak tercemar simulasi "andai beli".
+    signals = [s for s in all_signals if s.get("source") != "early"]
+    paper = [s for s in all_signals if s.get("source") == "early"]
     closed = [s for s in signals if s.get("status") in {"TARGET", "TP", "SL", "EXPIRED"}]
     wins = [s for s in closed if s.get("outcome") == "WIN"]
     losses = [s for s in closed if s.get("outcome") == "LOSS"]
@@ -1868,6 +1872,9 @@ def build_learning_profile(journal):
         reverse=True,
     )[:3]
 
+    paper_closed = [s for s in paper if s.get("status") in {"TARGET", "TP", "SL", "EXPIRED"}]
+    paper_wins = [s for s in paper_closed if s.get("outcome") == "WIN"]
+
     return {
         "enabled": SIGNAL_LEARNING_ENABLED,
         "total_signals": len(signals),
@@ -1878,6 +1885,10 @@ def build_learning_profile(journal):
         "winrate": winrate,
         "by_symbol": by_symbol,
         "best_symbols": best_symbols,
+        "paper_active": len([s for s in paper if s.get("status") == "OPEN"]),
+        "paper_closed": len(paper_closed),
+        "paper_wins": len(paper_wins),
+        "paper_winrate": round(len(paper_wins) / len(paper_closed) * 100, 1) if paper_closed else None,
         "updated_at": journal.get("updated_at"),
     }
 
@@ -2070,6 +2081,18 @@ def render_learning_panel(profile):
         )
     else:
         best_text = "Mengumpulkan data sinyal valid"
+    # Paper-trade ("andai beli") dari early signal bot — info terpisah.
+    paper_closed = profile.get("paper_closed", 0)
+    paper_active = profile.get("paper_active", 0)
+    paper_wr = profile.get("paper_winrate")
+    if paper_closed or paper_active:
+        paper_wr_text = f"{paper_wr:.0f}%" if paper_wr is not None else "—"
+        paper_note = (
+            f"🔮 Andai beli (early): {paper_active} aktif · {paper_closed} selesai · WR {paper_wr_text} "
+            f"— simulasi, bukan transaksi nyata"
+        )
+    else:
+        paper_note = "🔮 Andai beli (early): belum ada sinyal dini tercatat"
     st.markdown(
         f"""
         <div class="learning-panel">
@@ -2077,6 +2100,7 @@ def render_learning_panel(profile):
                 <div class="section-label">Learning engine</div>
                 <div class="learning-title">Web mulai belajar dari hasil sinyal</div>
                 <div class="learning-note">{best_text}</div>
+                <div class="learning-note" style="margin-top:0.2rem;color:#0369a1">{paper_note}</div>
             </div>
             <div class="learning-stats">
                 <div><span>{profile.get('active', 0)}</span><small>Aktif</small></div>

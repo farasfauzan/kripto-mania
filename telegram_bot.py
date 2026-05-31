@@ -15,7 +15,7 @@ import pandas as pd
 import json
 from datetime import datetime, timezone, timedelta
 from keep_alive import keep_alive
-from learning_engine import apply_learning_adjustments, record_signal, train_from_prices
+from learning_engine import apply_learning_adjustments, record_signal, train_from_prices, record_paper_signal
 from news_engine import apply_news_adjustments, build_news_profile
 from ai_pilot import generate_signal_insight
 from core.applog import get_logger
@@ -1059,6 +1059,24 @@ def check_early_entry_alerts(all_coins):
             send_message(msg, notify=True)
             log(f"EARLY ENTRY ALERT terkirim untuk {sym} (setup {setup['passed']}/5, score 1H {res['score']})")
 
+            # Catat sebagai paper-trade ("andai beli") — terpisah dari learning
+            # sinyal nyata. Bot akan kabari otomatis kalau kena TP/SL.
+            try:
+                record_paper_signal({
+                    "symbol": sym,
+                    "pair": pair,
+                    "action": "EARLY",
+                    "price": res["price"],
+                    "score": res["score"],
+                    "tp1": early_tp1,
+                    "tp2": early_tp2,
+                    "target": early_tp2,
+                    "stop_loss": early_sl,
+                    "forecast_step1_prob": res.get("ml_prob"),
+                })
+            except Exception as e:
+                log(f"Gagal catat paper-trade early {sym}: {e}", "warning")
+
             _early_sent_symbols[sym] = {
                 "sent_at": now_ts,
                 "price": res["price"],
@@ -1083,6 +1101,39 @@ def should_send_sinyal():
 # =============================================================================
 # TP/SL PRICE MONITOR
 # =============================================================================
+def _announce_paper_results(closed_papers):
+    """Kabari hasil paper-trade ("andai beli") dari early signal yg baru ditutup.
+
+    Ini yang bikin user bisa "berandai-andai": bot bilang seandainya beli koin
+    early tadi, sekarang kena TP (cuan) atau SL (rugi) — tanpa uang asli.
+    """
+    if not closed_papers:
+        return
+    for p in closed_papers:
+        sym = p.get("symbol", "?")
+        outcome = p.get("outcome")
+        pnl = p.get("pnl_pct", 0.0)
+        status = p.get("status", "")
+        if outcome == "WIN":
+            head = "✅ *ANDAI BELI — CUAN* (paper)"
+            tail = "Seandainya kamu masuk di sinyal early tadi, sudah kena target."
+        else:
+            head = "❌ *ANDAI BELI — RUGI* (paper)"
+            tail = "Seandainya masuk tadi, kena stop loss. Bagus tidak FOMO."
+        msg = (
+            f"{head}\n"
+            f"🪙 *{sym}* — hasil simulasi (bukan transaksi nyata)\n"
+            f"──────────────────────\n"
+            f"Entry early: {format_idr(p.get('entry', 0))}\n"
+            f"Harga keluar: {format_idr(p.get('exit', 0))}  ·  status {status}\n"
+            f"P/L andai beli: *{pnl:+.2f}%*  (puncak +{p.get('max_gain_pct', 0):.2f}%)\n"
+            f"──────────────────────\n"
+            f"_{tail}_ Ini paper-trade untuk belajar, bukan saran beli. DYOR."
+        )
+        send_message(msg, notify=False)
+    log(f"Lapor {len(closed_papers)} hasil paper-trade (andai beli)")
+
+
 def check_tp_sl_alerts(all_coins):
     """Cek apakah harga sudah kena TP1/TP2/TP3 atau SL dari sinyal aktif."""
     global _active_signals, _daily_stats
@@ -1698,7 +1749,9 @@ if __name__ == "__main__":
             consecutive_errors = 0
             coin_count = len(all_coins)
             now = datetime.now(WIB)
-            learning_profile = train_from_prices(all_coins)
+            _paper_closed = []
+            learning_profile = train_from_prices(all_coins, closed_collector=_paper_closed)
+            _announce_paper_results(_paper_closed)
             news_profile = get_bot_news_profile()
 
             if cycle_count % 10 == 1:
