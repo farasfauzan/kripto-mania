@@ -105,6 +105,9 @@ CATEGORY_COLORS = {
 CATEGORY_ORDER = ["Layer1", "Layer2", "DeFi", "Meme", "AI", "Gaming", "RWA", "Stablecoin"]
 
 INDODAX_REF = "https://indodax.com/ref/narwanpratanta/1"
+# Satu sumber kebenaran untuk kode referral Indodax (dipakai di semua link beli).
+# Ganti di sini saja kalau kode referral berubah — tidak perlu berburu ke banyak tempat.
+REFERRAL_CODE = "narwanpratanta"
 TELEGRAM_COMMUNITY = "https://t.me/+VPlOcY2wFGA0NWU1"
 SIGNAL_JOURNAL_FILE = os.environ.get("SIGNAL_JOURNAL_FILE", "signal_journal.json")
 SIGNAL_LEARNING_ENABLED = str(os.environ.get("ENABLE_SIGNAL_LEARNING", "true")).lower() in {"1", "true", "yes", "on"}
@@ -291,7 +294,7 @@ def _read_shared_tickers():
 BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", "")
 BOT_CHAT_ID = get_secret("TELEGRAM_CHAT_ID", "")
 BOT_ENABLED = str(get_secret("ENABLE_TELEGRAM_BOT", "false")).lower() in {"1", "true", "yes", "on"}
-BOT_INDODAX_REF = "narwanpratanta"
+BOT_INDODAX_REF = REFERRAL_CODE
 BOT_WIB = timezone(timedelta(hours=7))
 BOT_MAIN_ASSETS = {
     "BTC": "btc_idr", "ETH": "eth_idr", "SOL": "sol_idr",
@@ -2346,7 +2349,7 @@ def render_rekomendasi_card(item, idx, key_prefix=""):
     change_sign = "+" if item["change"] >= 0 else ""
     change_color = "#22c55e" if item["change"] >= 0 else "#ef4444"
     pair_upper = item["pair"].upper().replace("_", "")
-    buy_link = f"https://indodax.com/market/{pair_upper}?ref=narwanpratanta"
+    buy_link = f"https://indodax.com/market/{pair_upper}?ref={REFERRAL_CODE}"
 
     def clean_ui_text(value):
         text = str(value or "")
@@ -2734,7 +2737,7 @@ def render_fomo_alerts(tickers, prices_24h, market_stats, news_profile, learning
         for i, coin in enumerate(coin_list[:4]):
             with cols[i]:
                 pair_upper = coin["pair"].upper().replace("_", "")
-                link = f"https://indodax.com/market/{pair_upper}?ref=narwanpratanta"
+                link = f"https://indodax.com/market/{pair_upper}?ref={REFERRAL_CODE}"
                 st.markdown(
                     f"""<div class="fomo-card" style="border-color:{color};background:{color}10;margin-bottom:0.5rem;padding:0.75rem;border-radius:10px;border:1px solid">
                         <div style="font-size:1.4rem;font-weight:900;color:{color}">+{coin['change']}%</div>
@@ -3691,7 +3694,7 @@ def render_pump_card(item: dict, idx: int):
         )
 
     pair_upper = item.get("pair", "").upper().replace("_", "")
-    buy_link = f"https://indodax.com/market/{pair_upper}?ref=narwanpratanta"
+    buy_link = f"https://indodax.com/market/{pair_upper}?ref={REFERRAL_CODE}"
     ch_sign = "+" if change >= 0 else ""
     ch_color = "#047857" if change >= 0 else "#b91c1c"
 

@@ -24,7 +24,7 @@ def _get_api_key(key_name):
             for line in f:
                 if line.startswith(key_name):
                     return line.split("=")[1].strip().strip('"').strip("'")
-    except:
+    except (OSError, IndexError):
         pass
     return ""
 
@@ -135,7 +135,7 @@ def _fetch_candles(pair_id, tf="60", lookback_days=21):
     try:
         resp = requests.get(url, params={"from": start_ts, "to": end_ts, "tf": tf, "symbol": symbol}, timeout=8)
         rows = resp.json()
-    except:
+    except Exception:
         return pd.DataFrame()
     if not isinstance(rows, list) or not rows:
         return pd.DataFrame()

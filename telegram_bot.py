@@ -28,7 +28,7 @@ def _get_api_key(key_name):
             for line in f:
                 if line.startswith(key_name):
                     return line.split("=")[1].strip().strip('"').strip("'")
-    except:
+    except (OSError, IndexError):
         pass
     return ""
 
@@ -1223,7 +1223,7 @@ def _get_last_update_id():
         try:
             with open(path, "r") as f:
                 return int(f.read().strip())
-        except:
+        except (OSError, ValueError):
             pass
     return 0
 

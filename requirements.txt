@@ -1,12 +1,14 @@
-streamlit>=1.35,<2
-requests>=2.31,<3
-pandas>=2.2,<3
-numpy>=1.26,<3
-openai>=1.35,<2
+# Core deps — compatible-release pins (~=): kunci minor, izinkan patch.
+# Lebih reproducible dari range lebar (build HF tidak berubah-ubah tiap rebuild),
+# tapi tidak sebrittle pin exact yang bisa kehilangan wheel di Python 3.12.
+streamlit~=1.50.0
+requests~=2.32.0
+pandas~=2.3.0
+numpy>=1.26,<3    # range tetap: hindari konflik 1.x/2.x dgn smart-pack di build HF
+openai>=1.35,<3   # API openai dipakai via client v1+; range lebar utk fleksibilitas
 
-# Smart-upgrade pack (optional but auto-detected at runtime; web tetap jalan kalau gagal install)
+# Smart-upgrade pack (optional, auto-detected at runtime; web tetap jalan kalau gagal install)
 pandas-ta-classic>=0.4.47,<0.6 # 130+ indikator: Ichimoku, Squeeze, OBV, MFI, KDJ (import name: pandas_ta_classic)
 tradingview-ta>=3.3.0,<4       # second-opinion rating dari TradingView (free, no key)
 quantstats>=0.0.62,<0.1        # Sharpe/drawdown/equity curve dari signal journal
 ipython>=8.18.1,<9             # Dependency required for quantstats to import reports module
-
