@@ -60,7 +60,9 @@ def compute_rsi(close, period=14):
     delta = close.diff()
     gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
     loss = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
-    rs = gain / loss.replace(0, pd.NA)
+    # float("nan") (bukan pd.NA) agar series tetap dtype float: hasil numerik
+    # identik tapi tidak memicu FutureWarning downcasting saat .fillna.
+    rs = gain / loss.replace(0, float("nan"))
     return float((100 - (100 / (1 + rs))).fillna(50).iloc[-1])
 
 
