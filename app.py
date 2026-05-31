@@ -299,7 +299,9 @@ BOT_WIB = timezone(timedelta(hours=7))
 BOT_MAIN_ASSETS = {
     "BTC": "btc_idr", "ETH": "eth_idr", "SOL": "sol_idr",
     "XRP": "xrp_idr", "BNB": "bnb_idr", "ADA": "ada_idr",
-    "DOGE": "doge_idr",
+    "DOT": "dot_idr", "MATIC": "matic_idr", "AVAX": "avax_idr", "LINK": "link_idr",
+    "PEPE": "pepe_idr", "DOGE": "doge_idr", "SHIB": "shib_idr", "BONK": "bonk_idr",
+    "FLOKI": "floki_idr", "LUNC": "lunc_idr", "BTT": "btt_idr", "JASMY": "jasmy_idr",
 }
 
 TELEGRAM_MAX_LENGTH = 4096
@@ -404,7 +406,8 @@ def _bot_format_sinyal_harian(signals):
         "",
     ]
     for s in buy_signals:
-        pair = BOT_MAIN_ASSETS[s["symbol"]].upper().replace("_", "")
+        pair_raw = BOT_MAIN_ASSETS.get(s["symbol"]) or s.get("pair") or f"{s['symbol'].lower()}_idr"
+        pair = pair_raw.upper().replace("_", "")
         link = f"https://indodax.com/market/{pair}?ref={BOT_INDODAX_REF}"
         change_sign = "+" if s["change"] >= 0 else ""
         lines.append(f"{s['emoji']} *{s['symbol']}* — {s['action']}")

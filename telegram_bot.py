@@ -45,13 +45,18 @@ INDODAX_REF = "narwanpratanta"
 WIB = timezone(timedelta(hours=7))
 
 MAIN_ASSETS = {
+    # Disamakan dgn web (app.py ALL_ASSETS) supaya cakupan sinyal konsisten.
+    # Blue chip / layer-1 likuid
     "BTC": "btc_idr", "ETH": "eth_idr", "SOL": "sol_idr",
     "XRP": "xrp_idr", "BNB": "bnb_idr", "ADA": "ada_idr",
-    "DOGE": "doge_idr",
+    "DOT": "dot_idr", "MATIC": "matic_idr", "AVAX": "avax_idr", "LINK": "link_idr",
+    # Koin micin / volatil tinggi
+    "PEPE": "pepe_idr", "DOGE": "doge_idr", "SHIB": "shib_idr", "BONK": "bonk_idr",
+    "FLOKI": "floki_idr", "LUNC": "lunc_idr", "BTT": "btt_idr", "JASMY": "jasmy_idr",
 }
 
 BLUE_CHIPS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA"}
-MICIN_COINS = {"DOGE", "PEPE", "SHIB", "BONK", "FLOKI", "LUNC", "BTT"}
+MICIN_COINS = {"DOGE", "PEPE", "SHIB", "BONK", "FLOKI", "LUNC", "BTT", "JASMY"}
 
 TELEGRAM_CHANNEL = "https://t.me/+VPlOcY2wFGA0NWU1"
 
