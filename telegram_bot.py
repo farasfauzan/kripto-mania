@@ -177,6 +177,7 @@ def clamp(value, lower, upper):
 from core.indicators import (
     build_verdict,
     compute_adx,
+    compute_atr,
     compute_backtest,
     compute_bollinger,
     compute_confluence_signal,
@@ -195,7 +196,7 @@ from core.indicators import (
     fetch_candles,
     is_entry_action,
 )
-from core.analysis import compute_base_score, compute_risk_level, decide_action
+from core.analysis import compute_allocation, compute_base_score, compute_risk_level, compute_trade_levels, decide_action
 
 
 def apply_bot_learning(result):
@@ -333,19 +334,15 @@ def analyze_coin(symbol, data, candles):
         verdict=verdict,
     )
 
-    # Dynamic TP/SL
-    gain_pct = clamp(3 + max(momentum, 0) * 0.75 + (score - 60) * 0.22, 2, 18)
-    stop_pct = clamp(2.6 + abs(momentum) * 0.35 + (1 if risk_level == "TINGGI" else 0), 2.5, 9)
-    tp1 = price * (1 + gain_pct * 0.35 / 100)
-    tp2 = price * (1 + gain_pct * 0.7 / 100)
-    tp3 = price * (1 + gain_pct / 100)
-    sl = price * (1 - stop_pct / 100)
-    trailing = clamp(stop_pct * 0.55, 1.5, 5)
-
-    # Allocation (adjusted by verdict, confluence and conf strength)
-    risk_mod = {"RENDAH": 1.0, "SEDANG": 0.65, "TINGGI": 0.35}[risk_level]
-    conf_size_mult = 1.0 if confluence["confluence_passed"] == 5 else 0.5 if confluence["confluence_passed"] == 4 else 0
-    alloc = clamp(7 * (score / 100) * risk_mod * size_mult * conf_size_mult, 0, 10) if is_entry_action(action) and confluence["allow_entry"] else 0
+    # Dynamic TP/SL & alokasi terpadu via core.analysis (ATR-adaptif, IDENTIK web).
+    atr = compute_atr(candles)
+    levels = compute_trade_levels(price, change, score, risk_level, atr=atr)
+    tp1 = levels["tp1"]
+    tp2 = levels["tp2"]
+    tp3 = levels["target"]
+    sl = levels["stop_loss"]
+    trailing = levels["trailing_pct"]
+    alloc = compute_allocation(score, risk_level, confluence, action, size_mult=size_mult, market_mult=1.0)
 
     return {
         "symbol": symbol, "price": price, "change": change, "vol_idr": vol_idr,

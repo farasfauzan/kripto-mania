@@ -133,6 +133,31 @@ check("risk tinggi (volatil + ilikuid)",
       ca.compute_risk_level(12.0, 50_000_000, 82, "bearish cross", "bearish", 90, ML_BEAR, BT_WEAK) == "TINGGI")
 
 # =============================================================================
+# compute_trade_levels (TP/SL terpadu)
+# =============================================================================
+lv_atr = ca.compute_trade_levels(price=10_000, change=3.0, score=80, risk_level="RENDAH", atr=200)
+check("levels key lengkap", {"tp1", "tp2", "target", "stop_loss", "trailing_pct"} <= set(lv_atr))
+check("levels urutan tp1<tp2<target", lv_atr["tp1"] < lv_atr["tp2"] < lv_atr["target"], str(lv_atr))
+check("levels SL di bawah harga", lv_atr["stop_loss"] < 10_000)
+check("levels target di atas harga", lv_atr["target"] > 10_000)
+check("levels trailing 1.5..5", 1.5 <= lv_atr["trailing_pct"] <= 5)
+lv_fb = ca.compute_trade_levels(price=10_000, change=3.0, score=80, risk_level="TINGGI", atr=None)
+check("levels fallback tetap valid", lv_fb["tp1"] < lv_fb["target"] and lv_fb["stop_loss"] < 10_000)
+lv_huge = ca.compute_trade_levels(price=10_000, change=3.0, score=80, risk_level="RENDAH", atr=5_000)
+check("levels ATR berlebih -> fallback", lv_huge["target"] > 10_000 and lv_huge["stop_loss"] < 10_000)
+
+# =============================================================================
+# compute_allocation
+# =============================================================================
+alloc_full = ca.compute_allocation(80, "RENDAH", CONF_FULL, "BELI KUAT", size_mult=1.0)
+check("alloc entry valid > 0", alloc_full > 0, f"alloc={alloc_full}")
+check("alloc <= 10", alloc_full <= 10)
+check("alloc non-entry = 0", ca.compute_allocation(80, "RENDAH", CONF_FULL, "WATCH") == 0)
+check("alloc confluence kurang = 0", ca.compute_allocation(80, "RENDAH", CONF_3, "BELI KUAT") == 0)
+alloc_high_risk = ca.compute_allocation(80, "TINGGI", CONF_FULL, "BELI KUAT", size_mult=1.0)
+check("alloc risk tinggi < rendah", alloc_high_risk < alloc_full, f"high={alloc_high_risk} full={alloc_full}")
+
+# =============================================================================
 # KONSISTENSI WEB vs BOT: keputusan harus IDENTIK untuk input sama
 # =============================================================================
 # Simulasi: web & bot dgn skor & gate sama HARUS hasil action sama.

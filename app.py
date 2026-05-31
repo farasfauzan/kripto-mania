@@ -313,6 +313,7 @@ def clamp(value, min_val, max_val):
 from core.indicators import (
     build_verdict,
     compute_adx,
+    compute_atr,
     compute_backtest,
     compute_bollinger,
     compute_confluence_signal,
@@ -332,7 +333,7 @@ from core.indicators import (
     fetch_candles,
     is_entry_action,
 )
-from core.analysis import compute_risk_level, decide_action
+from core.analysis import compute_allocation, compute_risk_level, compute_trade_levels, decide_action
 from core import calibration as calibration_engine
 
 
@@ -1513,20 +1514,6 @@ def compute_market_stats(tickers, prices_24h):
     }
 
 
-def compute_atr(candles, period=14):
-    if candles.empty or len(candles) < period + 1:
-        return None
-    high = candles["high"].astype(float)
-    low = candles["low"].astype(float)
-    close = candles["close"].astype(float)
-    tr = pd.concat([
-        high - low,
-        (high - close.shift(1)).abs(),
-        (low - close.shift(1)).abs()
-    ], axis=1).max(axis=1)
-    return float(tr.rolling(period).mean().iloc[-1])
-
-
 def analyze_coin_advanced(symbol, data, candles, market_stats, market_regime=None):
     """Analisis lengkap satu koin menggunakan semua indikator teknikal."""
     price = data["price"]
@@ -1690,33 +1677,18 @@ def analyze_coin_advanced(symbol, data, candles, market_stats, market_regime=Non
         entry_zone_high = price * 1.005
         entry_zone_label = "Koreksi" if range_pos > 70 else "Saat ini" if range_pos < 30 else "Netral"
 
-    # ATR based Dynamic TP/SL with Fallback (reuse ATR yang sudah dihitung untuk intel)
+    # TP/SL & alokasi terpadu via core.analysis (ATR-adaptif, IDENTIK dgn bot).
     atr = atr_for_intel
-    if atr and atr > 0 and atr < price * 0.25:
-        stop_loss = price - (1.5 * atr)
-        target = price + (2.0 * atr)
-        tp1 = price + (0.7 * atr)
-        tp2 = price + (1.4 * atr)
-        trailing = clamp((1.5 * atr) / price * 100 * 0.55, 1.5, 5)
-    else:
-        # Fallback ke rumus momentum biasa jika ATR tidak valid
-        gain_pct = clamp(3 + max(change, 0) * 0.75 + (score - 60) * 0.22, 2, 18)
-        stop_pct = clamp(2.6 + abs(change) * 0.35 + (1 if risk_level == "TINGGI" else 0), 2.5, 9)
-        tp1 = price * (1 + gain_pct * 0.35 / 100)
-        tp2 = price * (1 + gain_pct * 0.7 / 100)
-        target = price * (1 + gain_pct / 100)
-        stop_loss = price * (1 - stop_pct / 100)
-        trailing = clamp(stop_pct * 0.55, 1.5, 5)
+    levels = compute_trade_levels(price, change, score, risk_level, atr=atr)
+    tp1 = levels["tp1"]
+    tp2 = levels["tp2"]
+    target = levels["target"]
+    stop_loss = levels["stop_loss"]
+    trailing = levels["trailing_pct"]
 
-    # Allocation (adjusted by verdict, confluence, conf strength, and market mode)
-    risk_mod = {"RENDAH": 1.0, "SEDANG": 0.65, "TINGGI": 0.35}[risk_level]
-    conf_size_mult = 1.0 if confluence["confluence_passed"] == 5 else 0.5 if confluence["confluence_passed"] == 4 else 0
     market_mult = mode_rules.get("allocation_multiplier", 1.0)
-    alloc = (
-        clamp(7 * (score / 100) * risk_mod * size_mult * conf_size_mult * market_mult, 0, 10)
-        if is_entry_action(action) and confluence["allow_entry"]
-        else 0
-    )
+    alloc = compute_allocation(score, risk_level, confluence, action,
+                               size_mult=size_mult, market_mult=market_mult)
 
     category = COIN_CATEGORIES.get(symbol, "Lainnya")
     category_color = CATEGORY_COLORS.get(category, "#6b7280")

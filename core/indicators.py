@@ -487,6 +487,20 @@ def build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_le
 # =============================================================================
 # CONFLUENCE SUITE
 # =============================================================================
+def compute_atr(candles, period=14):
+    if candles.empty or len(candles) < period + 1:
+        return None
+    high = candles["high"].astype(float)
+    low = candles["low"].astype(float)
+    close = candles["close"].astype(float)
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low - close.shift(1)).abs()
+    ], axis=1).max(axis=1)
+    return float(tr.rolling(period).mean().iloc[-1])
+
+
 def compute_ema200_trend(candles):
     if candles.empty or len(candles) < 220:
         return {

@@ -179,3 +179,52 @@ def compute_risk_level(change, vol_idr, rsi, macd_signal, supertrend, range_pos,
     if bt["bt_label"] == "LEMAH" and bt["bt_trades"] >= 10:
         risk_pts += 1
     return "TINGGI" if risk_pts >= 4 else "SEDANG" if risk_pts >= 2 else "RENDAH"
+
+
+def compute_trade_levels(price, change, score, risk_level, atr=None):
+    """TP/SL terpadu (ATR-adaptif + fallback momentum). IDENTIK web & bot.
+
+    Sebelumnya web pakai ATR (adaptif) sementara bot pakai momentum saja —
+    target/SL bisa beda utk koin yg sama. Versi ATR (lebih adaptif terhadap
+    volatilitas) dijadikan standar; fallback momentum kalau ATR tak valid.
+
+    Mengembalikan dict kanonik: tp1, tp2, target (=tp3), stop_loss, trailing_pct.
+    """
+    if atr and atr > 0 and atr < price * 0.25:
+        stop_loss = price - (1.5 * atr)
+        target = price + (2.0 * atr)
+        tp1 = price + (0.7 * atr)
+        tp2 = price + (1.4 * atr)
+        trailing = clamp((1.5 * atr) / price * 100 * 0.55, 1.5, 5)
+    else:
+        gain_pct = clamp(3 + max(change, 0) * 0.75 + (score - 60) * 0.22, 2, 18)
+        stop_pct = clamp(2.6 + abs(change) * 0.35 + (1 if risk_level == "TINGGI" else 0), 2.5, 9)
+        tp1 = price * (1 + gain_pct * 0.35 / 100)
+        tp2 = price * (1 + gain_pct * 0.7 / 100)
+        target = price * (1 + gain_pct / 100)
+        stop_loss = price * (1 - stop_pct / 100)
+        trailing = clamp(stop_pct * 0.55, 1.5, 5)
+    return {
+        "tp1": tp1,
+        "tp2": tp2,
+        "target": target,
+        "stop_loss": stop_loss,
+        "trailing_pct": round(trailing, 1),
+    }
+
+
+def compute_allocation(score, risk_level, confluence, action, size_mult=1.0,
+                       market_mult=1.0):
+    """Alokasi modal % terpadu (Kelly-ish gate). IDENTIK web & bot.
+
+    Hanya memberi alokasi untuk sinyal entry yang lolos confluence (allow_entry).
+    size_mult dari verdict committee; market_mult dari market mode (web=mode,
+    bot kirim 1.0).
+    """
+    risk_mod = {"RENDAH": 1.0, "SEDANG": 0.65, "TINGGI": 0.35}.get(risk_level, 0.65)
+    passed = confluence.get("confluence_passed", 0)
+    conf_size_mult = 1.0 if passed == 5 else 0.5 if passed == 4 else 0
+    allow_entry = confluence.get("allow_entry", passed >= 4)
+    if is_entry_action(action) and allow_entry:
+        return round(clamp(7 * (score / 100) * risk_mod * size_mult * conf_size_mult * market_mult, 0, 10), 1)
+    return 0.0
