@@ -94,11 +94,11 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 # Indodax pakai "BTC" (simbol koin), Binance pakai "BTCUSDT" (pair).
 # Mapping otomatis: {symbol}USDT. Override manual untuk edge case.
 _SYMBOL_OVERRIDE = {
-    "SHIB": "SHIBUSDT",   # 1000SHIBUSDT di Binance futures
+    "SHIB": "SHIBUSDT",
     "LUNC": "LUNCUSDT",
     "BTTC": "BTTCUSDT",
-    "PEPE": "1000PEPEUSDT",  # futures
-    "FLOKI": "1000FLOKIUSDT",  # futures
+    "PEPE": "PEPEUSDT",
+    "FLOKI": "FLOKIUSDT",
 }
 
 
