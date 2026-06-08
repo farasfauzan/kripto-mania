@@ -334,6 +334,9 @@ def record_signal(item, is_entry_action, now=None):
         "max_drawdown_pct": 0.0,
         "forecast_prob": round(forecast_prob, 1) if forecast_prob > 0 else None,
         "source": item.get("source", "bot"),
+        # Binance global sentiment saat sinyal dibuat (untuk korelasi training)
+        "binance_signal": item.get("binance_signal"),
+        "binance_adjustment": int(_as_float(item.get("binance_adjustment"))),
     })
     save_journal(journal)
     return build_profile(journal)

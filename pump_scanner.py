@@ -12,14 +12,25 @@ Output: daftar koin dengan pump_probability, grade, entry zone, TP/SL.
 
 from __future__ import annotations
 
+import logging
 import time
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 import numpy as np
 import pandas as pd
 import requests
+
+# Binance global data
+try:
+    import binance_engine
+    BINANCE_AVAILABLE = True
+except ImportError:
+    binance_engine = None  # type: ignore
+    BINANCE_AVAILABLE = False
 
 
 # =============================================================================
@@ -452,15 +463,19 @@ def layer3_deep_analysis(candidate: dict) -> dict | None:
 
 
 # =============================================================================
-# LAYER 4: PUMP PROBABILITY SCORING
+# LAYER 4: PUMP PROBABILITY SCORING (+ Binance Global Sentiment)
 # =============================================================================
-def layer4_pump_score(candidate: dict) -> dict:
-    """Hitung pump probability (0-100) dan grade (A/B/C/D)."""
+def layer4_pump_score(candidate: dict, binance_data: dict | None = None) -> dict:
+    """Hitung pump probability (0-100) dan grade (A/B/C/D).
+
+    Sekarang termasuk komponen Binance global sentiment (funding rate,
+    long/short ratio, order book depth) untuk akurasi lebih tinggi.
+    """
     setup = candidate.get("setup_15m", {})
     deep = candidate.get("deep_analysis", {})
     change = candidate.get("change", 0)
 
-    # === Momentum Score (0-25) ===
+    # === Momentum Score (0-22) ===
     momentum = 0
     # Change trend positif
     if change > 3:
@@ -472,71 +487,103 @@ def layer4_pump_score(candidate: dict) -> dict:
 
     # EMA alignment
     if deep.get("ema_bias") == "bullish":
-        momentum += 7
+        momentum += 6
     if deep.get("ema_trend_pct", 0) > 0.5:
-        momentum += 5
+        momentum += 4
     if setup.get("ema_state_15m") == "bullish":
-        momentum += 5
-    momentum = min(25, momentum)
+        momentum += 4
+    momentum = min(22, momentum)
 
-    # === Volume Score (0-25) ===
+    # === Volume Score (0-22) ===
     volume = 0
     vol_15m = setup.get("vol_ratio_15m", 1.0)
     vol_1h = deep.get("vol_ratio_1h", 1.0)
     if vol_15m >= 2.0:
-        volume += 10
+        volume += 9
     elif vol_15m >= 1.5:
-        volume += 7
+        volume += 6
     elif vol_15m >= 1.3:
-        volume += 4
+        volume += 3
     if vol_1h >= 1.8:
-        volume += 8
+        volume += 7
     elif vol_1h >= 1.2:
-        volume += 5
+        volume += 4
     # Buy pressure
     bp = deep.get("buy_pressure", 50)
     if bp > 65:
-        volume += 7
+        volume += 6
     elif bp > 55:
-        volume += 4
-    volume = min(25, volume)
+        volume += 3
+    volume = min(22, volume)
 
-    # === Technical Score (0-25) ===
+    # === Technical Score (0-22) ===
     technical = 0
     rsi = deep.get("rsi_1h", 50)
     # RSI sweet spot (45-65 = momentum tapi belum overbought)
     if 45 <= rsi <= 65:
-        technical += 7
+        technical += 6
     elif 35 <= rsi <= 45:
-        technical += 5  # oversold recovery
+        technical += 4  # oversold recovery
     # MACD
     if deep.get("macd_signal") == "bullish cross":
-        technical += 6
+        technical += 5
     elif deep.get("macd_signal") == "bullish":
-        technical += 4
+        technical += 3
     # Supertrend
     if deep.get("supertrend") == "bullish":
-        technical += 5
+        technical += 4
     # ADX trend bullish
     if deep.get("adx_trend") in ("bullish_strong", "bullish"):
         technical += 4
     # BB oversold (potensi bounce)
     if deep.get("bb_signal") == "oversold":
         technical += 3
-    technical = min(25, technical)
+    technical = min(22, technical)
 
-    # === Forecast/Setup Score (0-25) ===
+    # === Forecast/Setup Score (0-19) ===
     forecast = 0
     # 15m setup strength
     passed = setup.get("passed", 0)
-    forecast += passed * 4  # maks 20 dari 5 check
+    forecast += passed * 3  # maks 15 dari 5 check
     # MTF confirmation
     if deep.get("mtf_bullish"):
-        forecast += 5
-    forecast = min(25, forecast)
+        forecast += 4
+    forecast = min(19, forecast)
+
+    # === Binance Global Sentiment Score (0-15) ===
+    binance_score = 0
+    binance_notes_pump: list[str] = []
+    bn = binance_data or candidate.get("binance_sentiment", {})
+    if bn and bn.get("available"):
+        bn_adj = bn.get("binance_adjustment", 0)
+        # Skala adjustment (-10..+10) ke skor (0..15)
+        binance_score = int(_clamp(round(bn_adj * 1.2 + 3), 0, 15))
+
+        # Volume anomaly check: fake pump di lokal tanpa dukungan global
+        vol_comp = candidate.get("binance_vol_compare", {})
+        if vol_comp.get("vol_anomaly"):
+            binance_score = max(0, binance_score - 5)
+            binance_notes_pump.append("⚠️ Anomali volume lokal")
+
+        # Funding rate signal
+        f_sig = bn.get("funding", {}).get("funding_signal", "")
+        if f_sig == "SHORT SQUEEZE":
+            binance_score = min(15, binance_score + 3)
+            binance_notes_pump.append("🚀 Short squeeze potential")
+        elif f_sig == "LONG CROWDED":
+            binance_score = max(0, binance_score - 3)
+            binance_notes_pump.append("⚠️ Long crowded")
+
+        # Order book signal
+        b_sig = bn.get("order_book", {}).get("book_signal", "")
+        if b_sig == "STRONG BUY WALL":
+            binance_notes_pump.append(f"Buy wall {bn['order_book']['book_ratio']:.1f}x")
+        elif b_sig == "STRONG SELL WALL":
+            binance_notes_pump.append(f"Sell wall {bn['order_book']['book_ratio']:.1f}x")
+    binance_score = int(_clamp(binance_score, 0, 15))
 
     # === Total Pump Probability ===
-    pump_prob = momentum + volume + technical + forecast
+    pump_prob = momentum + volume + technical + forecast + binance_score
     pump_prob = int(_clamp(pump_prob, 0, 100))
 
     # Grade
@@ -565,7 +612,9 @@ def layer4_pump_score(candidate: dict) -> dict:
         "volume": volume,
         "technical": technical,
         "forecast": forecast,
+        "binance_global": binance_score,
     }
+    candidate["binance_pump_notes"] = binance_notes_pump
     return candidate
 
 
@@ -574,6 +623,8 @@ def layer4_pump_score(candidate: dict) -> dict:
 # =============================================================================
 def run_pump_scan(tickers: dict, prices_24h: dict, progress_callback=None) -> list[dict]:
     """Scan seluruh koin Indodax untuk mendeteksi pump.
+
+    Sekarang termasuk Layer 4.5: Binance global sentiment enrichment.
 
     Args:
         tickers: dict dari /api/summaries
@@ -632,13 +683,32 @@ def run_pump_scan(tickers: dict, prices_24h: dict, progress_callback=None) -> li
     if not layer3_results:
         return []
 
-    # Layer 4: Pump Probability Scoring
+    # Layer 4 prep: Fetch Binance global sentiment (paralel, batch)
+    binance_sentiments: dict[str, dict] = {}
+    if BINANCE_AVAILABLE:
+        if progress_callback:
+            progress_callback(86, 100, "🌐 Mengambil data sentimen Binance global...")
+        try:
+            symbols = [c["symbol"] for c in layer3_results]
+            binance_sentiments = binance_engine.fetch_binance_sentiment_batch(symbols, max_workers=5)
+            # Volume comparison untuk deteksi fake pump
+            for c in layer3_results:
+                sym = c["symbol"]
+                if sym in binance_sentiments:
+                    c["binance_sentiment"] = binance_sentiments[sym]
+                    vol_idr = c.get("vol_idr", 0)
+                    c["binance_vol_compare"] = binance_engine.compare_volume_global(sym, vol_idr)
+        except Exception as e:
+            logger.warning(f"Binance sentiment fetch failed: {e}")
+
+    # Layer 4: Pump Probability Scoring (+ Binance global)
     if progress_callback:
-        progress_callback(90, 100, "🎯 Layer 4: Menghitung probabilitas pump...")
+        progress_callback(92, 100, "🎯 Layer 4: Menghitung probabilitas pump + sentimen global...")
 
     final_results = []
     for candidate in layer3_results:
-        scored = layer4_pump_score(candidate)
+        bn_data = binance_sentiments.get(candidate["symbol"])
+        scored = layer4_pump_score(candidate, binance_data=bn_data)
         # Hanya tampilkan grade C ke atas
         if scored["pump_grade"] in ("A", "B", "C"):
             final_results.append(scored)
@@ -647,6 +717,6 @@ def run_pump_scan(tickers: dict, prices_24h: dict, progress_callback=None) -> li
     final_results.sort(key=lambda x: x["pump_probability"], reverse=True)
 
     if progress_callback:
-        progress_callback(100, 100, f"✅ Scan selesai! {len(final_results)} koin terdeteksi.")
+        progress_callback(100, 100, f"✅ Scan selesai! {len(final_results)} koin terdeteksi (+ Binance).")
 
     return final_results

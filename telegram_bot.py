@@ -21,6 +21,14 @@ from ai_pilot import generate_signal_insight
 from core.applog import get_logger
 from core.committee import build_committee, committee_summary_line
 
+# Binance global data (graceful import)
+try:
+    import binance_engine
+    _BINANCE_OK = True
+except ImportError:
+    binance_engine = None  # type: ignore
+    _BINANCE_OK = False
+
 _LOGGER = get_logger("bot")
 
 # === CONFIG ===
@@ -334,6 +342,17 @@ def analyze_coin(symbol, data, candles):
     confluence = compute_confluence_signal(candles)
     mtf = compute_multi_timeframe_confirmation(candles)
 
+    # --- Binance global sentiment ---
+    binance_data = {}
+    binance_adj = 0
+    if _BINANCE_OK:
+        try:
+            binance_data = binance_engine.fetch_binance_sentiment(symbol)
+            if binance_data.get("available"):
+                binance_adj = binance_data.get("binance_adjustment", 0)
+        except Exception:
+            pass
+
     # --- SCORING & KEPUTUSAN (terpadu via core.analysis: identik dgn web) ---
     base, _components = compute_base_score(
         change=change, ema_trend_pct=ema_trend_pct, macd_signal=macd_signal,
@@ -342,6 +361,8 @@ def analyze_coin(symbol, data, candles):
         mtf_adjustment=mtf["mtf_adjustment"], vol_idr=vol_idr, symbol=symbol,
         is_micin=(symbol in MICIN_COINS), range_pos=range_pos,
     )
+    # Tambahkan Binance adjustment ke base score (identik dgn web)
+    base += binance_adj
     momentum = change
     score = int(clamp(round(base), 0, 100))
 
@@ -393,6 +414,17 @@ def analyze_coin(symbol, data, candles):
         "confluence_label": confluence["confluence_label"],
         "confluence_strength": confluence["confluence_strength"],
         "confluence_checks": confluence["checks"],
+        # Binance global sentiment
+        "binance_signal": binance_data.get("binance_signal", "NO DATA"),
+        "binance_adjustment": binance_data.get("binance_adjustment", 0),
+        "binance_notes": binance_data.get("binance_notes", []),
+        "binance_funding_signal": binance_data.get("funding", {}).get("funding_signal", "NO DATA"),
+        "binance_funding_pct": binance_data.get("funding", {}).get("funding_pct", 0),
+        "binance_ls_signal": binance_data.get("long_short", {}).get("ls_signal", "NO DATA"),
+        "binance_ls_ratio": binance_data.get("long_short", {}).get("ls_ratio", 0),
+        "binance_book_signal": binance_data.get("order_book", {}).get("book_signal", "NO DATA"),
+        "binance_book_ratio": binance_data.get("order_book", {}).get("book_ratio", 0),
+        "binance_available": binance_data.get("available", False),
     }
 
 
@@ -554,9 +586,11 @@ def send_sinyal_harian(all_coins):
             bits.append("tren 4H+1D searah naik")
         elif s.get("mtf_label") in ("ALIGN BEARISH", "BEARISH BIAS"):
             bits.append("tren 4H+1D masih turun")
+        if s.get("binance_available") and s.get("binance_signal") not in ("NO DATA", "NEUTRAL"):
+            bits.append(f"Binance {str(s['binance_signal']).lower()}")
         if s.get("news_label") and s.get("news_label") != "NO DATA":
             bits.append(f"berita {str(s['news_label']).lower()}")
-        return " · ".join(bits[:3]) if bits else "momentum + likuiditas"
+        return " · ".join(bits[:4]) if bits else "momentum + likuiditas"
 
     # --- BAGIAN 1: SINYAL BELI (detail lengkap tapi rapi) ---
     if buy_signals:
@@ -573,6 +607,10 @@ def send_sinyal_harian(all_coins):
             lines.append(f"   📋 Kenapa: {_why_line(s)}")
             _com = build_committee(s)
             lines.append(f"   🧑‍⚖️ {committee_summary_line(_com)}")
+            # Binance global data
+            if s.get("binance_available"):
+                bn_emoji = "🟢" if s.get("binance_adjustment", 0) > 0 else "🔴" if s.get("binance_adjustment", 0) < 0 else "⚪"
+                lines.append(f"   {bn_emoji} Binance: {s.get('binance_signal', 'NO DATA')} (adj {s['binance_adjustment']:+d})")
             lines.append(f"   👉 [BELI DI INDODAX]({link})")
             lines.append("")
             # Track for TP/SL monitoring
@@ -818,6 +856,16 @@ def check_realtime_confluence_alerts(all_coins):
                 f"🛡️ Confluence: *{res['confluence_label']}* ({res['confluence_strength']})\n"
                 f"🧠 ML Forecast: *{res['ml_label']}* ({res['ml_prob']}%, {res['ml_conf']})\n"
                 f"📊 Backtest WR: *{res['bt_wr']}%* ({res['bt_trades']} trades)\n"
+            )
+            # Tambahkan Binance data jika tersedia
+            if res.get("binance_available"):
+                msg += (
+                    f"\n🌐 *Binance Global:* {res.get('binance_signal', 'NO DATA')} (adj {res.get('binance_adjustment', 0):+d})\n"
+                    f"   Funding: {res.get('binance_funding_signal', '-')} | "
+                    f"L/S: {res.get('binance_ls_signal', '-')} ({res.get('binance_ls_ratio', 0):.2f}x) | "
+                    f"Book: {res.get('binance_book_signal', '-')}\n"
+                )
+            msg += (
                 f"\n"
                 f"{ai_insight}\n"
                 f"\n"
@@ -1007,9 +1055,15 @@ def check_early_entry_alerts(all_coins):
                 continue
             res = apply_bot_intelligence(analyze_coin(sym, ticker, candles_1h))
 
-            # Filter konteks 1H: minimal score early & jangan kontra trend bearish
-            if res["score"] < EARLY_MIN_SCORE:
+            # Binance turbo-boost: kalau sentimen Binance kuat, turunkan threshold entry
+            binance_boost = False
+            bn_data = res.get("binance_signal", "NO DATA")
+            bn_adj = res.get("binance_adjustment", 0)
+            if bn_adj >= 3 and setup["passed"] >= (EARLY_MIN_SETUP_STRENGTH - 1):
+                binance_boost = True  # Binance konfirmasi strong → relaksasi setup threshold
+            if not binance_boost and res["score"] < EARLY_MIN_SCORE:
                 continue
+
             if res["mtf_adjustment"] <= -5:
                 continue  # 4H/1D kompak bearish, skip
             if res["risk_level"] == "TINGGI":
@@ -1036,9 +1090,20 @@ def check_early_entry_alerts(all_coins):
                 for name, ok in setup["checks"].items()
             )
 
+            # Binance data line
+            bn_line = ""
+            if res.get("binance_available"):
+                bn_emoji = "🟢" if bn_adj > 0 else "🔴" if bn_adj < 0 else "⚪"
+                bn_notes_str = ", ".join(res.get("binance_notes", [])[:2]) or "-"
+                bn_line = (
+                    f"🌐 Binance: {bn_emoji} *{res.get('binance_signal', 'NO DATA')}* (adj {bn_adj:+d})\n"
+                    f"   {bn_notes_str}\n"
+                )
+
+            boost_label = "⚡🌐 *BINANCE-BOOSTED* " if binance_boost else ""
             msg = (
-                f"⚡ *EARLY ENTRY -- PRE-PUMP SETUP* ⚡\n"
-                f"🚀 *{sym}* — Setup {setup['passed']}/5 (15m)\n"
+                f"⚡ *EARLY ENTRY — PRE-PUMP SETUP* ⚡\n"
+                f"{boost_label}🚀 *{sym}* — Setup {setup['passed']}/5 (15m)\n"
                 f"──────────────────────\n"
                 f"💵 Harga: {format_idr(res['price'])} ({ch_sign}{res['change']:.2f}%)\n"
                 f"🧭 Range 24h: {res['range_pos']:.0f}% (paruh bawah)\n"
@@ -1046,8 +1111,9 @@ def check_early_entry_alerts(all_coins):
                 f"📊 RSI 15m: {setup['rsi_prev']} → *{setup['rsi']}* | Vol 15m: *{setup['vol_ratio']}x*\n"
                 f"📈 EMA 15m: {setup['ema_state']} | MACD 15m: {setup['macd_state']}\n"
                 f"🛡️ Konteks 1H: Score *{res['score']}/100* | {res['action']}\n"
-                f"🧠 ML: {res['ml_label']} ({res['ml_prob']}%) | MTF: {res['mtf_label']}\n\n"
-                f"✅ *Checklist Setup 15m:*\n"
+                f"🧠 ML: {res['ml_label']} ({res['ml_prob']}%) | MTF: {res['mtf_label']}\n"
+                f"{bn_line}"
+                f"\n✅ *Checklist Setup 15m:*\n"
                 f"{checks_text}\n\n"
                 f"🎯 Entry zone: {format_idr(entry_lo)} – {format_idr(entry_hi)}\n"
                 f"🎯 TP1 / TP2: {format_idr(early_tp1)} / {format_idr(early_tp2)}\n"
@@ -1719,9 +1785,10 @@ if __name__ == "__main__":
     log("BOT DAEMON ULTRA SMART -- 24/7")
     log("   Sinyal harian: 08:00 WIB (1H multi-indikator)")
     log(f"   Loop scan: setiap {LOOP_SLEEP_SECONDS}s")
-    log("   Early entry (15m pre-pump): tiap loop")
+    log("   Early entry (15m pre-pump + Binance turbo): tiap loop")
     log("   Confluence 1H + FOMO + TP/SL: tiap loop")
     log("   Daily summary: 21:00 WIB")
+    log(f"   Binance engine: {'✅ AKTIF' if _BINANCE_OK else '❌ TIDAK TERSEDIA'}")
     log(f"   Channel: {TELEGRAM_CHANNEL}")
     log("=" * 40)
     if not BOT_TOKEN or not CHAT_ID:

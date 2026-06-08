@@ -22,6 +22,14 @@ import smart_engine
 import ai_pilot
 import pump_scanner
 
+# Binance global data (graceful import)
+try:
+    import binance_engine
+    BINANCE_ENGINE_AVAILABLE = True
+except ImportError:
+    binance_engine = None  # type: ignore
+    BINANCE_ENGINE_AVAILABLE = False
+
 # =============================================================================
 # CONFIG & CONSTANTS
 # =============================================================================
@@ -1567,6 +1575,15 @@ def analyze_coin_advanced(symbol, data, candles, market_stats, market_regime=Non
     # Multi-horizon forecast: ramalan probabilistik 6 jam (step1) & 24 jam (step2)
     forecast = compute_multi_horizon_forecast(candles, price)
 
+    # Binance global sentiment (funding rate, long/short, order book)
+    binance_data = {}
+    if BINANCE_ENGINE_AVAILABLE:
+        try:
+            binance_data = binance_engine.fetch_binance_sentiment(symbol)
+        except Exception:
+            pass
+    binance_adj = binance_data.get("binance_adjustment", 0) if binance_data.get("available") else 0
+
     # Forecast adjustment: boost score saat probabilitas tinggi & confidence baik.
     # Kombinasi step1 + step2 supaya horizon menengah & pendek selaras.
     f1_prob = forecast["step1"]["prob_up_pct"]
@@ -1624,6 +1641,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats, market_regime=Non
         + intel.get("intel_adjustment", 0)
         + smart.get("smart_adjustment", 0)
         + forecast_adj
+        + binance_adj
         - fomo_penalty
         - micin_penalty
         + mode_rules.get("score_adjustment", 0)
@@ -1791,6 +1809,17 @@ def analyze_coin_advanced(symbol, data, candles, market_stats, market_regime=Non
         "forecast_step2_high_pct": forecast["step2"]["range_high_pct"],
         "forecast_step2_median_pct": forecast["step2"]["range_median_pct"],
         "forecast_step2_conf": forecast["step2"]["confidence"],
+        # Binance global sentiment
+        "binance_signal": binance_data.get("binance_signal", "NO DATA"),
+        "binance_adjustment": binance_data.get("binance_adjustment", 0),
+        "binance_notes": binance_data.get("binance_notes", []),
+        "binance_funding_signal": binance_data.get("funding", {}).get("funding_signal", "NO DATA"),
+        "binance_funding_pct": binance_data.get("funding", {}).get("funding_pct", 0),
+        "binance_ls_ratio": binance_data.get("long_short", {}).get("ls_ratio", 0),
+        "binance_ls_signal": binance_data.get("long_short", {}).get("ls_signal", "NO DATA"),
+        "binance_book_ratio": binance_data.get("order_book", {}).get("book_ratio", 0),
+        "binance_book_signal": binance_data.get("order_book", {}).get("book_signal", "NO DATA"),
+        "binance_available": binance_data.get("available", False),
     }
 
 
