@@ -76,19 +76,22 @@ def get_balance() -> dict:
 def get_idr_balance() -> float:
     return get_balance().get("idr", 0.0)
 
-def buy_market(symbol: str, idr_amount: float) -> dict:
-    """Eksekusi Beli Market (Instan)
+def buy_market(symbol: str, idr_amount: float, price: float) -> dict:
+    """Eksekusi Beli Market (emulasi dengan limit price tinggi)
     
     Args:
         symbol: e.g. 'btc' (tanpa _idr)
         idr_amount: Jumlah rupiah yang mau dibelikan
+        price: Harga current. Order dikirim sedikit lebih mahal agar instan.
     """
-    logger.info(f"Mencoba Beli {symbol.upper()} senilai Rp{idr_amount:,.0f}...")
+    buy_price_limit = int(price * 1.05)  # +5% agar di-match instan
+    logger.info(f"Mencoba Beli {symbol.upper()} senilai Rp{idr_amount:,.0f} di limit Rp{buy_price_limit}...")
     pair = f"{symbol.lower()}_idr"
     data = {
         "method": "trade",
         "pair": pair,
         "type": "buy",
+        "price": str(buy_price_limit),
         "rupiah": str(int(idr_amount)),
     }
     res = _send_request(data)
@@ -116,20 +119,28 @@ def buy_market(symbol: str, idr_amount: float) -> dict:
             "error": res.get("error")
         }
 
-def sell_market(symbol: str, coin_amount: float) -> dict:
-    """Eksekusi Jual Market (Instan)
+def sell_market(symbol: str, coin_amount: float, price: float) -> dict:
+    """Eksekusi Jual Market (emulasi dengan limit price rendah)
     
     Args:
         symbol: e.g. 'btc'
         coin_amount: Jumlah koin yang mau dijual
+        price: Harga saat ini (untuk mematok batas bawah).
     """
-    logger.info(f"Mencoba Jual {coin_amount} {symbol.upper()}...")
+    sell_price_limit = int(price * 0.90) if price > 2 else 1  # -10% agar di-match instan, min 1
+    
+    # Format amount to avoid 'decimal' error for integers (e.g. 70996.0 -> 70996)
+    amt_str = f"{coin_amount:.8f}".rstrip('0').rstrip('.')
+    if '.' not in amt_str and amt_str == '': amt_str = '0'
+
+    logger.info(f"Mencoba Jual {amt_str} {symbol.upper()} di limit Rp{sell_price_limit}...")
     pair = f"{symbol.lower()}_idr"
     data = {
         "method": "trade",
         "pair": pair,
         "type": "sell",
-        f"{symbol.lower()}": str(coin_amount),  # Indodax API rule: key is the coin name for sell amount
+        "price": str(sell_price_limit),
+        f"{symbol.lower()}": amt_str,  # Indodax API rule
     }
     res = _send_request(data)
     

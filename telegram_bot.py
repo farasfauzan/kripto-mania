@@ -54,7 +54,7 @@ INDODAX_REF = "narwanpratanta"
 WIB = timezone(timedelta(hours=7))
 
 # Auto Trade Settings
-AUTO_TRADE_ENABLED = os.environ.get("AUTO_TRADE_ENABLED", "false").lower() == "true"
+AUTO_TRADE_ENABLED = os.environ.get("AUTO_TRADE_ENABLED", "true").lower() == "true"
 MAX_TRADE_IDR = 50000.0  # Limit to 50k IDR for initial testing
 
 MAIN_ASSETS = {
@@ -622,7 +622,7 @@ def send_sinyal_harian(all_coins):
             # Auto Trade Execution for BELI KUAT
             if AUTO_TRADE_ENABLED and s["action"] == "BELI KUAT":
                 try:
-                    res_buy = indodax_trade.buy_market(s['symbol'].lower(), MAX_TRADE_IDR)
+                    res_buy = indodax_trade.buy_market(s['symbol'].lower(), MAX_TRADE_IDR, float(s['price']))
                     if res_buy.get("success"):
                         received = res_buy["received_coin"]
                         avg_price = res_buy["avg_price"]
@@ -1155,7 +1155,7 @@ def check_early_entry_alerts(all_coins):
             # Auto Trade Execution for EARLY ENTRY
             if AUTO_TRADE_ENABLED:
                 try:
-                    res_buy = indodax_trade.buy_market(sym.lower(), MAX_TRADE_IDR)
+                    res_buy = indodax_trade.buy_market(sym.lower(), MAX_TRADE_IDR, float(res['price']))
                     if res_buy.get("success"):
                         received = res_buy["received_coin"]
                         avg_price = res_buy["avg_price"]
