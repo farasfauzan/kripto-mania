@@ -20,6 +20,7 @@ from news_engine import apply_news_adjustments, build_news_profile
 from ai_pilot import generate_signal_insight
 from core.applog import get_logger
 from core.committee import build_committee, committee_summary_line
+from core import indodax_trade, portfolio_manager
 
 # Binance global data (graceful import)
 try:
@@ -51,6 +52,10 @@ BOT_TOKEN = _get_api_key("TELEGRAM_BOT_TOKEN")
 CHAT_ID = _get_api_key("TELEGRAM_CHAT_ID")
 INDODAX_REF = "narwanpratanta"
 WIB = timezone(timedelta(hours=7))
+
+# Auto Trade Settings
+AUTO_TRADE_ENABLED = os.environ.get("AUTO_TRADE_ENABLED", "false").lower() == "true"
+MAX_TRADE_IDR = 50000.0  # Limit to 50k IDR for initial testing
 
 MAIN_ASSETS = {
     # Disamakan dgn web (app.py ALL_ASSETS) supaya cakupan sinyal konsisten.
@@ -613,6 +618,35 @@ def send_sinyal_harian(all_coins):
                 lines.append(f"   {bn_emoji} Binance: {s.get('binance_signal', 'NO DATA')} (adj {s['binance_adjustment']:+d})")
             lines.append(f"   👉 [BELI DI INDODAX]({link})")
             lines.append("")
+            
+            # Auto Trade Execution for BELI KUAT
+            if AUTO_TRADE_ENABLED and s["action"] == "BELI KUAT":
+                try:
+                    res_buy = indodax_trade.buy_market(s['symbol'].lower(), MAX_TRADE_IDR)
+                    if res_buy.get("success"):
+                        received = res_buy["received_coin"]
+                        avg_price = res_buy["avg_price"]
+                        spent = res_buy["spent_idr"]
+                        # Save to portfolio
+                        portfolio_manager.save_position(
+                            symbol=s['symbol'].lower(),
+                            buy_price=avg_price,
+                            amount_coin=received,
+                            tp1=s["tp1"],
+                            tp2=s["tp2"],
+                            sl=s["stop_loss"],
+                            trade_type="BELI KUAT"
+                        )
+                        lines.append(f"🤖 *AUTO-TRADE SUKSES!*")
+                        lines.append(f"   Beli: {received} {s['symbol']} (Rp{spent:,.0f})")
+                        lines.append(f"   Harga Rata-rata: Rp{avg_price:,.0f}")
+                        lines.append(f"   Mode Kawal TP/SL diaktifkan 🛡️")
+                    else:
+                        lines.append(f"🤖 *AUTO-TRADE GAGAL:* {res_buy.get('error')}")
+                except Exception as e:
+                    _LOGGER.error(f"Auto-trade failed: {e}")
+                    lines.append(f"🤖 *AUTO-TRADE ERROR:* {e}")
+
             # Track for TP/SL monitoring
             _active_signals[s['symbol']] = {
                 'entry': s['price'], 'tp1': s['tp1'], 'tp2': s['tp2'], 'tp3': s['tp3'],
@@ -910,14 +944,6 @@ def check_realtime_confluence_alerts(all_coins):
 # =============================================================================
 # EARLY ENTRY (PRE-PUMP) DETECTION
 # =============================================================================
-# Tujuan: kasih alert lebih cepet di candle 15m sebelum pump 1H/4H ngeluarin
-# konfirmasi. Pakai checklist sederhana yang fokus ke "early signs":
-#   - EMA8 > EMA21 di 15m + slope EMA8 mulai naik
-#   - RSI(14) bangun dari area oversold/netral (38..62) + naik vs candle lalu
-#   - Volume spike: volume bar terakhir > 1.4x rata-rata 20 bar
-#   - Bollinger Squeeze release: pct_b naik dari <0.4 menuju >0.5
-#   - MACD histogram balik positif atau bullish cross di 15m
-# Setup butuh minimal EARLY_MIN_SETUP_STRENGTH dari 5 checklist.
 def detect_early_setup_15m(candles_15m):
     """Cari early entry di TF 15 menit. Return dict dengan checklist+score."""
     default = {
@@ -1126,7 +1152,35 @@ def check_early_entry_alerts(all_coins):
                 f"💎 *Gabung Premium:* {TELEGRAM_CHANNEL}"
             )
 
-            # Notifikasi getar utk early karena ini intinya kecepatan
+            # Auto Trade Execution for EARLY ENTRY
+            if AUTO_TRADE_ENABLED:
+                try:
+                    res_buy = indodax_trade.buy_market(sym.lower(), MAX_TRADE_IDR)
+                    if res_buy.get("success"):
+                        received = res_buy["received_coin"]
+                        avg_price = res_buy["avg_price"]
+                        spent = res_buy["spent_idr"]
+                        # Save to portfolio
+                        portfolio_manager.save_position(
+                            symbol=sym.lower(),
+                            buy_price=avg_price,
+                            amount_coin=received,
+                            tp1=early_tp1,
+                            tp2=early_tp2,
+                            sl=early_sl,
+                            trade_type="EARLY"
+                        )
+                        msg += (
+                            f"\n\n🤖 *AUTO-TRADE SUKSES!*\n"
+                            f"Beli: {received} {sym} (Rp{spent:,.0f})\n"
+                            f"Harga: Rp{avg_price:,.0f}\n"
+                            f"Mode Kawal TP/SL aktif 🛡️"
+                        )
+                    else:
+                        msg += f"\n\n🤖 *AUTO-TRADE GAGAL:* {res_buy.get('error')}"
+                except Exception as e:
+                    _LOGGER.error(f"Auto-trade early failed: {e}")
+
             send_message(msg, notify=True)
             log(f"EARLY ENTRY ALERT terkirim untuk {sym} (setup {setup['passed']}/5, score 1H {res['score']})")
 
@@ -1208,6 +1262,22 @@ def _announce_paper_results(closed_papers):
 def check_tp_sl_alerts(all_coins):
     """Cek apakah harga sudah kena TP1/TP2/TP3 atau SL dari sinyal aktif."""
     global _active_signals, _daily_stats
+    
+    # Check Auto-Trade TP/SL if enabled
+    if AUTO_TRADE_ENABLED:
+        sell_reports = portfolio_manager.check_tp_sl(all_coins)
+        for report in sell_reports:
+            msg = (
+                f"🤖 *AUTO-SELL EKSEKUSI!* 🤖\n\n"
+                f"💰 Koin: *{report['symbol']}*\n"
+                f"Status: {report['reason']}\n"
+                f"Harga Beli: Rp{report['buy_price']:,.0f}\n"
+                f"Harga Jual: Rp{report['sell_price']:,.0f}\n"
+                f"Profit/Rugi: *{report['profit_pct']:+.2f}%* (Rp{report['profit_idr']:+,.0f})\n\n"
+                f"Posisi otomatis dihapus dari radar. 🛡️"
+            )
+            send_message(msg, notify=True, force=True)
+
     to_remove = []
     for sym, sig in _active_signals.items():
         if sym not in all_coins:
@@ -1789,6 +1859,7 @@ if __name__ == "__main__":
     log("   Confluence 1H + FOMO + TP/SL: tiap loop")
     log("   Daily summary: 21:00 WIB")
     log(f"   Binance engine: {'✅ AKTIF' if _BINANCE_OK else '❌ TIDAK TERSEDIA'}")
+    log(f"   Auto-Trade Indodax: {'✅ AKTIF (Limit: Rp50rb)' if AUTO_TRADE_ENABLED else '❌ OFF'}")
     log(f"   Channel: {TELEGRAM_CHANNEL}")
     log("=" * 40)
     if not BOT_TOKEN or not CHAT_ID:
