@@ -78,32 +78,26 @@ PAPER_TRADING_MODE = env_bool("PAPER_TRADING_MODE", True)
 CONFIRM_BEFORE_TRADE = env_bool("CONFIRM_BEFORE_TRADE", True)
 MAX_TRADE_IDR = float(os.environ.get("MAX_TRADE_IDR", "50000"))
 
-MAIN_ASSETS = {
-    # Disamakan dgn web (app.py ALL_ASSETS) supaya cakupan sinyal konsisten.
-    # Blue chip / layer-1 likuid
-    "BTC": "btc_idr",
-    "ETH": "eth_idr",
-    "SOL": "sol_idr",
-    "XRP": "xrp_idr",
-    "BNB": "bnb_idr",
-    "ADA": "ada_idr",
-    "DOT": "dot_idr",
-    "MATIC": "matic_idr",
-    "AVAX": "avax_idr",
-    "LINK": "link_idr",
-    # Koin micin / volatil tinggi
-    "PEPE": "pepe_idr",
-    "DOGE": "doge_idr",
-    "SHIB": "shib_idr",
-    "BONK": "bonk_idr",
-    "FLOKI": "floki_idr",
-    "LUNC": "lunc_idr",
-    "BTT": "btt_idr",
-    "JASMY": "jasmy_idr",
-}
-
 BLUE_CHIPS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA"}
 MICIN_COINS = {"DOGE", "PEPE", "SHIB", "BONK", "FLOKI", "LUNC", "BTT", "JASMY"}
+
+# Maks koin yang di-scan tiap siklus. Dynamic by volume.
+MAX_SCAN_COINS = int(os.environ.get("MAX_SCAN_COINS", "40"))
+MIN_VOLUME_IDR = float(os.environ.get("MIN_VOLUME_IDR", "200000000"))  # 200jt minimal
+
+
+def get_scan_coins(all_coins_dict, count=None):
+    """Ambil top N koin by volume dari semua pair yg ada."""
+    if count is None:
+        count = MAX_SCAN_COINS
+    sorted_coins = sorted(
+        all_coins_dict.values(), key=lambda x: x.get("vol_idr", 0), reverse=True
+    )
+    filtered = [c for c in sorted_coins if c.get("vol_idr", 0) >= MIN_VOLUME_IDR]
+    if not filtered:
+        filtered = sorted_coins[:count]  # fallback kalo semua volume kecil
+    return {c["symbol"]: c["pair"] for c in filtered[:count]}
+
 
 TELEGRAM_CHANNEL = "https://t.me/+VPlOcY2wFGA0NWU1"
 
@@ -488,7 +482,7 @@ def get_bot_news_profile(force=False):
         or now_ts - _last_news_profile_at >= NEWS_REFRESH_SECONDS
     ):
         _last_news_profile = build_news_profile(
-            symbols=list(MAIN_ASSETS.keys()) + list(MICIN_COINS)
+            symbols=[s for s in get_scan_coins({}).keys()] + list(MICIN_COINS)
         )
         _last_news_profile_at = now_ts
     return _last_news_profile
@@ -870,9 +864,10 @@ def send_sinyal_harian(all_coins):
         "defensif": "🔴 DEFENSIF",
     }[mode]
 
-    # Fetch candles + analyze each main asset
+    # Fetch candles + analyze all scan coins
+    scan_coins = get_scan_coins(all_coins)
     signals = []
-    for sym, pair in MAIN_ASSETS.items():
+    for sym, pair in scan_coins.items():
         if sym not in all_coins:
             continue
         candles = fetch_candles(pair)
@@ -938,7 +933,14 @@ def send_sinyal_harian(all_coins):
     # --- BAGIAN 1: SINYAL BELI (detail lengkap tapi rapi) ---
     if buy_signals:
         for s in buy_signals:
-            pair_url = MAIN_ASSETS[s["symbol"]].upper().replace("_", "")
+            pair_url = (
+                (
+                    scan_coins.get(s["symbol"])
+                    or s.get("pair", s["symbol"].lower() + "_idr")
+                )
+                .upper()
+                .replace("_", "")
+            )
             link = f"https://indodax.com/market/{pair_url}?ref={INDODAX_REF}"
             ch = f"+{s['change']:.2f}" if s["change"] >= 0 else f"{s['change']:.2f}"
 
@@ -1066,7 +1068,7 @@ def send_sinyal_harian(all_coins):
                 "hit": set(),
                 "time": datetime.now(WIB).isoformat(),
             }
-            record_bot_learning_signal(s, MAIN_ASSETS[s["symbol"]], source="daily")
+            record_bot_learning_signal(s, scan_coins.get(s["symbol"]), source="daily")
 
     # --- BAGIAN 2: PANTAUAN (ringkas, 1 baris per koin) ---
     if watch_signals:
@@ -1276,7 +1278,8 @@ def check_realtime_confluence_alerts(all_coins):
         if now_ts - v["sent_at"] < CONFLUENCE_SYMBOL_COOLDOWN_SEC
     }
 
-    for sym, pair in MAIN_ASSETS.items():
+    scan_coins = get_scan_coins(all_coins)
+    for sym, pair in scan_coins.items():
         if sym not in all_coins:
             continue
 
@@ -1512,7 +1515,8 @@ def check_early_entry_alerts(all_coins):
         if now_ts - v.get("sent_at", 0) < EARLY_SYMBOL_COOLDOWN_SEC
     }
 
-    for sym, pair in MAIN_ASSETS.items():
+    scan_coins = get_scan_coins(all_coins)
+    for sym, pair in scan_coins.items():
         if sym not in all_coins:
             continue
         if sym in _early_sent_symbols:
@@ -2101,9 +2105,10 @@ def handle_telegram_command(update_data):
                 send_message("❌ Gagal fetch data dari Indodax.", notify=True)
                 return True
 
-            # Scan main assets
+            # Scan top coins by volume
+            scan_coins = get_scan_coins(all_coins)
             signals = []
-            for sym, pair in MAIN_ASSETS.items():
+            for sym, pair in scan_coins.items():
                 if sym not in all_coins:
                     continue
                 candles = fetch_candles(pair)
@@ -2178,8 +2183,9 @@ def handle_telegram_command(update_data):
                 send_message("❌ Gagal fetch data.", notify=True)
                 return True
 
+            scan_coins = get_scan_coins(all_coins)
             signals = []
-            for sym, pair in MAIN_ASSETS.items():
+            for sym, pair in scan_coins.items():
                 if sym not in all_coins:
                     continue
                 candles = fetch_candles(pair)
