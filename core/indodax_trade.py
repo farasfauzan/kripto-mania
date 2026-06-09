@@ -100,7 +100,7 @@ def buy_market(symbol: str, idr_amount: float, price: float) -> dict:
         "pair": pair,
         "type": "buy",
         "price": str(buy_price_limit),
-        "rupiah": str(int(idr_amount)),
+        "idr": str(int(idr_amount)),
     }
     res = _send_request(data)
 
