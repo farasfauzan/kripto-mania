@@ -78,6 +78,24 @@ PAPER_TRADING_MODE = env_bool("PAPER_TRADING_MODE", True)
 CONFIRM_BEFORE_TRADE = env_bool("CONFIRM_BEFORE_TRADE", True)
 MAX_TRADE_IDR = float(os.environ.get("MAX_TRADE_IDR", "50000"))
 
+
+def _get_trade_amount(alloc_pct):
+    if str(os.environ.get("DYNAMIC_POSITION_SIZING", "True")).lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        # alloc_pct ranges from 0.0 to 10.0 (max 10% allocation)
+        factor = max(0.0, min(10.0, float(alloc_pct or 0))) / 10.0
+        amount = MAX_TRADE_IDR * factor
+        # Indodax minimum order size is 10,000 IDR
+        if amount > 0 and amount < 10000:
+            amount = 10000.0
+        return round(amount, 0)
+    return MAX_TRADE_IDR
+
+
 BLUE_CHIPS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA"}
 MICIN_COINS = {"DOGE", "PEPE", "SHIB", "BONK", "FLOKI", "LUNC", "BTT", "JASMY"}
 
@@ -979,11 +997,12 @@ def send_sinyal_harian(all_coins):
             if (AUTO_TRADE_ENABLED or PAPER_TRADING_MODE) and s[
                 "action"
             ] == "BELI KUAT":
+                trade_amount = _get_trade_amount(s.get("alloc_pct", 10.0))
                 try:
                     if CONFIRM_BEFORE_TRADE:
                         command_router.create_buy_confirmation_proposal(
                             s["symbol"].lower(),
-                            MAX_TRADE_IDR,
+                            trade_amount,
                             float(s["price"]),
                             tp1=s["tp1"],
                             tp2=s["tp2"],
@@ -1001,7 +1020,7 @@ def send_sinyal_harian(all_coins):
                             _format_trade_proposal_message(
                                 s["symbol"],
                                 "BELI KUAT",
-                                MAX_TRADE_IDR,
+                                trade_amount,
                                 float(s["price"]),
                                 s["tp1"],
                                 s["tp2"],
@@ -1013,7 +1032,7 @@ def send_sinyal_harian(all_coins):
                     else:
                         res_buy = execution_engine.execute_buy(
                             s["symbol"].lower(),
-                            MAX_TRADE_IDR,
+                            trade_amount,
                             float(s["price"]),
                             reason="BELI KUAT",
                             metadata=_trade_risk_metadata(
@@ -1025,7 +1044,7 @@ def send_sinyal_harian(all_coins):
                         if res_buy.get("success"):
                             received = res_buy["received_coin"]
                             avg_price = res_buy["avg_price"]
-                            spent = res_buy.get("spent_idr", MAX_TRADE_IDR)
+                            spent = res_buy.get("spent_idr", trade_amount)
                             saved = _save_executed_buy_position(
                                 res_buy,
                                 s["symbol"],
@@ -1631,11 +1650,12 @@ def check_early_entry_alerts(all_coins):
 
             # Trade execution for EARLY ENTRY. Defaults to paper mode unless real trade is explicitly enabled.
             if AUTO_TRADE_ENABLED or PAPER_TRADING_MODE:
+                trade_amount = _get_trade_amount(res.get("alloc_pct", 10.0))
                 try:
                     if CONFIRM_BEFORE_TRADE:
                         command_router.create_buy_confirmation_proposal(
                             sym.lower(),
-                            MAX_TRADE_IDR,
+                            trade_amount,
                             float(res["price"]),
                             tp1=early_tp1,
                             tp2=early_tp2,
@@ -1653,7 +1673,7 @@ def check_early_entry_alerts(all_coins):
                             + _format_trade_proposal_message(
                                 sym,
                                 "CICIL BELI",
-                                MAX_TRADE_IDR,
+                                trade_amount,
                                 float(res["price"]),
                                 early_tp1,
                                 early_tp2,
@@ -1665,7 +1685,7 @@ def check_early_entry_alerts(all_coins):
                     else:
                         res_buy = execution_engine.execute_buy(
                             sym.lower(),
-                            MAX_TRADE_IDR,
+                            trade_amount,
                             float(res["price"]),
                             reason="EARLY",
                             metadata=_trade_risk_metadata(
@@ -1677,7 +1697,7 @@ def check_early_entry_alerts(all_coins):
                         if res_buy.get("success"):
                             received = res_buy["received_coin"]
                             avg_price = res_buy["avg_price"]
-                            spent = res_buy.get("spent_idr", MAX_TRADE_IDR)
+                            spent = res_buy.get("spent_idr", trade_amount)
                             saved = _save_executed_buy_position(
                                 res_buy,
                                 sym,
