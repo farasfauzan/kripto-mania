@@ -1,6 +1,6 @@
 import time
-from core.indodax_trade import get_balance, sell_market
-from core.portfolio_manager import save_position
+from core.indodax_trade import get_balance
+from core.portfolio_manager import execute_position_sell, save_position
 from telegram_bot import fetch_all_tickers, apply_bot_intelligence, analyze_coin
 from core.indicators import fetch_candles
 
@@ -53,7 +53,15 @@ def audit_porto():
         
         if res["action"] in ["JANGAN BELI", "HINDARI"]:
             print(f"⚠️ TREN BURUK! Menjual paksa (Liquidate) {coin.upper()} untuk selamatkan dana...")
-            sell_res = sell_market(coin, amount, curr_price)
+            sell_res = execute_position_sell(
+                coin,
+                curr_price,
+                reason="AUDIT LIQUIDATE",
+                actor="audit_portfolio",
+                sold_amount=amount,
+                sell_all=True,
+                metadata={"source": "audit_portfolio"},
+            )
             if sell_res.get("success"):
                 print(f"✅ SUKSES JUAL! Mendapat Rp {sell_res['received_idr']:,.0f}")
             else:

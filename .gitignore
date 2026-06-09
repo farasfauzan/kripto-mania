@@ -4,14 +4,28 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Streamlit secrets (contains sensitive API keys and tokens)
-.streamlit/secrets.toml
-.streamlit/
+# Editor swap/temp files
+*.swp
+*.swo
+*.swn
+*.bak
 
-# Temporary test scripts
-test_signal.py
+# macOS
+.DS_Store
+.DS_Store?
+.AppleDouble
+.LSOverride
+Thumbs.db
 
-# Bot runtime state
+# IDE
+.idea/
+.vscode/
+*.iml
+*.code-workspace
+*.antigravity/
+
+# Runtime state (auto-generated, jangan dipush)
+active_trades.json
 bot_state.json
 signal_journal.json
 signal_journal.json.tmp
@@ -19,6 +33,20 @@ signal_journal.json.migrated
 signal_journal.db
 signal_journal.db-wal
 signal_journal.db-shm
+journal_store.db
+portfolio_cache.json
+trade_logs/
+
+# Streamlit secrets (contains sensitive API keys and tokens)
+.streamlit/secrets.toml
+.streamlit/
+
+# Temporary test scripts
+test_*.py
+.pytest_cache/
+
+# ML Models & Runtime State
+*.pkl
 
 # Local environments
 .env

@@ -12,6 +12,14 @@ logger = get_logger("indodax_trade")
 # API Base URL
 INDODAX_API_URL = "https://indodax.com/tapi"
 
+def _submission_unknown(error) -> dict:
+    return {
+        "success": False,
+        "submission_status": "UNKNOWN",
+        "manual_reconciliation_required": True,
+        "error": str(error),
+    }
+
 def _get_api_keys():
     api_key = os.environ.get("INDODAX_API_KEY", "")
     secret_key = os.environ.get("INDODAX_SECRET_KEY", "")
@@ -55,7 +63,7 @@ def _send_request(data: dict) -> dict:
         return res
     except Exception as e:
         logger.error(f"API Request Failed: {e}")
-        return {"success": 0, "error": str(e)}
+        return _submission_unknown(e)
 
 def get_balance() -> dict:
     """Mengambil saldo rupiah dan aset lainnya.
@@ -95,6 +103,10 @@ def buy_market(symbol: str, idr_amount: float, price: float) -> dict:
         "rupiah": str(int(idr_amount)),
     }
     res = _send_request(data)
+
+    if res.get("submission_status") == "UNKNOWN":
+        logger.error(f"Status beli {symbol.upper()} tidak diketahui; rekonsiliasi manual diperlukan.")
+        return dict(res)
     
     if res.get("success") == 1:
         # Ambil harga beli efektif dari data history order
@@ -143,6 +155,10 @@ def sell_market(symbol: str, coin_amount: float, price: float) -> dict:
         f"{symbol.lower()}": amt_str,  # Indodax API rule
     }
     res = _send_request(data)
+
+    if res.get("submission_status") == "UNKNOWN":
+        logger.error(f"Status jual {symbol.upper()} tidak diketahui; rekonsiliasi manual diperlukan.")
+        return dict(res)
     
     if res.get("success") == 1:
         received_idr = float(res.get("return", {}).get("receive_rupiah", 0))

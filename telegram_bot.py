@@ -15,12 +15,18 @@ import pandas as pd
 import json
 from datetime import datetime, timezone, timedelta
 from keep_alive import keep_alive
-from learning_engine import apply_learning_adjustments, record_signal, train_from_prices, record_paper_signal
+from learning_engine import (
+    apply_learning_adjustments,
+    record_signal,
+    train_from_prices,
+    record_paper_signal,
+)
 from news_engine import apply_news_adjustments, build_news_profile
 from ai_pilot import generate_signal_insight
 from core.applog import get_logger
 from core.committee import build_committee, committee_summary_line
 from core import command_router, execution_engine, portfolio_manager
+
 try:
     from ml_engine import predict_aggressive_scalp
 except ImportError:
@@ -29,6 +35,7 @@ except ImportError:
 # Binance global data (graceful import)
 try:
     import binance_engine
+
     _BINANCE_OK = True
 except ImportError:
     binance_engine = None  # type: ignore
@@ -36,10 +43,12 @@ except ImportError:
 
 _LOGGER = get_logger("bot")
 
+
 # === CONFIG ===
 def _get_api_key(key_name):
     val = os.environ.get(key_name)
-    if val: return val
+    if val:
+        return val
     try:
         with open(".streamlit/secrets.toml", "r") as f:
             for line in f:
@@ -49,6 +58,7 @@ def _get_api_key(key_name):
         pass
     return ""
 
+
 GEMINI_API_KEY = _get_api_key("GEMINI_API_KEY")
 DEEPSEEK_API_KEY = _get_api_key("DEEPSEEK_API_KEY")
 
@@ -57,8 +67,10 @@ CHAT_ID = _get_api_key("TELEGRAM_CHAT_ID")
 INDODAX_REF = "narwanpratanta"
 WIB = timezone(timedelta(hours=7))
 
+
 def env_bool(name, default=False):
-    return str(os.environ.get(name, str(default))).lower() in {"1","true","yes","on"}
+    return str(os.environ.get(name, str(default))).lower() in {"1", "true", "yes", "on"}
+
 
 # Auto Trade Settings
 AUTO_TRADE_ENABLED = env_bool("AUTO_TRADE_ENABLED", False)
@@ -69,12 +81,25 @@ MAX_TRADE_IDR = float(os.environ.get("MAX_TRADE_IDR", "50000"))
 MAIN_ASSETS = {
     # Disamakan dgn web (app.py ALL_ASSETS) supaya cakupan sinyal konsisten.
     # Blue chip / layer-1 likuid
-    "BTC": "btc_idr", "ETH": "eth_idr", "SOL": "sol_idr",
-    "XRP": "xrp_idr", "BNB": "bnb_idr", "ADA": "ada_idr",
-    "DOT": "dot_idr", "MATIC": "matic_idr", "AVAX": "avax_idr", "LINK": "link_idr",
+    "BTC": "btc_idr",
+    "ETH": "eth_idr",
+    "SOL": "sol_idr",
+    "XRP": "xrp_idr",
+    "BNB": "bnb_idr",
+    "ADA": "ada_idr",
+    "DOT": "dot_idr",
+    "MATIC": "matic_idr",
+    "AVAX": "avax_idr",
+    "LINK": "link_idr",
     # Koin micin / volatil tinggi
-    "PEPE": "pepe_idr", "DOGE": "doge_idr", "SHIB": "shib_idr", "BONK": "bonk_idr",
-    "FLOKI": "floki_idr", "LUNC": "lunc_idr", "BTT": "btt_idr", "JASMY": "jasmy_idr",
+    "PEPE": "pepe_idr",
+    "DOGE": "doge_idr",
+    "SHIB": "shib_idr",
+    "BONK": "bonk_idr",
+    "FLOKI": "floki_idr",
+    "LUNC": "lunc_idr",
+    "BTT": "btt_idr",
+    "JASMY": "jasmy_idr",
 }
 
 BLUE_CHIPS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA"}
@@ -91,16 +116,26 @@ ENABLE_EARLY_ALERTS = env_bool("ENABLE_EARLY_ALERTS", True)
 LOOP_SLEEP_SECONDS = int(os.environ.get("LOOP_SLEEP_SECONDS", "60"))
 
 FOMO_GLOBAL_COOLDOWN_SEC = int(os.environ.get("FOMO_GLOBAL_COOLDOWN_SEC", "1800"))
-FOMO_SYMBOL_COOLDOWN_SEC = int(os.environ.get("FOMO_SYMBOL_COOLDOWN_SEC", str(24 * 3600)))
+FOMO_SYMBOL_COOLDOWN_SEC = int(
+    os.environ.get("FOMO_SYMBOL_COOLDOWN_SEC", str(24 * 3600))
+)
 
-CONFLUENCE_SYMBOL_COOLDOWN_SEC = int(os.environ.get("CONFLUENCE_SYMBOL_COOLDOWN_SEC", str(24 * 3600)))
-CONFLUENCE_MAX_ALERTS_PER_CYCLE = int(os.environ.get("CONFLUENCE_MAX_ALERTS_PER_CYCLE", "1"))
+CONFLUENCE_SYMBOL_COOLDOWN_SEC = int(
+    os.environ.get("CONFLUENCE_SYMBOL_COOLDOWN_SEC", str(24 * 3600))
+)
+CONFLUENCE_MAX_ALERTS_PER_CYCLE = int(
+    os.environ.get("CONFLUENCE_MAX_ALERTS_PER_CYCLE", "1")
+)
 
 # Early-entry punya cooldown sendiri supaya nggak nabrak alert konfirmasi.
-EARLY_SYMBOL_COOLDOWN_SEC = int(os.environ.get("EARLY_SYMBOL_COOLDOWN_SEC", str(4 * 3600)))
+EARLY_SYMBOL_COOLDOWN_SEC = int(
+    os.environ.get("EARLY_SYMBOL_COOLDOWN_SEC", str(4 * 3600))
+)
 EARLY_MAX_ALERTS_PER_CYCLE = int(os.environ.get("EARLY_MAX_ALERTS_PER_CYCLE", "2"))
 
-MESSAGE_DUPLICATE_TTL_SEC = int(os.environ.get("MESSAGE_DUPLICATE_TTL_SEC", str(12 * 3600)))
+MESSAGE_DUPLICATE_TTL_SEC = int(
+    os.environ.get("MESSAGE_DUPLICATE_TTL_SEC", str(12 * 3600))
+)
 ACTIVE_SIGNAL_TTL_SEC = int(os.environ.get("ACTIVE_SIGNAL_TTL_SEC", str(72 * 3600)))
 NEWS_REFRESH_SECONDS = int(os.environ.get("NEWS_REFRESH_SECONDS", "900"))
 
@@ -111,8 +146,12 @@ MAX_ALERT_RANGE_POS = float(os.environ.get("MAX_ALERT_RANGE_POS", "88"))
 # Threshold khusus EARLY ENTRY: dilonggarin biar masuk sebelum pump meledak.
 EARLY_MIN_SCORE = int(os.environ.get("EARLY_MIN_SCORE", "58"))
 EARLY_MIN_VOLUME_IDR = float(os.environ.get("EARLY_MIN_VOLUME_IDR", "300000000"))
-EARLY_MAX_RANGE_POS = float(os.environ.get("EARLY_MAX_RANGE_POS", "70"))  # harus masih di paruh bawah range 24h
-EARLY_MIN_SETUP_STRENGTH = int(os.environ.get("EARLY_MIN_SETUP_STRENGTH", "3"))  # min checklist setup terpenuhi
+EARLY_MAX_RANGE_POS = float(
+    os.environ.get("EARLY_MAX_RANGE_POS", "70")
+)  # harus masih di paruh bawah range 24h
+EARLY_MIN_SETUP_STRENGTH = int(
+    os.environ.get("EARLY_MIN_SETUP_STRENGTH", "3")
+)  # min checklist setup terpenuhi
 
 
 # === STATE ===
@@ -162,8 +201,12 @@ def _record_trade_close_for_risk(pnl_pct):
     stats = _ensure_daily_stats_fields()
     pnl = _safe_float(pnl_pct, 0.0)
     if pnl < 0:
-        stats["daily_loss_pct"] = max(0.0, _safe_float(stats.get("daily_loss_pct"), 0.0)) + abs(pnl)
-        stats["consecutive_losses"] = int(max(0, _safe_float(stats.get("consecutive_losses"), 0))) + 1
+        stats["daily_loss_pct"] = max(
+            0.0, _safe_float(stats.get("daily_loss_pct"), 0.0)
+        ) + abs(pnl)
+        stats["consecutive_losses"] = (
+            int(max(0, _safe_float(stats.get("consecutive_losses"), 0))) + 1
+        )
     else:
         stats["consecutive_losses"] = 0
 
@@ -211,7 +254,9 @@ def _save_executed_buy_position(result, symbol, tp1, tp2, sl, trade_type):
     return False
 
 
-def _format_trade_proposal_message(symbol, action_label, amount_idr, price, tp1, tp2, sl, risk_level, reason):
+def _format_trade_proposal_message(
+    symbol, action_label, amount_idr, price, tp1, tp2, sl, risk_level, reason
+):
     try:
         ttl = int(os.environ.get("PENDING_TRADE_TTL_MINUTES", "10"))
     except (TypeError, ValueError):
@@ -243,7 +288,9 @@ def _telegram_router_context(symbol=None):
     if clean_symbol:
         try:
             all_coins = fetch_all_tickers()
-            ticker = all_coins.get(clean_symbol) if isinstance(all_coins, dict) else None
+            ticker = (
+                all_coins.get(clean_symbol) if isinstance(all_coins, dict) else None
+            )
             if isinstance(ticker, dict):
                 context["price"] = ticker.get("price")
             elif ticker:
@@ -256,7 +303,9 @@ def _telegram_router_context(symbol=None):
 def _format_router_response(result: dict) -> str:
     if not isinstance(result, dict):
         return "Command diproses."
-    if result.get("command", {}).get("type") == "RISK" and isinstance(result.get("risk"), dict):
+    if result.get("command", {}).get("type") == "RISK" and isinstance(
+        result.get("risk"), dict
+    ):
         risk = result["risk"]
         return (
             "*RISK STATUS*\n"
@@ -297,8 +346,18 @@ def _state_file_path():
 
 STATE_FILE = _state_file_path()
 
+
 def load_bot_state():
-    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _early_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time, _message_fingerprints
+    global \
+        _last_sinyal_date, \
+        _last_summary_date, \
+        _fomo_sent_symbols, \
+        _confluence_sent_symbols, \
+        _early_sent_symbols, \
+        _active_signals, \
+        _daily_stats, \
+        _last_fomo_alert_time, \
+        _message_fingerprints
     if not os.path.exists(STATE_FILE):
         log("No state file found. Starting fresh.")
         return
@@ -308,7 +367,9 @@ def load_bot_state():
         _last_sinyal_date = data.get("last_sinyal_date", _last_sinyal_date)
         _last_summary_date = data.get("last_summary_date", _last_summary_date)
         _fomo_sent_symbols = data.get("fomo_sent_symbols", _fomo_sent_symbols)
-        _confluence_sent_symbols = data.get("confluence_sent_symbols", _confluence_sent_symbols)
+        _confluence_sent_symbols = data.get(
+            "confluence_sent_symbols", _confluence_sent_symbols
+        )
         _early_sent_symbols = data.get("early_sent_symbols", _early_sent_symbols)
         _active_signals = data.get("active_signals", _active_signals)
         _daily_stats = data.get("daily_stats", _daily_stats)
@@ -316,18 +377,29 @@ def load_bot_state():
         _last_fomo_alert_time = data.get("last_fomo_alert_time", _last_fomo_alert_time)
         _message_fingerprints = data.get("message_fingerprints", _message_fingerprints)
 
-        
         # Convert _active_signals hit back to set (JSON arrays become lists)
         for sym in _active_signals:
-            if "hit" in _active_signals[sym] and isinstance(_active_signals[sym]["hit"], list):
+            if "hit" in _active_signals[sym] and isinstance(
+                _active_signals[sym]["hit"], list
+            ):
                 _active_signals[sym]["hit"] = set(_active_signals[sym]["hit"])
-                
+
         log("Bot state successfully loaded from bot_state.json")
     except Exception as e:
         log(f"Error loading bot state: {e}")
 
+
 def save_bot_state():
-    global _last_sinyal_date, _last_summary_date, _fomo_sent_symbols, _confluence_sent_symbols, _early_sent_symbols, _active_signals, _daily_stats, _last_fomo_alert_time, _message_fingerprints
+    global \
+        _last_sinyal_date, \
+        _last_summary_date, \
+        _fomo_sent_symbols, \
+        _confluence_sent_symbols, \
+        _early_sent_symbols, \
+        _active_signals, \
+        _daily_stats, \
+        _last_fomo_alert_time, \
+        _message_fingerprints
     try:
         # Convert set to list for JSON serialization
         active_signals_copy = {}
@@ -336,7 +408,7 @@ def save_bot_state():
             if "hit" in sig_copy and isinstance(sig_copy["hit"], set):
                 sig_copy["hit"] = list(sig_copy["hit"])
             active_signals_copy[sym] = sig_copy
-            
+
         data = {
             "last_sinyal_date": _last_sinyal_date,
             "last_summary_date": _last_summary_date,
@@ -347,7 +419,7 @@ def save_bot_state():
             "daily_stats": _daily_stats,
             "last_fomo_alert_time": _last_fomo_alert_time,
             "message_fingerprints": _message_fingerprints,
-            "early_sent_symbols": _early_sent_symbols
+            "early_sent_symbols": _early_sent_symbols,
         }
 
         tmp_path = f"{STATE_FILE}.tmp"
@@ -392,7 +464,13 @@ from core.indicators import (
     fetch_candles,
     is_entry_action,
 )
-from core.analysis import compute_allocation, compute_base_score, compute_risk_level, compute_trade_levels, decide_action
+from core.analysis import (
+    compute_allocation,
+    compute_base_score,
+    compute_risk_level,
+    compute_trade_levels,
+    decide_action,
+)
 
 
 def apply_bot_learning(result):
@@ -404,8 +482,14 @@ def apply_bot_learning(result):
 def get_bot_news_profile(force=False):
     global _last_news_profile, _last_news_profile_at
     now_ts = time.time()
-    if force or _last_news_profile is None or now_ts - _last_news_profile_at >= NEWS_REFRESH_SECONDS:
-        _last_news_profile = build_news_profile(symbols=list(MAIN_ASSETS.keys()) + list(MICIN_COINS))
+    if (
+        force
+        or _last_news_profile is None
+        or now_ts - _last_news_profile_at >= NEWS_REFRESH_SECONDS
+    ):
+        _last_news_profile = build_news_profile(
+            symbols=list(MAIN_ASSETS.keys()) + list(MICIN_COINS)
+        )
         _last_news_profile_at = now_ts
     return _last_news_profile
 
@@ -420,7 +504,9 @@ def record_bot_learning_signal(result, pair=None, source="bot"):
     payload = dict(result)
     payload["pair"] = pair or payload.get("pair")
     payload["target"] = payload.get("target", payload.get("tp3"))
-    payload["allocation_pct"] = payload.get("allocation_pct", payload.get("alloc_pct", 0))
+    payload["allocation_pct"] = payload.get(
+        "allocation_pct", payload.get("alloc_pct", 0)
+    )
     payload["source"] = source
     return record_signal(payload, is_entry_action)
 
@@ -449,7 +535,8 @@ def fetch_all_tickers():
                 change = 0.0
 
             all_coins[symbol] = {
-                "symbol": symbol, "pair": pair,
+                "symbol": symbol,
+                "pair": pair,
                 "price": price,
                 "change": round(change, 2),
                 "vol_idr": float(info.get("vol_idr", 0)),
@@ -518,39 +605,65 @@ def analyze_coin(symbol, data, candles):
 
     # --- SCORING & KEPUTUSAN (terpadu via core.analysis: identik dgn web) ---
     base, _components = compute_base_score(
-        change=change, ema_trend_pct=ema_trend_pct, macd_signal=macd_signal,
-        rsi=rsi, supertrend=supertrend, vol_label=vol_label,
-        bb_signal=bb["bb_signal"], adx_trend=adx_data["trend"], ml=ml, bt=bt,
-        mtf_adjustment=mtf["mtf_adjustment"], vol_idr=vol_idr, symbol=symbol,
-        is_micin=(symbol in MICIN_COINS), range_pos=range_pos,
+        change=change,
+        ema_trend_pct=ema_trend_pct,
+        macd_signal=macd_signal,
+        rsi=rsi,
+        supertrend=supertrend,
+        vol_label=vol_label,
+        bb_signal=bb["bb_signal"],
+        adx_trend=adx_data["trend"],
+        ml=ml,
+        bt=bt,
+        mtf_adjustment=mtf["mtf_adjustment"],
+        vol_idr=vol_idr,
+        symbol=symbol,
+        is_micin=(symbol in MICIN_COINS),
+        range_pos=range_pos,
     )
     # Tambahkan Binance adjustment ke base score (identik dgn web)
     base += binance_adj
-    
-    # Aggressive Scalp (XGBoost)
+
+    # Aggressive Scalp (XGBoost) — BOOST dari 15 jadi 25
     xgb_prob = 0.0
     xgb_label = "NO DATA"
+    boost_mult = float(os.environ.get("AGGRESSIVE_BOOST", "25"))
     if predict_aggressive_scalp and os.environ.get("AGGRESSIVE_MODE") == "1":
         xgb_scalp = predict_aggressive_scalp(candles)
         if xgb_scalp.get("is_scalp_valid"):
-            base += 15  # Boost score kuat untuk aggressive scalp
+            base += boost_mult
             xgb_prob = xgb_scalp.get("prob_up_pct", 0)
             xgb_label = "SCALP BUY"
+            # Ensemble detail log
+            detail = xgb_scalp.get("ensemble_detail")
+            if detail:
+                base += min(5, detail.get("n_models", 0) * 2)  # +2 per model tambahan
+                wf1 = detail.get("walk_f1")
+                if wf1 and wf1 > 0.6:
+                    base += 5  # Walk-forward F1 > 60% → extra boost
 
     momentum = change
     score = int(clamp(round(base), 0, 100))
 
     # Risk level (sebelum verdict, dibutuhkan committee)
-    risk_level = compute_risk_level(change, vol_idr, rsi, macd_signal, supertrend, range_pos, ml, bt)
+    risk_level = compute_risk_level(
+        change, vol_idr, rsi, macd_signal, supertrend, range_pos, ml, bt
+    )
 
     # Verdict committee
-    verdict, verdict_net, size_mult = build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr)
+    verdict, verdict_net, size_mult = build_verdict(
+        score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr
+    )
 
     # Keputusan action + semua gate (threshold, confluence, anti-FOMO, MTF, verdict)
     # IDENTIK dengan web — tidak akan ada lagi sinyal bertentangan utk koin yg sama.
     action, emoji = decide_action(
-        score=score, change=change, confluence=confluence, range_pos=range_pos,
-        mtf_adjustment=mtf["mtf_adjustment"], regime_allow_aggressive=True,
+        score=score,
+        change=change,
+        confluence=confluence,
+        range_pos=range_pos,
+        mtf_adjustment=mtf["mtf_adjustment"],
+        regime_allow_aggressive=True,
         verdict=verdict,
     )
 
@@ -562,22 +675,41 @@ def analyze_coin(symbol, data, candles):
     tp3 = levels["target"]
     sl = levels["stop_loss"]
     trailing = levels["trailing_pct"]
-    alloc = compute_allocation(score, risk_level, confluence, action, size_mult=size_mult, market_mult=1.0)
+    alloc = compute_allocation(
+        score, risk_level, confluence, action, size_mult=size_mult, market_mult=1.0
+    )
 
     return {
-        "symbol": symbol, "price": price, "change": change, "vol_idr": vol_idr,
-        "score": score, "action": action, "emoji": emoji,
-        "rsi": round(rsi, 1), "ema_bias": ema_bias, "macd_signal": macd_signal,
-        "bb_signal": bb["bb_signal"], "supertrend": supertrend,
-        "adx": adx_data["adx"], "adx_trend": adx_data["trend"],
+        "symbol": symbol,
+        "price": price,
+        "change": change,
+        "vol_idr": vol_idr,
+        "score": score,
+        "action": action,
+        "emoji": emoji,
+        "rsi": round(rsi, 1),
+        "ema_bias": ema_bias,
+        "macd_signal": macd_signal,
+        "bb_signal": bb["bb_signal"],
+        "supertrend": supertrend,
+        "adx": adx_data["adx"],
+        "adx_trend": adx_data["trend"],
         "ml_prob": ml["ml_prob"] if xgb_prob == 0 else xgb_prob,
         "ml_label": ml["ml_label"] if xgb_label == "NO DATA" else xgb_label,
         "ml_conf": ml["ml_conf"],
-        "bt_wr": bt["bt_wr"], "bt_trades": bt["bt_trades"], "bt_label": bt["bt_label"],
-        "verdict": verdict, "verdict_net": verdict_net,
-        "vol_label": vol_label, "risk_level": risk_level,
-        "tp1": tp1, "tp2": tp2, "tp3": tp3, "stop_loss": sl,
-        "trailing_pct": round(trailing, 1), "alloc_pct": round(alloc, 1),
+        "bt_wr": bt["bt_wr"],
+        "bt_trades": bt["bt_trades"],
+        "bt_label": bt["bt_label"],
+        "verdict": verdict,
+        "verdict_net": verdict_net,
+        "vol_label": vol_label,
+        "risk_level": risk_level,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "stop_loss": sl,
+        "trailing_pct": round(trailing, 1),
+        "alloc_pct": round(alloc, 1),
         "range_pos": round(range_pos, 1),
         "mtf_label": mtf["mtf_label"],
         "mtf_4h": mtf["mtf_4h"],
@@ -594,11 +726,17 @@ def analyze_coin(symbol, data, candles):
         "binance_signal": binance_data.get("binance_signal", "NO DATA"),
         "binance_adjustment": binance_data.get("binance_adjustment", 0),
         "binance_notes": binance_data.get("binance_notes", []),
-        "binance_funding_signal": binance_data.get("funding", {}).get("funding_signal", "NO DATA"),
+        "binance_funding_signal": binance_data.get("funding", {}).get(
+            "funding_signal", "NO DATA"
+        ),
         "binance_funding_pct": binance_data.get("funding", {}).get("funding_pct", 0),
-        "binance_ls_signal": binance_data.get("long_short", {}).get("ls_signal", "NO DATA"),
+        "binance_ls_signal": binance_data.get("long_short", {}).get(
+            "ls_signal", "NO DATA"
+        ),
         "binance_ls_ratio": binance_data.get("long_short", {}).get("ls_ratio", 0),
-        "binance_book_signal": binance_data.get("order_book", {}).get("book_signal", "NO DATA"),
+        "binance_book_signal": binance_data.get("order_book", {}).get(
+            "book_signal", "NO DATA"
+        ),
         "binance_book_ratio": binance_data.get("order_book", {}).get("book_ratio", 0),
         "binance_available": binance_data.get("available", False),
     }
@@ -627,15 +765,20 @@ def detect_market_mode(all_coins):
 # TELEGRAM MESSAGING
 # =============================================================================
 def format_idr(value):
-    if value is None: return "-"
-    if value >= 1_000_000_000: return f"Rp{value/1_000_000_000:,.2f}M"
-    if value >= 1_000_000: return f"Rp{value/1_000_000:,.1f}JT"
-    if value >= 1_000: return f"Rp{value:,.0f}"
+    if value is None:
+        return "-"
+    if value >= 1_000_000_000:
+        return f"Rp{value / 1_000_000_000:,.2f}M"
+    if value >= 1_000_000:
+        return f"Rp{value / 1_000_000:,.1f}JT"
+    if value >= 1_000:
+        return f"Rp{value:,.0f}"
     return f"Rp{value:,.2f}"
 
 
 import hashlib
 import re
+
 
 def _message_fingerprint(text):
     normalized = re.sub(r"\d+(?:[.,]\d+)?", "#", str(text))
@@ -656,7 +799,8 @@ def send_message(text, notify=False, force=False):
 
         # cleanup cache
         _message_fingerprints = {
-            k: v for k, v in _message_fingerprints.items()
+            k: v
+            for k, v in _message_fingerprints.items()
             if now_ts - v < MESSAGE_DUPLICATE_TTL_SEC
         }
 
@@ -669,11 +813,19 @@ def send_message(text, notify=False, force=False):
     # Split panjang
     chunks = [text] if len(text) <= 4096 else _split_text(text)
     for i, chunk in enumerate(chunks):
-        payload = {"chat_id": CHAT_ID, "text": chunk, "parse_mode": "Markdown", "disable_notification": not notify}
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": chunk,
+            "parse_mode": "Markdown",
+            "disable_notification": not notify,
+        }
         try:
             resp = requests.post(url, json=payload, timeout=10)
             result = resp.json()
-            if not result.get("ok") and "parse" in str(result.get("description", "")).lower():
+            if (
+                not result.get("ok")
+                and "parse" in str(result.get("description", "")).lower()
+            ):
                 payload["parse_mode"] = None
                 resp2 = requests.post(url, json=payload, timeout=10)
                 result = resp2.json()
@@ -712,7 +864,11 @@ def send_sinyal_harian(all_coins):
 
     # Detect market mode
     mode, mode_desc = detect_market_mode(all_coins)
-    mode_emoji = {"agresif": "🟢 AGRESIF", "normal": "🟡 NORMAL", "defensif": "🔴 DEFENSIF"}[mode]
+    mode_emoji = {
+        "agresif": "🟢 AGRESIF",
+        "normal": "🟡 NORMAL",
+        "defensif": "🔴 DEFENSIF",
+    }[mode]
 
     # Fetch candles + analyze each main asset
     signals = []
@@ -729,7 +885,13 @@ def send_sinyal_harian(all_coins):
         return False
 
     # Sort: BELI KUAT > CICIL BELI > WATCH > JANGAN BELI > HINDARI
-    priority = {"BELI KUAT": 0, "CICIL BELI": 1, "WATCH": 2, "JANGAN BELI": 3, "HINDARI": 4}
+    priority = {
+        "BELI KUAT": 0,
+        "CICIL BELI": 1,
+        "WATCH": 2,
+        "JANGAN BELI": 3,
+        "HINDARI": 4,
+    }
     signals.sort(key=lambda x: priority.get(x["action"], 5))
 
     # Pisahkan sinyal beli vs pantauan biar pesan gampang dibaca
@@ -745,7 +907,9 @@ def send_sinyal_harian(all_coins):
         f"_{mode_desc}_",
     ]
     if buy_count > 0:
-        lines.append(f"✅ *{buy_count} koin layak beli* — pilih 1-2 terbaik, jangan serakah.")
+        lines.append(
+            f"✅ *{buy_count} koin layak beli* — pilih 1-2 terbaik, jangan serakah."
+        )
     else:
         lines.append("⏸️ *Belum ada sinyal beli bersih hari ini.*")
     lines.append("━━━━━━━━━━━━━━━━━━")
@@ -762,7 +926,10 @@ def send_sinyal_harian(all_coins):
             bits.append("tren 4H+1D searah naik")
         elif s.get("mtf_label") in ("ALIGN BEARISH", "BEARISH BIAS"):
             bits.append("tren 4H+1D masih turun")
-        if s.get("binance_available") and s.get("binance_signal") not in ("NO DATA", "NEUTRAL"):
+        if s.get("binance_available") and s.get("binance_signal") not in (
+            "NO DATA",
+            "NEUTRAL",
+        ):
             bits.append(f"Binance {str(s['binance_signal']).lower()}")
         if s.get("news_label") and s.get("news_label") != "NO DATA":
             bits.append(f"berita {str(s['news_label']).lower()}")
@@ -775,29 +942,47 @@ def send_sinyal_harian(all_coins):
             link = f"https://indodax.com/market/{pair_url}?ref={INDODAX_REF}"
             ch = f"+{s['change']:.2f}" if s["change"] >= 0 else f"{s['change']:.2f}"
 
-            lines.append(f"{s['emoji']} *{s['symbol']} — {s['action']}*  ·  Skor {s['score']}/100")
-            lines.append(f"   💵 Harga {format_idr(s['price'])} ({ch}%)  ·  Risiko {s['risk_level']}")
-            lines.append(f"   🎯 Entry sekarang → TP {format_idr(s['tp1'])} / {format_idr(s['tp2'])} / {format_idr(s['tp3'])}")
-            lines.append(f"   🛑 Stop loss {format_idr(s['stop_loss'])}  ·  trailing {s['trailing_pct']}%")
+            lines.append(
+                f"{s['emoji']} *{s['symbol']} — {s['action']}*  ·  Skor {s['score']}/100"
+            )
+            lines.append(
+                f"   💵 Harga {format_idr(s['price'])} ({ch}%)  ·  Risiko {s['risk_level']}"
+            )
+            lines.append(
+                f"   🎯 Entry sekarang → TP {format_idr(s['tp1'])} / {format_idr(s['tp2'])} / {format_idr(s['tp3'])}"
+            )
+            lines.append(
+                f"   🛑 Stop loss {format_idr(s['stop_loss'])}  ·  trailing {s['trailing_pct']}%"
+            )
             lines.append(f"   💰 Alokasi {s['alloc_pct']}% modal")
             lines.append(f"   📋 Kenapa: {_why_line(s)}")
             _com = build_committee(s)
             lines.append(f"   🧑‍⚖️ {committee_summary_line(_com)}")
             # Binance global data
             if s.get("binance_available"):
-                bn_emoji = "🟢" if s.get("binance_adjustment", 0) > 0 else "🔴" if s.get("binance_adjustment", 0) < 0 else "⚪"
-                lines.append(f"   {bn_emoji} Binance: {s.get('binance_signal', 'NO DATA')} (adj {s['binance_adjustment']:+d})")
+                bn_emoji = (
+                    "🟢"
+                    if s.get("binance_adjustment", 0) > 0
+                    else "🔴"
+                    if s.get("binance_adjustment", 0) < 0
+                    else "⚪"
+                )
+                lines.append(
+                    f"   {bn_emoji} Binance: {s.get('binance_signal', 'NO DATA')} (adj {s['binance_adjustment']:+d})"
+                )
             lines.append(f"   👉 [BELI DI INDODAX]({link})")
             lines.append("")
-            
+
             # Trade execution for BELI KUAT. Defaults to paper mode unless real trade is explicitly enabled.
-            if (AUTO_TRADE_ENABLED or PAPER_TRADING_MODE) and s["action"] == "BELI KUAT":
+            if (AUTO_TRADE_ENABLED or PAPER_TRADING_MODE) and s[
+                "action"
+            ] == "BELI KUAT":
                 try:
                     if CONFIRM_BEFORE_TRADE:
                         command_router.create_buy_confirmation_proposal(
-                            s['symbol'].lower(),
+                            s["symbol"].lower(),
                             MAX_TRADE_IDR,
-                            float(s['price']),
+                            float(s["price"]),
                             tp1=s["tp1"],
                             tp2=s["tp2"],
                             sl=s["stop_loss"],
@@ -812,10 +997,10 @@ def send_sinyal_harian(all_coins):
                         lines.append("*PROPOSAL TRADE MENUNGGU KONFIRMASI*")
                         lines.append(
                             _format_trade_proposal_message(
-                                s['symbol'],
+                                s["symbol"],
                                 "BELI KUAT",
                                 MAX_TRADE_IDR,
-                                float(s['price']),
+                                float(s["price"]),
                                 s["tp1"],
                                 s["tp2"],
                                 s["stop_loss"],
@@ -825,15 +1010,15 @@ def send_sinyal_harian(all_coins):
                         )
                     else:
                         res_buy = execution_engine.execute_buy(
-                            s['symbol'].lower(),
+                            s["symbol"].lower(),
                             MAX_TRADE_IDR,
-                            float(s['price']),
+                            float(s["price"]),
                             reason="BELI KUAT",
                             metadata=_trade_risk_metadata(
                                 "daily_signal",
                                 risk_tag=s.get("risk_level"),
                                 market_state={"risk_level": s.get("risk_level")},
-                            )
+                            ),
                         )
                         if res_buy.get("success"):
                             received = res_buy["received_coin"]
@@ -841,30 +1026,45 @@ def send_sinyal_harian(all_coins):
                             spent = res_buy.get("spent_idr", MAX_TRADE_IDR)
                             saved = _save_executed_buy_position(
                                 res_buy,
-                                s['symbol'],
+                                s["symbol"],
                                 tp1=s["tp1"],
                                 tp2=s["tp2"],
                                 sl=s["stop_loss"],
                                 trade_type="BELI KUAT",
                             )
                             if saved:
-                                trade_label = "PAPER-TRADE SIMULASI" if res_buy.get("mode") == "paper" else "AUTO-TRADE SUKSES"
+                                trade_label = (
+                                    "PAPER-TRADE SIMULASI"
+                                    if res_buy.get("mode") == "paper"
+                                    else "AUTO-TRADE SUKSES"
+                                )
                                 lines.append(f"🤖 *{trade_label}!*")
-                                lines.append(f"   Beli: {received} {s['symbol']} (Rp{spent:,.0f})")
+                                lines.append(
+                                    f"   Beli: {received} {s['symbol']} (Rp{spent:,.0f})"
+                                )
                                 lines.append(f"   Harga Rata-rata: Rp{avg_price:,.0f}")
                                 lines.append(f"   Mode Kawal TP/SL diaktifkan 🛡️")
                             else:
-                                lines.append("🤖 *ORDER TERJADI, PENCATATAN PORTFOLIO GAGAL. CEK RECOVERY JOURNAL.*")
+                                lines.append(
+                                    "🤖 *ORDER TERJADI, PENCATATAN PORTFOLIO GAGAL. CEK RECOVERY JOURNAL.*"
+                                )
                         else:
-                            lines.append(f"🤖 *TRADE DIBLOKIR/GAGAL:* {res_buy.get('error')}")
+                            lines.append(
+                                f"🤖 *TRADE DIBLOKIR/GAGAL:* {res_buy.get('error')}"
+                            )
                 except Exception as e:
                     _LOGGER.error(f"Auto-trade failed: {e}")
                     lines.append(f"🤖 *AUTO-TRADE ERROR:* {e}")
 
             # Track for TP/SL monitoring
-            _active_signals[s['symbol']] = {
-                'entry': s['price'], 'tp1': s['tp1'], 'tp2': s['tp2'], 'tp3': s['tp3'],
-                'sl': s['stop_loss'], 'hit': set(), 'time': datetime.now(WIB).isoformat(),
+            _active_signals[s["symbol"]] = {
+                "entry": s["price"],
+                "tp1": s["tp1"],
+                "tp2": s["tp2"],
+                "tp3": s["tp3"],
+                "sl": s["stop_loss"],
+                "hit": set(),
+                "time": datetime.now(WIB).isoformat(),
             }
             record_bot_learning_signal(s, MAIN_ASSETS[s["symbol"]], source="daily")
 
@@ -873,7 +1073,9 @@ def send_sinyal_harian(all_coins):
         lines.append("👀 *Belum entry — pantau dulu:*")
         for s in watch_signals:
             ch = f"+{s['change']:.2f}" if s["change"] >= 0 else f"{s['change']:.2f}"
-            lines.append(f"   {s['emoji']} *{s['symbol']}* {s['action']} · skor {s['score']} · {format_idr(s['price'])} ({ch}%)")
+            lines.append(
+                f"   {s['emoji']} *{s['symbol']}* {s['action']} · skor {s['score']} · {format_idr(s['price'])} ({ch}%)"
+            )
         lines.append("")
 
     lines.append("━━━━━━━━━━━━━━━━━━")
@@ -886,11 +1088,10 @@ def send_sinyal_harian(all_coins):
     lines.append("⚠️ Bukan saran keuangan. DYOR.")
     lines.append(f"💎 Gabung: {TELEGRAM_CHANNEL}")
 
-
     result = send_message("\n".join(lines), notify=False)
     if result:
         _last_sinyal_date = today
-        _daily_stats['signals_sent'] += buy_count
+        _daily_stats["signals_sent"] += buy_count
         log(f"Sinyal harian TERKIRIM! ({len(signals)} koin, {buy_count} beli)")
         return True
     return False
@@ -907,7 +1108,9 @@ def detect_fomo(all_coins):
         # Batas volume dinamis berdasarkan persentase kenaikan harga (kecuali Blue Chips)
         if sym not in BLUE_CHIPS:
             if change > 30:
-                min_vol = 1_000_000_000  # Kejadian sangat luar biasa -> minimal 1 Miliar
+                min_vol = (
+                    1_000_000_000  # Kejadian sangat luar biasa -> minimal 1 Miliar
+                )
             elif change > 20:
                 min_vol = 1_500_000_000  # Luar biasa -> minimal 1.5 Miliar
             elif change > 12:
@@ -918,9 +1121,13 @@ def detect_fomo(all_coins):
                 continue
 
         item = {
-            "symbol": sym, "pair": data["pair"],
-            "price": data["price"], "change": round(change, 2),
-            "vol_idr": vol, "high": data["high"], "low": data["low"],
+            "symbol": sym,
+            "pair": data["pair"],
+            "price": data["price"],
+            "change": round(change, 2),
+            "vol_idr": vol,
+            "high": data["high"],
+            "low": data["low"],
         }
         if change > 20:
             fomo_gila.append(item)
@@ -943,7 +1150,9 @@ def format_fomo_alert(fomo_gila, fomo, pumping, all_coins):
         if not lst:
             return
         lines.append(f"🔥 *{label}:*")
-        for coin in lst[:3]:  # Batasi 3 teratas per kategori agar pesan tidak terlalu panjang
+        for coin in lst[
+            :3
+        ]:  # Batasi 3 teratas per kategori agar pesan tidak terlalu panjang
             sym = coin["symbol"]
             pair_url = coin["pair"].upper().replace("_", "")
             link = f"https://indodax.com/market/{pair_url}?ref={INDODAX_REF}"
@@ -956,21 +1165,33 @@ def format_fomo_alert(fomo_gila, fomo, pumping, all_coins):
                     warning = " ⚠️ *DEKAT PUNCAK (RAWAN KOREKSI)*"
 
             lines.append(f"📈 *{sym}* -- *+{coin['change']}%*{warning}")
-            lines.append(f"   Harga: {format_idr(coin['price'])} | Vol: {format_idr(coin['vol_idr'])}")
-            
+            lines.append(
+                f"   Harga: {format_idr(coin['price'])} | Vol: {format_idr(coin['vol_idr'])}"
+            )
+
             # Dynamic Technical Intelligence
             try:
                 candles = fetch_candles(coin["pair"])
                 if not candles.empty:
                     ticker_info = all_coins.get(sym, coin)
-                    res = apply_bot_intelligence(analyze_coin(sym, ticker_info, candles))
-                    lines.append(f"   🧠 Intel Score: *{res['score']}/100* | Sinyal: *{res['action']}*")
-                    lines.append(f"   📊 RSI: {res['rsi']} | EMA: {res['ema_bias']} | ST: *{res['supertrend']}*")
-                    lines.append(f"   🤖 ML Predict: *{res['ml_label']}* ({res['ml_prob']}%)")
-                    lines.append(f"   🎯 Target TP1: {format_idr(res['tp1'])} | SL: {format_idr(res['stop_loss'])}")
+                    res = apply_bot_intelligence(
+                        analyze_coin(sym, ticker_info, candles)
+                    )
+                    lines.append(
+                        f"   🧠 Intel Score: *{res['score']}/100* | Sinyal: *{res['action']}*"
+                    )
+                    lines.append(
+                        f"   📊 RSI: {res['rsi']} | EMA: {res['ema_bias']} | ST: *{res['supertrend']}*"
+                    )
+                    lines.append(
+                        f"   🤖 ML Predict: *{res['ml_label']}* ({res['ml_prob']}%)"
+                    )
+                    lines.append(
+                        f"   🎯 Target TP1: {format_idr(res['tp1'])} | SL: {format_idr(res['stop_loss'])}"
+                    )
             except Exception as e:
                 log(f"Dynamic analysis failed for {sym}: {e}")
-                
+
             lines.append(f"   🔗 [Masuk Market Indodax]({link})")
             lines.append("")
 
@@ -979,7 +1200,9 @@ def format_fomo_alert(fomo_gila, fomo, pumping, all_coins):
     _add_coins(pumping, "PUMPING (>8%)")
 
     lines.append("──────────────────────")
-    lines.append("⚠️ *Himbauan:* Selalu DYOR dan jangan FOMO secara asal. Gunakan stop loss!")
+    lines.append(
+        "⚠️ *Himbauan:* Selalu DYOR dan jangan FOMO secara asal. Gunakan stop loss!"
+    )
     lines.append(f"Gabung: {TELEGRAM_CHANNEL}")
     return "\n".join(lines)
 
@@ -989,7 +1212,7 @@ def check_fomo_and_alert(all_coins):
         return
 
     global _fomo_sent_symbols, _last_fomo_alert_time
-    
+
     now_ts = time.time()
     # Cooldown global
     if now_ts - _last_fomo_alert_time < FOMO_GLOBAL_COOLDOWN_SEC:
@@ -1013,7 +1236,11 @@ def check_fomo_and_alert(all_coins):
                 new_alerts[sym] = coin
 
     # Cooldown per koin
-    _fomo_sent_symbols = {k: v for k, v in _fomo_sent_symbols.items() if now_ts - v.get("_sent_at", 0) < FOMO_SYMBOL_COOLDOWN_SEC}
+    _fomo_sent_symbols = {
+        k: v
+        for k, v in _fomo_sent_symbols.items()
+        if now_ts - v.get("_sent_at", 0) < FOMO_SYMBOL_COOLDOWN_SEC
+    }
 
     if not new_alerts:
         return
@@ -1043,7 +1270,11 @@ def check_realtime_confluence_alerts(all_coins):
     sent = 0
 
     # Bersihkan cache alert
-    _confluence_sent_symbols = {k: v for k, v in _confluence_sent_symbols.items() if now_ts - v["sent_at"] < CONFLUENCE_SYMBOL_COOLDOWN_SEC}
+    _confluence_sent_symbols = {
+        k: v
+        for k, v in _confluence_sent_symbols.items()
+        if now_ts - v["sent_at"] < CONFLUENCE_SYMBOL_COOLDOWN_SEC
+    }
 
     for sym, pair in MAIN_ASSETS.items():
         if sym not in all_coins:
@@ -1077,22 +1308,25 @@ def check_realtime_confluence_alerts(all_coins):
             # Confluence logic — dilonggarkan agar sinyal bisa lolos
             strong = res["confluence_passed"] >= 4
             smart = (
-                res["confluence_passed"] >= 3 and
-                res["ml_label"] in ("BULLISH", "NETRAL") and
-                res["bt_label"] != "LEMAH"
+                res["confluence_passed"] >= 3
+                and res["ml_label"] in ("BULLISH", "NETRAL")
+                and res["bt_label"] != "LEMAH"
             )
 
             if not is_entry_action(res["action"]) or not (strong or smart):
                 continue
-            
+
             # Kirim alert instan!
             pair_url = pair.upper().replace("_", "")
             link = f"https://indodax.com/market/{pair_url}?ref={INDODAX_REF}"
             link_tv = f"https://www.tradingview.com/chart/?symbol=INDODAX:{pair_url}"
             ch_sign = "+" if res["change"] >= 0 else ""
-            
+
             insight_res = generate_signal_insight(res, GEMINI_API_KEY, DEEPSEEK_API_KEY)
-            ai_insight = insight_res.get("insight", "📊 *ANALYTICS & INSIGHT:*\nAI Insight tidak tersedia saat ini.\n\n🟢 *INSTRUKSI:*\nIkuti sinyal teknikal di atas dengan manajemen risiko.")
+            ai_insight = insight_res.get(
+                "insight",
+                "📊 *ANALYTICS & INSIGHT:*\nAI Insight tidak tersedia saat ini.\n\n🟢 *INSTRUKSI:*\nIkuti sinyal teknikal di atas dengan manajemen risiko.",
+            )
 
             msg = (
                 f"*[ RADAR SINYAL OTOMATIS ]*\n"
@@ -1127,21 +1361,28 @@ def check_realtime_confluence_alerts(all_coins):
                 f"⚠️ _Bukan saran keuangan. Selalu gunakan uang dingin (DYOR)._\n"
                 f"💎 *Gabung Premium:* {TELEGRAM_CHANNEL}"
             )
-            
+
             # Only notify (vibrate) for Strong Buy (BELI KUAT) to prevent phone vibration spam
             is_strong = "BELI KUAT" in res["action"]
             send_message(msg, notify=is_strong)
-            log(f"REAL-TIME CONFLUENCE ALERT TERKIRIM untuk {sym} ({res['confluence_label']})")
-            
+            log(
+                f"REAL-TIME CONFLUENCE ALERT TERKIRIM untuk {sym} ({res['confluence_label']})"
+            )
+
             # Masukkan ke list monitor TP/SL bot jika belum ada
             if sym not in _active_signals:
                 _active_signals[sym] = {
-                    'entry': res['price'], 'tp1': res['tp1'], 'tp2': res['tp2'], 'tp3': res['tp3'],
-                    'sl': res['stop_loss'], 'hit': set(), 'time': datetime.now(WIB).isoformat(),
+                    "entry": res["price"],
+                    "tp1": res["tp1"],
+                    "tp2": res["tp2"],
+                    "tp3": res["tp3"],
+                    "sl": res["stop_loss"],
+                    "hit": set(),
+                    "time": datetime.now(WIB).isoformat(),
                 }
-                _daily_stats['signals_sent'] += 1
+                _daily_stats["signals_sent"] += 1
                 record_bot_learning_signal(res, pair, source="realtime")
-            
+
             # Catat ke cache agar tidak spam
             _confluence_sent_symbols[sym] = {
                 "sent_at": now_ts,
@@ -1184,7 +1425,11 @@ def detect_early_setup_15m(candles_15m):
     ema21 = compute_ema(close, 21)
     ema_cross_up = bool(ema8.iloc[-1] > ema21.iloc[-1])
     ema8_slope_up = bool(ema8.iloc[-1] > ema8.iloc[-3]) if len(ema8) >= 3 else False
-    ema_state = "bullish" if ema_cross_up and ema8_slope_up else ("warming" if ema_cross_up else "bearish")
+    ema_state = (
+        "bullish"
+        if ema_cross_up and ema8_slope_up
+        else ("warming" if ema_cross_up else "bearish")
+    )
     ema_check = ema_cross_up and ema8_slope_up
 
     # RSI bangun
@@ -1193,7 +1438,11 @@ def detect_early_setup_15m(candles_15m):
     rsi_check = (38 <= rsi_now <= 68) and (rsi_now > rsi_prev + 1.5)
 
     # Volume spike (15m)
-    avg_vol_20 = float(vol.tail(21).iloc[:-1].mean()) if len(vol) >= 21 else float(vol.tail(20).mean())
+    avg_vol_20 = (
+        float(vol.tail(21).iloc[:-1].mean())
+        if len(vol) >= 21
+        else float(vol.tail(20).mean())
+    )
     last_vol = float(vol.iloc[-1])
     vol_ratio = (last_vol / avg_vol_20) if avg_vol_20 > 0 else 1.0
     vol_check = vol_ratio >= 1.4
@@ -1220,11 +1469,16 @@ def detect_early_setup_15m(candles_15m):
 
     # Trigger label utk pesan
     triggers = []
-    if ema_check: triggers.append("EMA up")
-    if rsi_check: triggers.append(f"RSI {rsi_prev:.0f}->{rsi_now:.0f}")
-    if vol_check: triggers.append(f"Vol {vol_ratio:.1f}x")
-    if macd_check: triggers.append("MACD+")
-    if bb_check: triggers.append("BB release")
+    if ema_check:
+        triggers.append("EMA up")
+    if rsi_check:
+        triggers.append(f"RSI {rsi_prev:.0f}->{rsi_now:.0f}")
+    if vol_check:
+        triggers.append(f"Vol {vol_ratio:.1f}x")
+    if macd_check:
+        triggers.append("MACD+")
+    if bb_check:
+        triggers.append("BB release")
     trigger_label = " | ".join(triggers) if triggers else "no trigger"
 
     return {
@@ -1253,7 +1507,8 @@ def check_early_entry_alerts(all_coins):
 
     # Bersihin cache
     _early_sent_symbols = {
-        k: v for k, v in _early_sent_symbols.items()
+        k: v
+        for k, v in _early_sent_symbols.items()
         if now_ts - v.get("sent_at", 0) < EARLY_SYMBOL_COOLDOWN_SEC
     }
 
@@ -1275,7 +1530,9 @@ def check_early_entry_alerts(all_coins):
             high_24h = ticker.get("high", 0)
             low_24h = ticker.get("low", 0)
             range_w = high_24h - low_24h
-            range_pos = ((ticker["price"] - low_24h) / range_w * 100) if range_w > 0 else 50
+            range_pos = (
+                ((ticker["price"] - low_24h) / range_w * 100) if range_w > 0 else 50
+            )
             if range_pos > EARLY_MAX_RANGE_POS:
                 continue  # udah terlalu deket puncak, bukan early
             if ticker["change"] > 8:
@@ -1300,7 +1557,9 @@ def check_early_entry_alerts(all_coins):
             bn_data = res.get("binance_signal", "NO DATA")
             bn_adj = res.get("binance_adjustment", 0)
             if bn_adj >= 3 and setup["passed"] >= (EARLY_MIN_SETUP_STRENGTH - 1):
-                binance_boost = True  # Binance konfirmasi strong → relaksasi setup threshold
+                binance_boost = (
+                    True  # Binance konfirmasi strong → relaksasi setup threshold
+                )
             if not binance_boost and res["score"] < EARLY_MIN_SCORE:
                 continue
 
@@ -1373,7 +1632,7 @@ def check_early_entry_alerts(all_coins):
                         command_router.create_buy_confirmation_proposal(
                             sym.lower(),
                             MAX_TRADE_IDR,
-                            float(res['price']),
+                            float(res["price"]),
                             tp1=early_tp1,
                             tp2=early_tp2,
                             sl=early_sl,
@@ -1391,7 +1650,7 @@ def check_early_entry_alerts(all_coins):
                                 sym,
                                 "CICIL BELI",
                                 MAX_TRADE_IDR,
-                                float(res['price']),
+                                float(res["price"]),
                                 early_tp1,
                                 early_tp2,
                                 early_sl,
@@ -1403,13 +1662,13 @@ def check_early_entry_alerts(all_coins):
                         res_buy = execution_engine.execute_buy(
                             sym.lower(),
                             MAX_TRADE_IDR,
-                            float(res['price']),
+                            float(res["price"]),
                             reason="EARLY",
                             metadata=_trade_risk_metadata(
                                 "early_entry",
                                 risk_tag=res.get("risk_level"),
                                 market_state={"risk_level": res.get("risk_level")},
-                            )
+                            ),
                         )
                         if res_buy.get("success"):
                             received = res_buy["received_coin"]
@@ -1424,7 +1683,11 @@ def check_early_entry_alerts(all_coins):
                                 trade_type="EARLY",
                             )
                             if saved:
-                                trade_label = "PAPER-TRADE SIMULASI" if res_buy.get("mode") == "paper" else "AUTO-TRADE SUKSES"
+                                trade_label = (
+                                    "PAPER-TRADE SIMULASI"
+                                    if res_buy.get("mode") == "paper"
+                                    else "AUTO-TRADE SUKSES"
+                                )
                                 msg += (
                                     f"\n\n🤖 *{trade_label}!*\n"
                                     f"Beli: {received} {sym} (Rp{spent:,.0f})\n"
@@ -1434,28 +1697,34 @@ def check_early_entry_alerts(all_coins):
                             else:
                                 msg += "\n\n🤖 *ORDER TERJADI, PENCATATAN PORTFOLIO GAGAL. CEK RECOVERY JOURNAL.*"
                         else:
-                            msg += f"\n\n🤖 *TRADE DIBLOKIR/GAGAL:* {res_buy.get('error')}"
+                            msg += (
+                                f"\n\n🤖 *TRADE DIBLOKIR/GAGAL:* {res_buy.get('error')}"
+                            )
                 except Exception as e:
                     _LOGGER.error(f"Auto-trade early failed: {e}")
 
             send_message(msg, notify=True)
-            log(f"EARLY ENTRY ALERT terkirim untuk {sym} (setup {setup['passed']}/5, score 1H {res['score']})")
+            log(
+                f"EARLY ENTRY ALERT terkirim untuk {sym} (setup {setup['passed']}/5, score 1H {res['score']})"
+            )
 
             # Catat sebagai paper-trade ("andai beli") — terpisah dari learning
             # sinyal nyata. Bot akan kabari otomatis kalau kena TP/SL.
             try:
-                record_paper_signal({
-                    "symbol": sym,
-                    "pair": pair,
-                    "action": "EARLY",
-                    "price": res["price"],
-                    "score": res["score"],
-                    "tp1": early_tp1,
-                    "tp2": early_tp2,
-                    "target": early_tp2,
-                    "stop_loss": early_sl,
-                    "forecast_step1_prob": res.get("ml_prob"),
-                })
+                record_paper_signal(
+                    {
+                        "symbol": sym,
+                        "pair": pair,
+                        "action": "EARLY",
+                        "price": res["price"],
+                        "score": res["score"],
+                        "tp1": early_tp1,
+                        "tp2": early_tp2,
+                        "target": early_tp2,
+                        "stop_loss": early_sl,
+                        "forecast_step1_prob": res.get("ml_prob"),
+                    }
+                )
             except Exception as e:
                 log(f"Gagal catat paper-trade early {sym}: {e}", "warning")
 
@@ -1520,13 +1789,17 @@ def check_tp_sl_alerts(all_coins):
     """Cek apakah harga sudah kena TP1/TP2/TP3 atau SL dari sinyal aktif."""
     global _active_signals, _daily_stats
     _ensure_daily_stats_fields()
-    
+
     # Check trade TP/SL if real auto-trade or paper-trading is enabled.
     if AUTO_TRADE_ENABLED or PAPER_TRADING_MODE:
         sell_reports = portfolio_manager.check_tp_sl(all_coins)
         for report in sell_reports:
             _record_trade_close_for_risk(report.get("profit_pct"))
-            sell_title = "PAPER-SELL SIMULASI" if report.get("mode") == "paper" else "AUTO-SELL EKSEKUSI"
+            sell_title = (
+                "PAPER-SELL SIMULASI"
+                if report.get("mode") == "paper"
+                else "AUTO-SELL EKSEKUSI"
+            )
             msg = (
                 f"🤖 *{sell_title}!* 🤖\n\n"
                 f"💰 Koin: *{report['symbol']}*\n"
@@ -1537,6 +1810,24 @@ def check_tp_sl_alerts(all_coins):
                 f"Posisi otomatis dihapus dari radar. 🛡️"
             )
             send_message(msg, notify=True, force=True)
+
+    # ── Circuit breaker: consecutive losses > 3 → pause all new trades ──
+    consec_losses = _ensure_daily_stats_fields().get("consecutive_losses", 0)
+    _circuit_broken = consec_losses >= 3
+    if _circuit_broken:
+        log(
+            f"CIRCUIT BREAKER: {consec_losses} consecutive losses. Pausing new trade proposals."
+        )
+        # Kirim peringatan 1x
+        if not _daily_stats.get("_cb_notified"):
+            send_message(
+                f"🚨 *CIRCUIT BREAKER AKTIF*\n"
+                f"{consec_losses} loss berturut-turut. Trade baru dihentikan sementara.\n"
+                f"Bot akan kembali aktif setelah reset harian (21:00 WIB).",
+                notify=True,
+                force=True,
+            )
+            _daily_stats["_cb_notified"] = True
 
     to_remove = []
     for sym, sig in _active_signals.items():
@@ -1557,11 +1848,27 @@ def check_tp_sl_alerts(all_coins):
         entry = sig["entry"]
         pnl_pct = (price - entry) / entry * 100
 
+        # ── Trailing SL: setelah TP1 kena, SL naik mengikuti harga ──
+        if "TP1" in sig["hit"] and sig.get("trailing_sl"):
+            trail = sig.get("trail_pct", 0.5)  # default trail 0.5%
+            # Trailing: SL = harga sekarang minus trail%, tapi minimal breakeven + 0.5%
+            min_sl = entry * (1 + 0.005)  # breakeven + 0.5%
+            trail_sl = price * (1 - trail / 100)  # harga sekarang minus trail%
+            new_sl = max(min_sl, trail_sl)
+            # Hanya naikkan SL, jangan turunkan
+            if new_sl > sig.get("sl", 0):
+                sig["sl"] = new_sl
+                log(f"Trailing SL {sym}: naik ke {format_idr(new_sl)}")
+
         if price <= sig["sl"] and "SL" not in sig["hit"]:
             sig["hit"].add("SL")
             _daily_stats["sl_hit"] += 1
             _record_trade_close_for_risk(pnl_pct)
-            send_message(f"*STOP LOSS HIT*\n{sym} kena SL di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nPotong rugi, disiplin!", notify=True, force=True)
+            send_message(
+                f"*STOP LOSS HIT*\n{sym} kena SL di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nPotong rugi, disiplin!",
+                notify=True,
+                force=True,
+            )
             to_remove.append(sym)
             continue
 
@@ -1569,16 +1876,37 @@ def check_tp_sl_alerts(all_coins):
             sig["hit"].add("TP3")
             _daily_stats["tp_hit"] += 1
             _record_trade_close_for_risk(pnl_pct)
-            send_message(f"*TARGET HIT - TP3*\n{sym} capai TP3 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nSelamat! Take profit semua.", notify=True, force=True)
+            # Compound: catat profit untuk reinvest
+            if pnl_pct > 0:
+                _daily_stats["compounded_profit"] = (
+                    _daily_stats.get("compounded_profit", 0) + pnl_pct
+                )
+            send_message(
+                f"*TARGET HIT - TP3*\n{sym} capai TP3 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nSelamat! Take profit semua. Modal +{pnl_pct:.1f}% ready compounding.",
+                notify=True,
+                force=True,
+            )
             to_remove.append(sym)
         elif price >= sig["tp2"] and "TP2" not in sig["hit"]:
             sig["hit"].add("TP2")
             _daily_stats["tp_hit"] += 1
-            send_message(f"*TARGET HIT - TP2*\n{sym} capai TP2 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nJual 30%, sisanya trailing.", notify=True, force=True)
+            send_message(
+                f"*TARGET HIT - TP2*\n{sym} capai TP2 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nJual 30%, sisanya trailing SL aktif.",
+                notify=True,
+                force=True,
+            )
         elif price >= sig["tp1"] and "TP1" not in sig["hit"]:
             sig["hit"].add("TP1")
             _daily_stats["tp_hit"] += 1
-            send_message(f"*TARGET HIT - TP1*\n{sym} capai TP1 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nJual 30%, pantau TP2.", notify=True, force=True)
+            # Aktifkan trailing SL: naik ke breakeven + 0.5%
+            sig["trailing_sl"] = True
+            sig["trail_pct"] = 0.5
+            sig["sl"] = max(sig.get("sl", 0), entry * 1.005)  # break-even + 0.5%
+            send_message(
+                f"*TARGET HIT - TP1*\n{sym} capai TP1 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nSL trailing aktif di {format_idr(sig['sl'])}. Jual 30%, pantau TP2.",
+                notify=True,
+                force=True,
+            )
 
     for sym in to_remove:
         del _active_signals[sym]
@@ -1606,9 +1934,9 @@ def send_daily_summary():
         f"Posisi masih aktif: {active}",
         "------",
     ]
-    if _daily_stats['tp_hit'] > _daily_stats['sl_hit']:
+    if _daily_stats["tp_hit"] > _daily_stats["sl_hit"]:
         lines.append("Hari yang bagus! Lebih banyak TP daripada SL.")
-    elif _daily_stats['sl_hit'] > 0:
+    elif _daily_stats["sl_hit"] > 0:
         lines.append("Ada SL hari ini. Evaluasi dan jangan balas dendam.")
     else:
         lines.append("Market tenang hari ini. Sabar menunggu setup.")
@@ -1642,9 +1970,9 @@ def _format_idr(value):
     if value is None or value == 0:
         return "-"
     if value >= 1_000_000_000:
-        return f"Rp{value/1_000_000_000:.2f}M"
+        return f"Rp{value / 1_000_000_000:.2f}M"
     if value >= 1_000_000:
-        return f"Rp{value/1_000_000:.1f}JT"
+        return f"Rp{value / 1_000_000:.1f}JT"
     if value >= 1_000:
         return f"Rp{value:,.0f}"
     return f"Rp{value:,.2f}"
@@ -1674,11 +2002,18 @@ def handle_telegram_command(update_data):
     msg_chat_id = str(message.get("chat", {}).get("id", ""))
     if str(msg_chat_id) != str(CHAT_ID):
         return False
-    sender = update_data.get("callback_query", {}).get("from") if "callback_query" in update_data else message.get("from")
+    sender = (
+        update_data.get("callback_query", {}).get("from")
+        if "callback_query" in update_data
+        else message.get("from")
+    )
     auth_message = dict(message)
     auth_message["from"] = sender or {}
     allowed_user_id = str(os.environ.get("TELEGRAM_ALLOWED_USER_ID", "")).strip()
-    if allowed_user_id and str(auth_message.get("from", {}).get("id", "")) != allowed_user_id:
+    if (
+        allowed_user_id
+        and str(auth_message.get("from", {}).get("id", "")) != allowed_user_id
+    ):
         return False
 
     # Update last update id
@@ -1707,10 +2042,20 @@ def handle_telegram_command(update_data):
             allowed_user_id=allowed_user_id,
         )
         if not authorization.get("allowed"):
-            send_message(f"Command ditolak: {authorization.get('reason')}", notify=True, force=True)
+            send_message(
+                f"Command ditolak: {authorization.get('reason')}",
+                notify=True,
+                force=True,
+            )
             return True
-        context_symbol = router_command.get("symbol") if router_command.get("type") == "SELL" else None
-        result = command_router.handle_command(text, context=_telegram_router_context(context_symbol))
+        context_symbol = (
+            router_command.get("symbol")
+            if router_command.get("type") == "SELL"
+            else None
+        )
+        result = command_router.handle_command(
+            text, context=_telegram_router_context(context_symbol)
+        )
         send_message(_format_router_response(result), notify=True, force=True)
         return True
 
@@ -1771,7 +2116,13 @@ def handle_telegram_command(update_data):
                 return True
 
             # Sort: BELI KUAT > CICIL BELI > WATCH > JANGAN BELI > HINDARI
-            priority = {"BELI KUAT": 0, "CICIL BELI": 1, "WATCH": 2, "JANGAN BELI": 3, "HINDARI": 4}
+            priority = {
+                "BELI KUAT": 0,
+                "CICIL BELI": 1,
+                "WATCH": 2,
+                "JANGAN BELI": 3,
+                "HINDARI": 4,
+            }
             signals.sort(key=lambda x: priority.get(x["action"], 5))
 
             # Format response
@@ -1789,13 +2140,21 @@ def handle_telegram_command(update_data):
             for s in signals[:8]:  # Max 8 koin
                 ch = f"+{s['change']:.2f}" if s["change"] >= 0 else f"{s['change']:.2f}"
                 lines.append(f"{s['emoji']} *{s['symbol']}* -- {s['action']}")
-                lines.append(f"   💰 {format_idr(s['price'])} ({ch}%) | Score: {s['score']}/100")
-                lines.append(f"   📊 RSI: {s['rsi']} | MACD: {s['macd_signal']} | ST: {s['supertrend']}")
-                lines.append(f"   🧠 ML: {s['ml_label']} ({s['ml_prob']}%) | MTF: {s['mtf_label']}")
+                lines.append(
+                    f"   💰 {format_idr(s['price'])} ({ch}%) | Score: {s['score']}/100"
+                )
+                lines.append(
+                    f"   📊 RSI: {s['rsi']} | MACD: {s['macd_signal']} | ST: {s['supertrend']}"
+                )
+                lines.append(
+                    f"   🧠 ML: {s['ml_label']} ({s['ml_prob']}%) | MTF: {s['mtf_label']}"
+                )
 
                 if is_entry_action(s["action"]):
                     buy_count += 1
-                    lines.append(f"   🎯 TP1: {format_idr(s['tp1'])} | SL: {format_idr(s['stop_loss'])}")
+                    lines.append(
+                        f"   🎯 TP1: {format_idr(s['tp1'])} | SL: {format_idr(s['stop_loss'])}"
+                    )
                     lines.append(f"   💰 Alokasi: {s['alloc_pct']}%")
                 lines.append("")
 
@@ -1849,11 +2208,15 @@ def handle_telegram_command(update_data):
                 lines.append(f"   Score: {s['score']}/100 | Action: {s['action']}")
                 lines.append(f"   Harga: {format_idr(s['price'])} ({ch}%)")
                 lines.append(f"   RSI: {s['rsi']} | MACD: {s['macd_signal']}")
-                lines.append(f"   ML: {s['ml_label']} ({s['ml_prob']}%) | MTF: {s['mtf_label']}")
+                lines.append(
+                    f"   ML: {s['ml_label']} ({s['ml_prob']}%) | MTF: {s['mtf_label']}"
+                )
                 lines.append(f"   Confluence: {s['confluence_label']}")
 
                 if is_entry_action(s["action"]):
-                    lines.append(f"   🎯 Entry → TP1: {format_idr(s['tp1'])} | TP2: {format_idr(s['tp2'])} | SL: {format_idr(s['stop_loss'])}")
+                    lines.append(
+                        f"   🎯 Entry → TP1: {format_idr(s['tp1'])} | TP2: {format_idr(s['tp2'])} | SL: {format_idr(s['stop_loss'])}"
+                    )
                     lines.append(f"   💰 Alokasi: {s['alloc_pct']}%")
                 lines.append("")
 
@@ -1876,7 +2239,7 @@ def handle_telegram_command(update_data):
                 send_message(
                     "💼 *PORTFOLIO*\n\nTidak ada posisi terbuka saat ini.\n\n"
                     "💡 Tips: Buka /scan untuk cari entry baru.",
-                    notify=True
+                    notify=True,
                 )
                 return True
 
@@ -1899,10 +2262,14 @@ def handle_telegram_command(update_data):
                 total_pnl += pnl
 
                 emoji = "🟢" if pnl >= 0 else "🔴"
-                hit_status = ", ".join(sig.get("hit", [])) if sig.get("hit") else "Aktif"
+                hit_status = (
+                    ", ".join(sig.get("hit", [])) if sig.get("hit") else "Aktif"
+                )
 
                 lines.append(f"{emoji} *{sym}*")
-                lines.append(f"   Entry: {format_idr(entry)} → Sekarang: {format_idr(price)}")
+                lines.append(
+                    f"   Entry: {format_idr(entry)} → Sekarang: {format_idr(price)}"
+                )
                 lines.append(f"   P/L: {pnl:+.2f}% | Status: {hit_status}")
 
                 if "TP1" in sig.get("hit", []):
@@ -1922,7 +2289,9 @@ def handle_telegram_command(update_data):
             lines.append("📌 Monitor: bot akan notif otomatis saat TP/SL kena.")
 
             send_message("\n".join(lines), notify=True)
-            log(f"/portfolio command executed — {len(_active_signals)} active positions")
+            log(
+                f"/portfolio command executed — {len(_active_signals)} active positions"
+            )
 
         except Exception as e:
             log(f"Error /portfolio: {e}")
@@ -1933,6 +2302,7 @@ def handle_telegram_command(update_data):
     if cmd == "/journal":
         try:
             from learning_engine import build_profile
+
             profile = build_profile()
 
             lines = [
@@ -1957,7 +2327,9 @@ def handle_telegram_command(update_data):
             if best:
                 lines.append("*Top Performer:*\n")
                 for sym, stats in best:
-                    lines.append(f"🏆 {sym}: {stats.get('winrate', 0):.1f}% WR ({stats.get('closed', 0)} trades)")
+                    lines.append(
+                        f"🏆 {sym}: {stats.get('winrate', 0):.1f}% WR ({stats.get('closed', 0)} trades)"
+                    )
                 lines.append("")
 
             # Active signals
@@ -1982,6 +2354,7 @@ def handle_telegram_command(update_data):
     if cmd == "/stats":
         try:
             from learning_engine import build_profile
+
             profile = build_profile()
 
             total = profile.get("closed", 0)
@@ -1996,7 +2369,9 @@ def handle_telegram_command(update_data):
 
             lines.append(f"Total sinyal tercatat: {profile.get('total_signals', 0)}")
             lines.append(f"Trade selesai: {total}")
-            lines.append(f"Win: {profile.get('wins', 0)} | Loss: {profile.get('losses', 0)}")
+            lines.append(
+                f"Win: {profile.get('wins', 0)} | Loss: {profile.get('losses', 0)}"
+            )
             lines.append(f"*Winrate: {wr:.1f}%*")
             lines.append("")
 
@@ -2013,7 +2388,9 @@ def handle_telegram_command(update_data):
             if best:
                 lines.append("*Top Performer:*\n")
                 for sym, stats in best:
-                    lines.append(f"  🏆 {sym}: {stats.get('winrate', 0):.1f}% WR ({stats.get('closed', 0)} trades)")
+                    lines.append(
+                        f"  🏆 {sym}: {stats.get('winrate', 0):.1f}% WR ({stats.get('closed', 0)} trades)"
+                    )
                 lines.append("")
 
             lines.append("──────────────────────")
@@ -2036,7 +2413,7 @@ def handle_telegram_command(update_data):
                 "Gunakan:\n"
                 "*/alert on* — Aktifkan semua alert\n"
                 "*/alert off* — Nonaktifkan semua alert",
-                notify=True
+                notify=True,
             )
             return True
 
@@ -2062,9 +2439,15 @@ def handle_telegram_command(update_data):
                 return True
 
             mode, mode_desc = detect_market_mode(all_coins)
-            mode_emoji = {"agresif": "🟢 AGRESIF", "normal": "🟡 NORMAL", "defensif": "🔴 DEFENSIF"}[mode]
+            mode_emoji = {
+                "agresif": "🟢 AGRESIF",
+                "normal": "🟡 NORMAL",
+                "defensif": "🔴 DEFENSIF",
+            }[mode]
 
-            changes = [c["change"] for c in all_coins.values() if c["vol_idr"] >= 100_000_000]
+            changes = [
+                c["change"] for c in all_coins.values() if c["vol_idr"] >= 100_000_000
+            ]
             green = sum(1 for c in changes if c > 0)
             pct_green = green / len(changes) * 100 if changes else 0
             avg_change = sum(changes) / len(changes) if changes else 0
@@ -2081,7 +2464,9 @@ def handle_telegram_command(update_data):
             ]
 
             # Top movers
-            sorted_coins = sorted(all_coins.values(), key=lambda x: x["change"], reverse=True)[:5]
+            sorted_coins = sorted(
+                all_coins.values(), key=lambda x: x["change"], reverse=True
+            )[:5]
             if sorted_coins:
                 lines.append("*Top Gainer:*\n")
                 for c in sorted_coins:
@@ -2117,7 +2502,10 @@ def poll_telegram_commands():
     if not BOT_TOKEN or not CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    params = {"timeout": 0, "offset": _last_update_offset + 1 if _last_update_offset else None}
+    params = {
+        "timeout": 0,
+        "offset": _last_update_offset + 1 if _last_update_offset else None,
+    }
     try:
         resp = requests.get(url, params=params, timeout=15)
         data = resp.json()
@@ -2151,7 +2539,11 @@ if __name__ == "__main__":
     log("   Confluence 1H + FOMO + TP/SL: tiap loop")
     log("   Daily summary: 21:00 WIB")
     log(f"   Binance engine: {'✅ AKTIF' if _BINANCE_OK else '❌ TIDAK TERSEDIA'}")
-    auto_trade_status = f"✅ REAL AKTIF (Limit: Rp{MAX_TRADE_IDR:,.0f})" if AUTO_TRADE_ENABLED and not PAPER_TRADING_MODE else "❌ REAL OFF"
+    auto_trade_status = (
+        f"✅ REAL AKTIF (Limit: Rp{MAX_TRADE_IDR:,.0f})"
+        if AUTO_TRADE_ENABLED and not PAPER_TRADING_MODE
+        else "❌ REAL OFF"
+    )
     log(f"   Auto-Trade Indodax: {auto_trade_status}")
     log(f"   Paper Trading: {'✅ AKTIF' if PAPER_TRADING_MODE else '❌ OFF'}")
     log(f"   Confirm Before Trade: {'✅ AKTIF' if CONFIRM_BEFORE_TRADE else '❌ OFF'}")
@@ -2159,7 +2551,9 @@ if __name__ == "__main__":
     log("=" * 40)
     if not BOT_TOKEN or not CHAT_ID:
         log("CRITICAL: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID belum diset!")
-        log(f"  BOT_TOKEN: {'OK (' + BOT_TOKEN[:8] + '...)' if BOT_TOKEN else 'KOSONG'}")
+        log(
+            f"  BOT_TOKEN: {'OK (' + BOT_TOKEN[:8] + '...)' if BOT_TOKEN else 'KOSONG'}"
+        )
         log(f"  CHAT_ID: {'OK (' + str(CHAT_ID) + ')' if CHAT_ID else 'KOSONG'}")
         log("  Cek environment variables ATAU .streamlit/secrets.toml")
     else:
@@ -2188,14 +2582,18 @@ if __name__ == "__main__":
             coin_count = len(all_coins)
             now = datetime.now(WIB)
             _paper_closed = []
-            learning_profile = train_from_prices(all_coins, closed_collector=_paper_closed)
+            learning_profile = train_from_prices(
+                all_coins, closed_collector=_paper_closed
+            )
             _announce_paper_results(_paper_closed)
             news_profile = get_bot_news_profile()
 
             if cycle_count % 10 == 1:
                 wr = learning_profile.get("winrate")
                 wr_text = f"{wr:.1f}%" if wr is not None else "belum ada"
-                log(f"Heartbeat -- {coin_count} koin | {now.strftime('%H:%M WIB')} | Learning WR: {wr_text} | News: {news_profile.get('global_label', 'NO DATA')}")
+                log(
+                    f"Heartbeat -- {coin_count} koin | {now.strftime('%H:%M WIB')} | Learning WR: {wr_text} | News: {news_profile.get('global_label', 'NO DATA')}"
+                )
 
             # 0. Proses command Telegram masuk (/scan, /top, /portfolio, dst)
             poll_telegram_commands()
