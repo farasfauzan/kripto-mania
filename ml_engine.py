@@ -45,14 +45,14 @@ try:
     import xgboost as xgb
 
     XGB_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     pass
 
 try:
     import lightgbm as lgb
 
     LGBM_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     pass
 
 try:
