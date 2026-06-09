@@ -183,6 +183,7 @@ def cmd_help():
         f"📜 */journal* — Riwayat sinyal + winrate\n"
         f"📈 */stats* — Statistik performa bot\n"
         f"🔔 */alert on/off* — Aktifkan/nonaktifkan alert\n"
+        f"🔥 */agresif on/off* — Mode Pro Trader Scalper\n"
         f"🌤 */weather* — Cek market mode saat ini\n"
         f"──────────────────────\n"
         f"💡 Bot juga otomatis push sinyal:\n"
@@ -631,6 +632,18 @@ def cmd_alert(alert_state):
         return True
 
 
+def cmd_agresif(state):
+    """Handle /agresif on/off."""
+    if state == "on":
+        os.environ["AGGRESSIVE_MODE"] = "1"
+        send_telegram_message("🔥 *MODE AGRESIF AKTIF* — Bot akan mencari sinyal scalping cepat dengan XGBoost.", notify=True)
+        return True
+    else:
+        os.environ["AGGRESSIVE_MODE"] = "0"
+        send_telegram_message("🛡️ *MODE AGRESIF NONAKTIF* — Bot kembali ke mode swing/defensif normal.", notify=True)
+        return True
+
+
 # =============================================================================
 # MAIN COMMAND DISPATCHER
 # =============================================================================
@@ -682,6 +695,21 @@ def handle_telegram_command(text, telegram_bot_module=None):
                 "Gunakan:\n"
                 "*/alert on* — Aktifkan semua alert\n"
                 "*/alert off* — Nonaktifkan semua alert",
+                notify=True
+            )
+            return True
+
+    if cmd == "/agresif":
+        state = args[0] if args else ""
+        if state in ("on", "off"):
+            return cmd_agresif(state)
+        else:
+            current = "Aktif" if os.environ.get("AGGRESSIVE_MODE") == "1" else "Nonaktif"
+            send_telegram_message(
+                f"🔥 *MODE AGRESIF* (Saat ini: {current})\n\n"
+                "Gunakan:\n"
+                "*/agresif on* — Nyalakan scalping agresif\n"
+                "*/agresif off* — Kembali ke mode normal",
                 notify=True
             )
             return True

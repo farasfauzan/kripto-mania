@@ -20,7 +20,11 @@ from news_engine import apply_news_adjustments, build_news_profile
 from ai_pilot import generate_signal_insight
 from core.applog import get_logger
 from core.committee import build_committee, committee_summary_line
-from core import indodax_trade, portfolio_manager
+from core import command_router, execution_engine, portfolio_manager
+try:
+    from ml_engine import predict_aggressive_scalp
+except ImportError:
+    predict_aggressive_scalp = None
 
 # Binance global data (graceful import)
 try:
@@ -53,9 +57,14 @@ CHAT_ID = _get_api_key("TELEGRAM_CHAT_ID")
 INDODAX_REF = "narwanpratanta"
 WIB = timezone(timedelta(hours=7))
 
+def env_bool(name, default=False):
+    return str(os.environ.get(name, str(default))).lower() in {"1","true","yes","on"}
+
 # Auto Trade Settings
-AUTO_TRADE_ENABLED = os.environ.get("AUTO_TRADE_ENABLED", "true").lower() == "true"
-MAX_TRADE_IDR = 50000.0  # Limit to 50k IDR for initial testing
+AUTO_TRADE_ENABLED = env_bool("AUTO_TRADE_ENABLED", False)
+PAPER_TRADING_MODE = env_bool("PAPER_TRADING_MODE", True)
+CONFIRM_BEFORE_TRADE = env_bool("CONFIRM_BEFORE_TRADE", True)
+MAX_TRADE_IDR = float(os.environ.get("MAX_TRADE_IDR", "50000"))
 
 MAIN_ASSETS = {
     # Disamakan dgn web (app.py ALL_ASSETS) supaya cakupan sinyal konsisten.
@@ -72,9 +81,6 @@ BLUE_CHIPS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA"}
 MICIN_COINS = {"DOGE", "PEPE", "SHIB", "BONK", "FLOKI", "LUNC", "BTT", "JASMY"}
 
 TELEGRAM_CHANNEL = "https://t.me/+VPlOcY2wFGA0NWU1"
-
-def env_bool(name, default=False):
-    return str(os.environ.get(name, str(default))).lower() in {"1","true","yes","on"}
 
 ENABLE_FOMO_ALERTS = env_bool("ENABLE_FOMO_ALERTS", True)
 ENABLE_CONFLUENCE_ALERTS = env_bool("ENABLE_CONFLUENCE_ALERTS", True)
@@ -116,11 +122,162 @@ _fomo_sent_symbols = {}
 _confluence_sent_symbols = {}  # track real-time confluence alerts
 _early_sent_symbols = {}  # track EARLY entry alerts (pre-pump)
 _active_signals = {}  # track sinyal beli aktif untuk TP/SL monitor
-_daily_stats = {"tp_hit": 0, "sl_hit": 0, "signals_sent": 0}
 _last_fomo_alert_time = 0  # track last global FOMO alert to prevent spamming
 _message_fingerprints = {}  # Anti-duplicate message fingerprint cache
 _last_news_profile = None
 _last_news_profile_at = 0
+
+
+def _default_daily_stats():
+    return {
+        "tp_hit": 0,
+        "sl_hit": 0,
+        "signals_sent": 0,
+        "daily_loss_pct": 0.0,
+        "consecutive_losses": 0,
+    }
+
+
+_daily_stats = _default_daily_stats()
+
+
+def _ensure_daily_stats_fields():
+    global _daily_stats
+    if not isinstance(_daily_stats, dict):
+        _daily_stats = _default_daily_stats()
+    defaults = _default_daily_stats()
+    for key, value in defaults.items():
+        _daily_stats.setdefault(key, value)
+    return _daily_stats
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _record_trade_close_for_risk(pnl_pct):
+    stats = _ensure_daily_stats_fields()
+    pnl = _safe_float(pnl_pct, 0.0)
+    if pnl < 0:
+        stats["daily_loss_pct"] = max(0.0, _safe_float(stats.get("daily_loss_pct"), 0.0)) + abs(pnl)
+        stats["consecutive_losses"] = int(max(0, _safe_float(stats.get("consecutive_losses"), 0))) + 1
+    else:
+        stats["consecutive_losses"] = 0
+
+
+def _total_capital_hint():
+    return os.environ.get("TOTAL_CAPITAL_IDR")
+
+
+def _trade_risk_metadata(source, risk_tag=None, market_state=None):
+    return {
+        "source": source,
+        "portfolio_state": portfolio_manager._load_portfolio(),
+        "daily_stats": _ensure_daily_stats_fields(),
+        "total_capital_idr": _total_capital_hint(),
+        "market_state": market_state,
+        "risk_tag": risk_tag,
+    }
+
+
+def _save_executed_buy_position(result, symbol, tp1, tp2, sl, trade_type):
+    saved = portfolio_manager.save_position(
+        symbol=symbol.lower(),
+        buy_price=result["avg_price"],
+        amount_coin=result["received_coin"],
+        tp1=tp1,
+        tp2=tp2,
+        sl=sl,
+        trade_type=trade_type,
+        mode=result.get("mode", "paper"),
+    )
+    if saved:
+        return True
+    error = "Order executed but portfolio position could not be saved"
+    if result.get("mode") == "real":
+        portfolio_manager.record_order_recovery(
+            symbol.lower(),
+            "buy",
+            result.get("spent_idr"),
+            result.get("avg_price"),
+            result,
+            trade_type,
+            error,
+        )
+    _LOGGER.error(f"{error}: {symbol.upper()}")
+    return False
+
+
+def _format_trade_proposal_message(symbol, action_label, amount_idr, price, tp1, tp2, sl, risk_level, reason):
+    try:
+        ttl = int(os.environ.get("PENDING_TRADE_TTL_MINUTES", "10"))
+    except (TypeError, ValueError):
+        ttl = 10
+    if ttl <= 0:
+        ttl = 10
+    return (
+        f"{symbol.upper()} memberi sinyal {action_label}.\n"
+        f"Alokasi aman: Rp{amount_idr:,.0f}\n"
+        f"Risk: {risk_level or '-'}\n"
+        f"Entry estimasi: {format_idr(price)}\n"
+        f"TP1: {format_idr(tp1)}\n"
+        f"TP2: {format_idr(tp2)}\n"
+        f"SL: {format_idr(sl)}\n"
+        f"Alasan: {reason or '-'}\n"
+        f"Balas: BUY {symbol.upper()} {int(amount_idr)} untuk eksekusi.\n"
+        f"Balas: CANCEL {symbol.upper()} untuk membatalkan.\n"
+        f"Proposal berlaku {ttl} menit."
+    )
+
+
+def _telegram_router_context(symbol=None):
+    context = {
+        "portfolio_state": portfolio_manager._load_portfolio(),
+        "daily_stats": _ensure_daily_stats_fields(),
+        "total_capital_idr": _total_capital_hint(),
+    }
+    clean_symbol = str(symbol or "").strip().upper()
+    if clean_symbol:
+        try:
+            all_coins = fetch_all_tickers()
+            ticker = all_coins.get(clean_symbol) if isinstance(all_coins, dict) else None
+            if isinstance(ticker, dict):
+                context["price"] = ticker.get("price")
+            elif ticker:
+                context["price"] = ticker
+        except Exception as e:
+            log(f"Gagal ambil harga untuk command {clean_symbol}: {e}", "warning")
+    return context
+
+
+def _format_router_response(result: dict) -> str:
+    if not isinstance(result, dict):
+        return "Command diproses."
+    if result.get("command", {}).get("type") == "RISK" and isinstance(result.get("risk"), dict):
+        risk = result["risk"]
+        return (
+            "*RISK STATUS*\n"
+            f"Status: {risk.get('status')}\n"
+            f"Risk level: {risk.get('risk_level')}\n"
+            f"Open positions: {risk.get('open_positions')}\n"
+            f"Daily loss: {risk.get('daily_loss_pct', 0):.2f}%\n"
+            f"Consecutive losses: {risk.get('consecutive_losses', 0)}"
+        )
+    if result.get("command", {}).get("type") == "STATUS":
+        pending = [p for p in result.get("pending", []) if p.get("status") == "PENDING"]
+        return f"Bot aktif. Pending proposal: {len(pending)}"
+    trade_result = result.get("result")
+    if isinstance(trade_result, dict):
+        status = "SUKSES" if trade_result.get("success") else "DIBLOKIR/GAGAL"
+        mode = trade_result.get("mode", "-")
+        action = trade_result.get("action", "-").upper()
+        symbol = trade_result.get("symbol", "-").upper()
+        detail = trade_result.get("error") or trade_result.get("reason", "")
+        return f"{status}: {action} {symbol} ({mode})\n{detail}"
+    return result.get("message", "Command diproses.")
 
 
 def _state_file_path():
@@ -155,6 +312,7 @@ def load_bot_state():
         _early_sent_symbols = data.get("early_sent_symbols", _early_sent_symbols)
         _active_signals = data.get("active_signals", _active_signals)
         _daily_stats = data.get("daily_stats", _daily_stats)
+        _ensure_daily_stats_fields()
         _last_fomo_alert_time = data.get("last_fomo_alert_time", _last_fomo_alert_time)
         _message_fingerprints = data.get("message_fingerprints", _message_fingerprints)
 
@@ -368,6 +526,17 @@ def analyze_coin(symbol, data, candles):
     )
     # Tambahkan Binance adjustment ke base score (identik dgn web)
     base += binance_adj
+    
+    # Aggressive Scalp (XGBoost)
+    xgb_prob = 0.0
+    xgb_label = "NO DATA"
+    if predict_aggressive_scalp and os.environ.get("AGGRESSIVE_MODE") == "1":
+        xgb_scalp = predict_aggressive_scalp(candles)
+        if xgb_scalp.get("is_scalp_valid"):
+            base += 15  # Boost score kuat untuk aggressive scalp
+            xgb_prob = xgb_scalp.get("prob_up_pct", 0)
+            xgb_label = "SCALP BUY"
+
     momentum = change
     score = int(clamp(round(base), 0, 100))
 
@@ -401,7 +570,9 @@ def analyze_coin(symbol, data, candles):
         "rsi": round(rsi, 1), "ema_bias": ema_bias, "macd_signal": macd_signal,
         "bb_signal": bb["bb_signal"], "supertrend": supertrend,
         "adx": adx_data["adx"], "adx_trend": adx_data["trend"],
-        "ml_prob": ml["ml_prob"], "ml_label": ml["ml_label"], "ml_conf": ml["ml_conf"],
+        "ml_prob": ml["ml_prob"] if xgb_prob == 0 else xgb_prob,
+        "ml_label": ml["ml_label"] if xgb_label == "NO DATA" else xgb_label,
+        "ml_conf": ml["ml_conf"],
         "bt_wr": bt["bt_wr"], "bt_trades": bt["bt_trades"], "bt_label": bt["bt_label"],
         "verdict": verdict, "verdict_net": verdict_net,
         "vol_label": vol_label, "risk_level": risk_level,
@@ -619,30 +790,73 @@ def send_sinyal_harian(all_coins):
             lines.append(f"   👉 [BELI DI INDODAX]({link})")
             lines.append("")
             
-            # Auto Trade Execution for BELI KUAT
-            if AUTO_TRADE_ENABLED and s["action"] == "BELI KUAT":
+            # Trade execution for BELI KUAT. Defaults to paper mode unless real trade is explicitly enabled.
+            if (AUTO_TRADE_ENABLED or PAPER_TRADING_MODE) and s["action"] == "BELI KUAT":
                 try:
-                    res_buy = indodax_trade.buy_market(s['symbol'].lower(), MAX_TRADE_IDR, float(s['price']))
-                    if res_buy.get("success"):
-                        received = res_buy["received_coin"]
-                        avg_price = res_buy["avg_price"]
-                        spent = res_buy["spent_idr"]
-                        # Save to portfolio
-                        portfolio_manager.save_position(
-                            symbol=s['symbol'].lower(),
-                            buy_price=avg_price,
-                            amount_coin=received,
+                    if CONFIRM_BEFORE_TRADE:
+                        command_router.create_buy_confirmation_proposal(
+                            s['symbol'].lower(),
+                            MAX_TRADE_IDR,
+                            float(s['price']),
                             tp1=s["tp1"],
                             tp2=s["tp2"],
                             sl=s["stop_loss"],
-                            trade_type="BELI KUAT"
+                            risk_level=s.get("risk_level"),
+                            reason="BELI KUAT",
+                            metadata=_trade_risk_metadata(
+                                "daily_signal",
+                                risk_tag=s.get("risk_level"),
+                                market_state={"risk_level": s.get("risk_level")},
+                            ),
                         )
-                        lines.append(f"🤖 *AUTO-TRADE SUKSES!*")
-                        lines.append(f"   Beli: {received} {s['symbol']} (Rp{spent:,.0f})")
-                        lines.append(f"   Harga Rata-rata: Rp{avg_price:,.0f}")
-                        lines.append(f"   Mode Kawal TP/SL diaktifkan 🛡️")
+                        lines.append("*PROPOSAL TRADE MENUNGGU KONFIRMASI*")
+                        lines.append(
+                            _format_trade_proposal_message(
+                                s['symbol'],
+                                "BELI KUAT",
+                                MAX_TRADE_IDR,
+                                float(s['price']),
+                                s["tp1"],
+                                s["tp2"],
+                                s["stop_loss"],
+                                s.get("risk_level"),
+                                "BELI KUAT",
+                            )
+                        )
                     else:
-                        lines.append(f"🤖 *AUTO-TRADE GAGAL:* {res_buy.get('error')}")
+                        res_buy = execution_engine.execute_buy(
+                            s['symbol'].lower(),
+                            MAX_TRADE_IDR,
+                            float(s['price']),
+                            reason="BELI KUAT",
+                            metadata=_trade_risk_metadata(
+                                "daily_signal",
+                                risk_tag=s.get("risk_level"),
+                                market_state={"risk_level": s.get("risk_level")},
+                            )
+                        )
+                        if res_buy.get("success"):
+                            received = res_buy["received_coin"]
+                            avg_price = res_buy["avg_price"]
+                            spent = res_buy.get("spent_idr", MAX_TRADE_IDR)
+                            saved = _save_executed_buy_position(
+                                res_buy,
+                                s['symbol'],
+                                tp1=s["tp1"],
+                                tp2=s["tp2"],
+                                sl=s["stop_loss"],
+                                trade_type="BELI KUAT",
+                            )
+                            if saved:
+                                trade_label = "PAPER-TRADE SIMULASI" if res_buy.get("mode") == "paper" else "AUTO-TRADE SUKSES"
+                                lines.append(f"🤖 *{trade_label}!*")
+                                lines.append(f"   Beli: {received} {s['symbol']} (Rp{spent:,.0f})")
+                                lines.append(f"   Harga Rata-rata: Rp{avg_price:,.0f}")
+                                lines.append(f"   Mode Kawal TP/SL diaktifkan 🛡️")
+                            else:
+                                lines.append("🤖 *ORDER TERJADI, PENCATATAN PORTFOLIO GAGAL. CEK RECOVERY JOURNAL.*")
+                        else:
+                            lines.append(f"🤖 *TRADE DIBLOKIR/GAGAL:* {res_buy.get('error')}")
                 except Exception as e:
                     _LOGGER.error(f"Auto-trade failed: {e}")
                     lines.append(f"🤖 *AUTO-TRADE ERROR:* {e}")
@@ -1152,32 +1366,75 @@ def check_early_entry_alerts(all_coins):
                 f"💎 *Gabung Premium:* {TELEGRAM_CHANNEL}"
             )
 
-            # Auto Trade Execution for EARLY ENTRY
-            if AUTO_TRADE_ENABLED:
+            # Trade execution for EARLY ENTRY. Defaults to paper mode unless real trade is explicitly enabled.
+            if AUTO_TRADE_ENABLED or PAPER_TRADING_MODE:
                 try:
-                    res_buy = indodax_trade.buy_market(sym.lower(), MAX_TRADE_IDR, float(res['price']))
-                    if res_buy.get("success"):
-                        received = res_buy["received_coin"]
-                        avg_price = res_buy["avg_price"]
-                        spent = res_buy["spent_idr"]
-                        # Save to portfolio
-                        portfolio_manager.save_position(
-                            symbol=sym.lower(),
-                            buy_price=avg_price,
-                            amount_coin=received,
+                    if CONFIRM_BEFORE_TRADE:
+                        command_router.create_buy_confirmation_proposal(
+                            sym.lower(),
+                            MAX_TRADE_IDR,
+                            float(res['price']),
                             tp1=early_tp1,
                             tp2=early_tp2,
                             sl=early_sl,
-                            trade_type="EARLY"
+                            risk_level=res.get("risk_level"),
+                            reason="EARLY",
+                            metadata=_trade_risk_metadata(
+                                "early_entry",
+                                risk_tag=res.get("risk_level"),
+                                market_state={"risk_level": res.get("risk_level")},
+                            ),
                         )
                         msg += (
-                            f"\n\n🤖 *AUTO-TRADE SUKSES!*\n"
-                            f"Beli: {received} {sym} (Rp{spent:,.0f})\n"
-                            f"Harga: Rp{avg_price:,.0f}\n"
-                            f"Mode Kawal TP/SL aktif 🛡️"
+                            "\n\n*PROPOSAL TRADE MENUNGGU KONFIRMASI*\n"
+                            + _format_trade_proposal_message(
+                                sym,
+                                "CICIL BELI",
+                                MAX_TRADE_IDR,
+                                float(res['price']),
+                                early_tp1,
+                                early_tp2,
+                                early_sl,
+                                res.get("risk_level"),
+                                "EARLY",
+                            )
                         )
                     else:
-                        msg += f"\n\n🤖 *AUTO-TRADE GAGAL:* {res_buy.get('error')}"
+                        res_buy = execution_engine.execute_buy(
+                            sym.lower(),
+                            MAX_TRADE_IDR,
+                            float(res['price']),
+                            reason="EARLY",
+                            metadata=_trade_risk_metadata(
+                                "early_entry",
+                                risk_tag=res.get("risk_level"),
+                                market_state={"risk_level": res.get("risk_level")},
+                            )
+                        )
+                        if res_buy.get("success"):
+                            received = res_buy["received_coin"]
+                            avg_price = res_buy["avg_price"]
+                            spent = res_buy.get("spent_idr", MAX_TRADE_IDR)
+                            saved = _save_executed_buy_position(
+                                res_buy,
+                                sym,
+                                tp1=early_tp1,
+                                tp2=early_tp2,
+                                sl=early_sl,
+                                trade_type="EARLY",
+                            )
+                            if saved:
+                                trade_label = "PAPER-TRADE SIMULASI" if res_buy.get("mode") == "paper" else "AUTO-TRADE SUKSES"
+                                msg += (
+                                    f"\n\n🤖 *{trade_label}!*\n"
+                                    f"Beli: {received} {sym} (Rp{spent:,.0f})\n"
+                                    f"Harga: Rp{avg_price:,.0f}\n"
+                                    f"Mode Kawal TP/SL aktif 🛡️"
+                                )
+                            else:
+                                msg += "\n\n🤖 *ORDER TERJADI, PENCATATAN PORTFOLIO GAGAL. CEK RECOVERY JOURNAL.*"
+                        else:
+                            msg += f"\n\n🤖 *TRADE DIBLOKIR/GAGAL:* {res_buy.get('error')}"
                 except Exception as e:
                     _LOGGER.error(f"Auto-trade early failed: {e}")
 
@@ -1262,13 +1519,16 @@ def _announce_paper_results(closed_papers):
 def check_tp_sl_alerts(all_coins):
     """Cek apakah harga sudah kena TP1/TP2/TP3 atau SL dari sinyal aktif."""
     global _active_signals, _daily_stats
+    _ensure_daily_stats_fields()
     
-    # Check Auto-Trade TP/SL if enabled
-    if AUTO_TRADE_ENABLED:
+    # Check trade TP/SL if real auto-trade or paper-trading is enabled.
+    if AUTO_TRADE_ENABLED or PAPER_TRADING_MODE:
         sell_reports = portfolio_manager.check_tp_sl(all_coins)
         for report in sell_reports:
+            _record_trade_close_for_risk(report.get("profit_pct"))
+            sell_title = "PAPER-SELL SIMULASI" if report.get("mode") == "paper" else "AUTO-SELL EKSEKUSI"
             msg = (
-                f"🤖 *AUTO-SELL EKSEKUSI!* 🤖\n\n"
+                f"🤖 *{sell_title}!* 🤖\n\n"
                 f"💰 Koin: *{report['symbol']}*\n"
                 f"Status: {report['reason']}\n"
                 f"Harga Beli: Rp{report['buy_price']:,.0f}\n"
@@ -1300,6 +1560,7 @@ def check_tp_sl_alerts(all_coins):
         if price <= sig["sl"] and "SL" not in sig["hit"]:
             sig["hit"].add("SL")
             _daily_stats["sl_hit"] += 1
+            _record_trade_close_for_risk(pnl_pct)
             send_message(f"*STOP LOSS HIT*\n{sym} kena SL di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nPotong rugi, disiplin!", notify=True, force=True)
             to_remove.append(sym)
             continue
@@ -1307,6 +1568,7 @@ def check_tp_sl_alerts(all_coins):
         if price >= sig["tp3"] and "TP3" not in sig["hit"]:
             sig["hit"].add("TP3")
             _daily_stats["tp_hit"] += 1
+            _record_trade_close_for_risk(pnl_pct)
             send_message(f"*TARGET HIT - TP3*\n{sym} capai TP3 di {format_idr(price)}\nEntry: {format_idr(entry)} | PnL: {pnl_pct:+.2f}%\nSelamat! Take profit semua.", notify=True, force=True)
             to_remove.append(sym)
         elif price >= sig["tp2"] and "TP2" not in sig["hit"]:
@@ -1327,6 +1589,7 @@ def check_tp_sl_alerts(all_coins):
 # =============================================================================
 def send_daily_summary():
     global _last_summary_date, _daily_stats
+    _ensure_daily_stats_fields()
     now = datetime.now(WIB)
     today = now.strftime("%Y-%m-%d")
     if now.hour != 21 or _last_summary_date == today:
@@ -1351,7 +1614,7 @@ def send_daily_summary():
         lines.append("Market tenang hari ini. Sabar menunggu setup.")
     lines.append(f"Gabung: {TELEGRAM_CHANNEL}")
     send_message("\n".join(lines), notify=False)
-    _daily_stats = {"tp_hit": 0, "sl_hit": 0, "signals_sent": 0}
+    _daily_stats = _default_daily_stats()
     log("Daily summary terkirim")
 
 
@@ -1411,6 +1674,12 @@ def handle_telegram_command(update_data):
     msg_chat_id = str(message.get("chat", {}).get("id", ""))
     if str(msg_chat_id) != str(CHAT_ID):
         return False
+    sender = update_data.get("callback_query", {}).get("from") if "callback_query" in update_data else message.get("from")
+    auth_message = dict(message)
+    auth_message["from"] = sender or {}
+    allowed_user_id = str(os.environ.get("TELEGRAM_ALLOWED_USER_ID", "")).strip()
+    if allowed_user_id and str(auth_message.get("from", {}).get("id", "")) != allowed_user_id:
+        return False
 
     # Update last update id
     uid = message.get("message_id", 0)
@@ -1418,12 +1687,8 @@ def handle_telegram_command(update_data):
 
     # Get text/command
     text = message.get("text", "").strip()
-    if not text.startswith("/"):
+    if not text:
         return False
-
-    parts = text.split()
-    cmd = parts[0].lower()
-    args = parts[1:] if len(parts) > 1 else []
 
     # Check for duplicate messages (avoid re-processing on restart)
     now_ts = time.time()
@@ -1432,6 +1697,29 @@ def handle_telegram_command(update_data):
         if now_ts - _message_fingerprints[msg_key] < 30:  # 30s dedupe
             return False
     _message_fingerprints[msg_key] = now_ts
+
+    router_command = command_router.parse_command(text)
+    if router_command.get("type") != "UNKNOWN":
+        authorization = command_router.authorize_telegram_command(
+            auth_message,
+            router_command,
+            configured_chat_id=CHAT_ID,
+            allowed_user_id=allowed_user_id,
+        )
+        if not authorization.get("allowed"):
+            send_message(f"Command ditolak: {authorization.get('reason')}", notify=True, force=True)
+            return True
+        context_symbol = router_command.get("symbol") if router_command.get("type") == "SELL" else None
+        result = command_router.handle_command(text, context=_telegram_router_context(context_symbol))
+        send_message(_format_router_response(result), notify=True, force=True)
+        return True
+
+    if not text.startswith("/"):
+        return False
+
+    parts = text.split()
+    cmd = parts[0].lower()
+    args = parts[1:] if len(parts) > 1 else []
 
     # === /help ===
     if cmd == "/help":
@@ -1445,6 +1733,10 @@ def handle_telegram_command(update_data):
             f"📈 */stats* — Statistik performa bot\n"
             f"🔔 */alert on/off* — Aktifkan/nonaktifkan alert\n"
             f"🌤 */weather* — Cek market mode saat ini\n"
+            f"✅ *BUY BTC 50000* — Konfirmasi proposal buy\n"
+            f"🛑 *SELL BTC ALL* — Konfirmasi/manual sell\n"
+            f"❌ *CANCEL BTC* — Batalkan proposal pending\n"
+            f"🧯 *KILL* / *RESUME* — Risk off/on runtime\n"
             f"──────────────────────\n"
             f"💡 Bot juga otomatis push sinyal:\n"
             f"• 08:00 WIB — Sinyal harian\n"
@@ -1859,7 +2151,10 @@ if __name__ == "__main__":
     log("   Confluence 1H + FOMO + TP/SL: tiap loop")
     log("   Daily summary: 21:00 WIB")
     log(f"   Binance engine: {'✅ AKTIF' if _BINANCE_OK else '❌ TIDAK TERSEDIA'}")
-    log(f"   Auto-Trade Indodax: {'✅ AKTIF (Limit: Rp50rb)' if AUTO_TRADE_ENABLED else '❌ OFF'}")
+    auto_trade_status = f"✅ REAL AKTIF (Limit: Rp{MAX_TRADE_IDR:,.0f})" if AUTO_TRADE_ENABLED and not PAPER_TRADING_MODE else "❌ REAL OFF"
+    log(f"   Auto-Trade Indodax: {auto_trade_status}")
+    log(f"   Paper Trading: {'✅ AKTIF' if PAPER_TRADING_MODE else '❌ OFF'}")
+    log(f"   Confirm Before Trade: {'✅ AKTIF' if CONFIRM_BEFORE_TRADE else '❌ OFF'}")
     log(f"   Channel: {TELEGRAM_CHANNEL}")
     log("=" * 40)
     if not BOT_TOKEN or not CHAT_ID:

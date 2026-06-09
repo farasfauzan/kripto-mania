@@ -28,6 +28,10 @@ import pandas as pd
 
 # Import advanced algorithms
 from advanced_algorithms import build_advanced_bundle, compute_advanced_adjustment
+try:
+    from ml_engine import predict_aggressive_scalp
+except ImportError:
+    predict_aggressive_scalp = None
 
 
 # =============================================================================
@@ -554,6 +558,14 @@ def build_intelligence_bundle(candles: pd.DataFrame, price: float, atr_pct: floa
     combined_adjust = int(intel_adjust * 0.6 + adv_adjust * 0.4)
     combined_adjust = int(_clamp(combined_adjust, -20, 20))
 
+    # Aggressive Scalp (XGBoost)
+    xgb_scalp = {}
+    if predict_aggressive_scalp:
+        xgb_scalp = predict_aggressive_scalp(candles)
+        if xgb_scalp.get("is_scalp_valid"):
+            combined_adjust += 10
+            notes.append(f"XGBoost Scalp Valid ({xgb_scalp.get('prob_up_pct', 0)}%↑)")
+
     # Merge notes
     all_notes = notes[:4] + adv_notes[:4]
 
@@ -572,6 +584,7 @@ def build_intelligence_bundle(candles: pd.DataFrame, price: float, atr_pct: floa
         "advanced": adv_bundle,
         "advanced_adjustment": adv_adjust,
         "advanced_notes": adv_notes[:6],
+        "xgb_scalp": xgb_scalp,
         "combined_adjustment": combined_adjust,
         "combined_notes": all_notes[:8],
     }

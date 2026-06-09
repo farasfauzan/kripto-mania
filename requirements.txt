@@ -12,3 +12,7 @@ pandas-ta-classic>=0.4.47,<0.6 # 130+ indikator: Ichimoku, Squeeze, OBV, MFI, KD
 tradingview-ta>=3.3.0,<4       # second-opinion rating dari TradingView (free, no key)
 quantstats>=0.0.62,<0.1        # Sharpe/drawdown/equity curve dari signal journal
 ipython>=8.18.1,<9             # Dependency required for quantstats to import reports module
+
+# Aggressive Pro Trader ML Mode
+scikit-learn>=1.3.0,<2
+xgboost>=2.0.0,<3
