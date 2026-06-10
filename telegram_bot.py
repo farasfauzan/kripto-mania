@@ -2830,15 +2830,41 @@ def _handle_telegram_command_inner(update_data):
             force=True,
         )
         try:
-            from ml_engine import force_online_retrain
+            from ml_engine import force_online_retrain, bootstrap_train_from_history
 
             res = force_online_retrain()
+
+            # Cold-start: kalau buffer feedback live belum cukup (mis. deploy baru
+            # di HuggingFace yang mulai dari nol), bootstrap dari candle historis
+            # banyak koin sekaligus supaya model bisa langsung kepakai tanpa nunggu
+            # berminggu-minggu ngumpulin hasil trade satu per satu.
+            if not res.get("success"):
+                send_message(
+                    "📚 *Buffer live belum cukup* — bootstrap dari data historis "
+                    "banyak koin...",
+                    notify=False,
+                    force=True,
+                )
+                try:
+                    all_coins = fetch_all_tickers()
+                    scan_coins = get_scan_coins(all_coins)
+                    pairs = list(scan_coins.values())
+                    res = bootstrap_train_from_history(
+                        fetch_candles, pairs, tf="60", lookback_days=60
+                    )
+                except Exception as be:
+                    log(f"Bootstrap train error: {be}")
+                    res = {"success": False, "reason": str(be)[:120]}
+
             if res.get("success"):
                 m = res.get("metrics", {})
+                extra = ""
+                if res.get("coins_used"):
+                    extra = f"\nSumber: {res.get('coins_used')} koin (historis)"
                 send_message(
                     "✅ *TRAINING SELESAI!*\n"
                     f"Versi model baru: *v{res.get('version')}*\n"
-                    f"Dilatih dari: {res.get('n_samples')} sampel\n"
+                    f"Dilatih dari: {res.get('n_samples')} sampel{extra}\n"
                     f"Akurasi: {m.get('accuracy', '-')} · F1: {m.get('f1', '-')} · "
                     f"Walk-F1: {m.get('walk_f1_mean', '-')}\n"
                     "Model baru langsung dipakai buat prediksi berikutnya. 🧠",
@@ -2854,6 +2880,7 @@ def _handle_telegram_command_inner(update_data):
                     force=True,
                 )
         except Exception as e:
+
             log(f"Error /train: {e}")
             send_message(f"❌ Error training: {str(e)[:100]}", notify=True, force=True)
         return True

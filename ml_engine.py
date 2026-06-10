@@ -315,9 +315,11 @@ def _prepare_features_with_target(
     candles: pd.DataFrame,
     horizon: int = 3,
     target_pct: float = 1.0,
+    select_features: bool = True,
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
     if candles is None or len(candles) < 60:
         return pd.DataFrame(), pd.Series(dtype=int), pd.DataFrame()
+
 
     close = candles["close"].astype(float)
     high = candles["high"].astype(float) if "high" in candles else close
@@ -375,8 +377,9 @@ def _prepare_features_with_target(
 
     X = X.loc[:, X.nunique() > 1]
 
-    if X.shape[1] > CFG.max_features:
+    if select_features and X.shape[1] > CFG.max_features:
         X = _select_top_features_by_mutual_info(X, y, CFG.max_features)
+
 
     if X.shape[1] > 1:
         current_X = X_all.iloc[[-1]].fillna(0)
@@ -1023,8 +1026,136 @@ def force_online_retrain() -> dict:
         return {"success": False, "reason": str(e), "n_samples": n}
 
 
+def bootstrap_train_from_history(
+    fetch_candles_fn,
+    pairs: list[str],
+    tf: str = "60",
+    lookback_days: int = 60,
+    horizon: int = 3,
+    target_pct: float = 1.0,
+    sleep_between: float = 0.15,
+    max_pairs: int | None = None,
+) -> dict:
+    """Cold-start: latih model dari CANDLE HISTORIS banyak koin SEKALIGUS.
+
+    Masalah: di deploy baru (mis. HuggingFace), buffer online kosong dan model
+    mulai dari nol. Buffer cuma terisi 1 sampel tiap trade kena TP/SL → butuh
+    berminggu-minggu buat capai min_train_samples (default 100).
+
+    Solusi: pakai triple-barrier labeling (_prepare_features_with_target) untuk
+    bikin ratusan/ribuan sampel berlabel langsung dari sejarah harga banyak koin.
+    Tiap candle historis jadi satu sampel (TP duluan=1, SL duluan=0), persis
+    definisi target yang dipakai online learning, jadi distribusinya konsisten.
+
+    Args:
+        fetch_candles_fn: callable(pair, tf=, lookback_days=) -> DataFrame OHLCV.
+        pairs: daftar pair (mis. ["btc_idr", "eth_idr", ...]).
+        tf: timeframe candle (default "60" = 1 jam).
+        lookback_days: berapa hari ke belakang (default 60 → lebih banyak sampel).
+        horizon, target_pct: sama dengan parameter prediksi (sinkron label).
+        sleep_between: jeda antar fetch buat hormati rate limit.
+        max_pairs: batasi jumlah koin yang diproses (None = semua).
+
+    Returns:
+        dict status ramah-user. Kalau sukses, model langsung tersimpan & dipakai.
+    """
+    import time as _time
+
+    if max_pairs is not None:
+        pairs = pairs[:max_pairs]
+
+    frames_X = []
+    series_y = []
+    coins_used = 0
+    coins_failed = 0
+
+    for pair in pairs:
+        try:
+            candles = fetch_candles_fn(pair, tf=tf, lookback_days=lookback_days)
+        except Exception:
+            coins_failed += 1
+            continue
+        finally:
+            if sleep_between:
+                _time.sleep(sleep_between)
+
+        if candles is None or len(candles) < 80:
+            coins_failed += 1
+            continue
+
+        # select_features=False supaya semua koin pakai ruang fitur penuh yang
+        # SAMA. Seleksi fitur dilakukan sekali nanti di gabungan, bukan per koin
+        # (kalau per koin, kolomnya beda-beda → susah digabung).
+        X, y, _ = _prepare_features_with_target(
+            candles,
+            horizon=horizon,
+            target_pct=target_pct,
+            select_features=False,
+        )
+        if X.empty or len(X) < 20 or len(np.unique(y)) < 2:
+            coins_failed += 1
+            continue
+
+        X = X.reset_index(drop=True)
+        y = y.reset_index(drop=True)
+        frames_X.append(X)
+        series_y.append(y)
+        coins_used += 1
+
+    if coins_used == 0 or not frames_X:
+        return {
+            "success": False,
+            "reason": "Gagal kumpulin candle historis dari koin manapun.",
+            "coins_used": 0,
+            "n_samples": 0,
+        }
+
+    # Gabung semua sampel. Kolom yang tidak ada di sebagian koin → diisi 0.
+    X_all = pd.concat(frames_X, axis=0, ignore_index=True).fillna(0.0)
+    y_all = pd.concat(series_y, axis=0, ignore_index=True)
+
+    # Buang kolom konstan, lalu seleksi fitur sekali di gabungan.
+    X_all = X_all.loc[:, X_all.nunique() > 1]
+    if X_all.shape[1] > CFG.max_features:
+        X_all = _select_top_features_by_mutual_info(X_all, y_all, CFG.max_features)
+
+    n = len(X_all)
+    if n < CFG.min_train_samples or len(np.unique(y_all)) < 2:
+        return {
+            "success": False,
+            "reason": (
+                f"Sampel historis kurang: {n}/{CFG.min_train_samples} "
+                f"(dari {coins_used} koin). Coba tambah lookback_days/koin."
+            ),
+            "coins_used": coins_used,
+            "n_samples": n,
+        }
+
+    result = train_ensemble(X_all, y_all)
+    if result.get("success"):
+        logger.info(
+            f"Bootstrap train done v{result['version']} — {n} sampel dari "
+            f"{coins_used} koin (gagal: {coins_failed})"
+        )
+        return {
+            "success": True,
+            "version": result.get("version"),
+            "n_samples": result.get("n_samples"),
+            "coins_used": coins_used,
+            "coins_failed": coins_failed,
+            "metrics": result.get("metrics", {}),
+        }
+    return {
+        "success": False,
+        "reason": result.get("error", "training gagal"),
+        "coins_used": coins_used,
+        "n_samples": n,
+    }
+
+
 def get_learning_status() -> dict:
     """Status ringkas proses belajar untuk ditampilkan ke user (command /brain)."""
+
     _load_online_buffer()
     _load_adaptive_state()
     registry = _load_model_registry()
