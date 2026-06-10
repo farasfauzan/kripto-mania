@@ -493,7 +493,8 @@ def cmd_journal():
         return True
 
     total = profile.get("closed", 0)
-    wr = profile.get("winrate", 0)
+    wr = profile.get("winrate")
+    wr_text = f"{wr:.1f}%" if wr is not None else "belum ada"
 
     lines = [
         "📜 *RIWAYAT SINYAL*",
@@ -504,7 +505,7 @@ def cmd_journal():
 
     lines.append(f"Total sinyal: {profile.get('total_signals', 0)}")
     lines.append(f"Selesai: {total} | Win: {profile.get('wins', 0)} | Loss: {profile.get('losses', 0)}")
-    lines.append(f"*Winrate: {wr:.1f}%*")
+    lines.append(f"*Winrate: {wr_text}*")
     lines.append("")
 
     best = profile.get("best_symbols", [])
@@ -523,7 +524,7 @@ def cmd_journal():
     lines.append("⚠️ Bukan saran keuangan. DYOR.")
 
     send_telegram_message("\n".join(lines), notify=True)
-    _LOGGER.info("/journal — WR: %.1f%%", wr)
+    _LOGGER.info("/journal — WR: %s", wr_text)
     return True
 
 
@@ -537,7 +538,8 @@ def cmd_stats():
         return True
 
     total = profile.get("closed", 0)
-    wr = profile.get("winrate", 0)
+    wr = profile.get("winrate")
+    wr_text = f"{wr:.1f}%" if wr is not None else "belum ada"
 
     lines = [
         "📈 *STATISTIK BOT*",
@@ -549,7 +551,7 @@ def cmd_stats():
     lines.append(f"Total sinyal tercatat: {profile.get('total_signals', 0)}")
     lines.append(f"Trade selesai: {total}")
     lines.append(f"Win: {profile.get('wins', 0)} | Loss: {profile.get('losses', 0)}")
-    lines.append(f"*Winrate: {wr:.1f}%*")
+    lines.append(f"*Winrate: {wr_text}*")
     lines.append("")
 
     lines.append("*Hari Ini:*\n")

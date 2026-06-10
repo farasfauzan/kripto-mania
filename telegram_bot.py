@@ -2410,11 +2410,12 @@ def handle_telegram_command(update_data):
             total = profile.get("closed", 0)
             wins = profile.get("wins", 0)
             losses = profile.get("losses", 0)
-            wr = profile.get("winrate", 0)
+            wr = profile.get("winrate")
+            wr_text = f"{wr:.1f}%" if wr is not None else "belum ada"
 
             lines.append(f"Total sinyal: {profile.get('total_signals', 0)}")
             lines.append(f"Selesai: {total} | Win: {wins} | Loss: {losses}")
-            lines.append(f"*Winrate: {wr:.1f}%*")
+            lines.append(f"*Winrate: {wr_text}*")
             lines.append("")
 
             # Best symbols
@@ -2438,7 +2439,7 @@ def handle_telegram_command(update_data):
             lines.append("⚠️ Bukan saran keuangan. DYOR.")
 
             send_message("\n".join(lines), notify=True)
-            log(f"/journal command executed — WR: {wr:.1f}%")
+            log(f"/journal command executed — WR: {wr_text}")
 
         except Exception as e:
             log(f"Error /journal: {e}")
@@ -2453,7 +2454,8 @@ def handle_telegram_command(update_data):
             profile = build_profile()
 
             total = profile.get("closed", 0)
-            wr = profile.get("winrate", 0)
+            wr = profile.get("winrate")
+            wr_text = f"{wr:.1f}%" if wr is not None else "belum ada"
 
             lines = [
                 "📈 *STATISTIK BOT*",
@@ -2467,7 +2469,7 @@ def handle_telegram_command(update_data):
             lines.append(
                 f"Win: {profile.get('wins', 0)} | Loss: {profile.get('losses', 0)}"
             )
-            lines.append(f"*Winrate: {wr:.1f}%*")
+            lines.append(f"*Winrate: {wr_text}*")
             lines.append("")
 
             # Daily stats
