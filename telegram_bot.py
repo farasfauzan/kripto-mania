@@ -2094,10 +2094,6 @@ def handle_telegram_command(update_data):
     if not message:
         return False
 
-    # Check if message is from our chat
-    msg_chat_id = str(message.get("chat", {}).get("id", ""))
-    if str(msg_chat_id) != str(CHAT_ID):
-        return False
     sender = (
         update_data.get("callback_query", {}).get("from")
         if "callback_query" in update_data
@@ -2106,6 +2102,32 @@ def handle_telegram_command(update_data):
     auth_message = dict(message)
     auth_message["from"] = sender or {}
     allowed_user_id = str(os.environ.get("TELEGRAM_ALLOWED_USER_ID", "")).strip()
+
+    # Log incoming message info for debugging
+    chat_info = message.get("chat", {})
+    msg_chat_id = str(chat_info.get("id", ""))
+    chat_type = str(chat_info.get("type", "")).lower()
+    sender_id = str(auth_message.get("from", {}).get("id", ""))
+    text_log = message.get("text", "")
+    log(f"Incoming TG message: chat_id={msg_chat_id} ({chat_type}), sender_id={sender_id}, text={text_log!r}")
+
+    # Check if message is from our chat or if it's an authorized private DM
+    is_authorized_dm = False
+    if chat_type == "private" and allowed_user_id and sender_id == allowed_user_id:
+        is_authorized_dm = True
+
+    if str(msg_chat_id) != str(CHAT_ID) and not is_authorized_dm:
+        if chat_type == "private":
+            send_message(
+                f"⚠️ *Akses Ditolak*\n"
+                f"Chat ID ({msg_chat_id}) tidak sesuai dengan CHAT_ID bot ({CHAT_ID}).\n"
+                f"User ID Anda: `{sender_id}`\n"
+                f"Konfigurasikan `TELEGRAM_ALLOWED_USER_ID` dengan ID tersebut di env var Hugging Face Anda untuk memberikan akses via DM.",
+                notify=True,
+                force=True,
+            )
+        return False
+
     if (
         allowed_user_id
         and str(auth_message.get("from", {}).get("id", "")) != allowed_user_id

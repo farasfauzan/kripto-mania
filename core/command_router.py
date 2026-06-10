@@ -220,13 +220,18 @@ def authorize_telegram_command(message, command, configured_chat_id, allowed_use
     message = message if isinstance(message, dict) else {}
     command = command if isinstance(command, dict) else {}
     msg_chat_id = str(message.get("chat", {}).get("id", ""))
-    if not configured_chat_id or msg_chat_id != str(configured_chat_id):
-        return {"allowed": False, "reason": "Unauthorized Telegram chat"}
+    chat_type = str(message.get("chat", {}).get("type", "")).lower()
+    sender_id = str(message.get("from", {}).get("id", "")).strip()
 
     allowed_user = str(
         allowed_user_id if allowed_user_id is not None else os.environ.get("TELEGRAM_ALLOWED_USER_ID", "")
     ).strip()
-    sender_id = str(message.get("from", {}).get("id", "")).strip()
+
+    is_authorized_dm = (chat_type == "private" and allowed_user and sender_id == allowed_user)
+
+    if (not configured_chat_id or msg_chat_id != str(configured_chat_id)) and not is_authorized_dm:
+        return {"allowed": False, "reason": "Unauthorized Telegram chat"}
+
     if allowed_user and sender_id != allowed_user:
         return {"allowed": False, "reason": "Unauthorized Telegram user"}
 
