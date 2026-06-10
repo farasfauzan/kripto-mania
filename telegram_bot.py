@@ -2799,14 +2799,17 @@ def _handle_telegram_command_inner(update_data):
             metrics = st.get("latest_metrics") or {}
             wf = metrics.get("walk_f1_mean")
             wf_txt = f"{wf:.2f}" if isinstance(wf, (int, float)) else "-"
+            latest_samples = st.get("latest_samples")
+            samp_txt = f"{latest_samples}" if latest_samples else "belum ada"
+            
             send_message(
                 "🧠 *STATUS OTAK BOT (ML LEARNING)*\n"
                 "──────────────────────\n"
                 f"Online learning: {'ON ✅' if st['online_enabled'] else 'OFF ❌'}\n"
-                f"Data terkumpul: *{st['buffer_samples']}/{st['min_samples_needed']}* sampel\n"
-                f"(bot kumpulin otomatis tiap trade kena TP/SL)\n"
-                f"Model sudah ada: {'Ya' if st['model_exists'] else 'Belum'}\n"
-                f"Versi model: {st['latest_version'] or '-'} (total {st['model_versions']} versi)\n"
+                f"Buffer Live: *{st['buffer_samples']}/{st['min_samples_needed']}* sampel\n"
+                f"(data nunggu buat retrain berikutnya)\n"
+                f"Model aktif: {'Ya' if st['model_exists'] else 'Belum'}\n"
+                f"Versi model: v{st['latest_version'] or '-'} (dilatih dari {samp_txt} sampel)\n"
                 f"Walk-forward F1: {wf_txt}\n"
                 f"Retrain terakhir: {st['last_retrain']}\n"
                 f"Auto-retrain tiap: {st['retrain_interval_h']} jam\n"

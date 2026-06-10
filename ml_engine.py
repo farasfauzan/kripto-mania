@@ -776,6 +776,7 @@ def train_ensemble(X: pd.DataFrame, y: pd.Series) -> dict:
         "roc_auc": individual_metrics.get("voting", {}).get("roc_auc", 0),
         "walk_f1_mean": wfv_metrics.get("f1", 0),
         "n_models": len(trained_estimators),
+        "n_samples": len(X),
     }
     version = _register_model_version(metrics, feature_names, "ensemble")
     result["version"] = version
@@ -1133,6 +1134,10 @@ def bootstrap_train_from_history(
 
     result = train_ensemble(X_all, y_all)
     if result.get("success"):
+        _load_online_buffer()
+        _ONLINE_BUFFER["last_retrain"] = datetime.now(WIB).timestamp()
+        _save_online_buffer()
+        
         logger.info(
             f"Bootstrap train done v{result['version']} — {n} sampel dari "
             f"{coins_used} koin (gagal: {coins_failed})"
@@ -1176,6 +1181,7 @@ def get_learning_status() -> dict:
         "model_versions": len(registry),
         "latest_version": latest.get("version") if latest else None,
         "latest_metrics": latest.get("metrics") if latest else None,
+        "latest_samples": latest.get("metrics", {}).get("n_samples") if latest else None,
         "consecutive_wins": _ADAPTIVE_STATE.get("consecutive_wins", 0),
         "consecutive_losses": _ADAPTIVE_STATE.get("consecutive_losses", 0),
         "current_threshold": get_adaptive_threshold(),
