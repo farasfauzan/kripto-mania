@@ -11,6 +11,7 @@ Fitur: RSI, EMA, MACD, Bollinger, Supertrend, ADX, ML/KNN, Backtest, Agentic Ver
 import os
 import time
 import threading
+import concurrent.futures
 import requests
 import pandas as pd
 import json
@@ -47,6 +48,8 @@ def _apply_aggressive_preset():
         # Lebih banyak posisi bareng
         "MAX_ACTIVE_TRADES": "12",
         "MAX_OPEN_POSITIONS": "12",
+        # Scan paralel lebih kencang (hati-hati rate-limit)
+        "SCAN_WORKERS": "8",
         # Alert/entry threshold dilonggarin
         "MIN_ALERT_SCORE": "60",
         "EARLY_MIN_SCORE": "50",
@@ -2692,6 +2695,42 @@ def poll_telegram_commands():
 _last_update_offset = 0
 
 
+SCAN_WORKERS = int(os.environ.get("SCAN_WORKERS", "1"))
+
+
+def _prefetch_candles_parallel(scan_coins, timeframes=(("60", 21), ("15", 5))):
+    """Warm-up cache candle secara PARALEL untuk semua koin scan.
+
+    Loop alert (early/confluence) tetap jalan serial seperti biasa, TAPI karena
+    candle-nya sudah ada di cache (di-fetch paralel di sini), pemanggilan
+    fetch_candles di dalam loop jadi cache-hit instan — tidak ada lagi ratusan
+    request HTTP berurutan yang menahan siklus.
+
+    Aman dari sisi thread: requests independen per koin, dan cache fetch_candles
+    cuma assign ke dict (atomic di CPython). Worker dibatasi biar tidak kena
+    rate-limit Indodax (default 1 = serial/tidak berubah; set SCAN_WORKERS>1
+    untuk paralel, mis. preset agresif pakai 8).
+    """
+    if SCAN_WORKERS <= 1 or not scan_coins:
+        return
+    pairs = list(scan_coins.values())
+
+    def _warm(pair):
+        for tf, lookback in timeframes:
+            try:
+                fetch_candles(pair, tf=tf, lookback_days=lookback)
+            except Exception:
+                pass
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(SCAN_WORKERS, max(1, len(pairs)))
+        ) as ex:
+            list(ex.map(_warm, pairs))
+    except Exception as e:
+        log(f"Prefetch candle paralel gagal (lanjut serial): {e}", "warning")
+
+
 def _command_listener_loop():
     """Long-polling listener di thread terpisah supaya bot SELALU responsif,
     bahkan saat loop utama lagi sibuk scan 80 koin (yang bisa makan menit).
@@ -2787,10 +2826,14 @@ if __name__ == "__main__":
     consecutive_errors = 0
     cycle_count = 0
 
+    if SCAN_WORKERS > 1:
+        log(f"   Scan paralel: {SCAN_WORKERS} worker (prefetch candle)")
+
     while True:
         try:
             cycle_count += 1
             _CYCLE_COUNT = cycle_count  # sinkron buat /ping & /status
+            _cycle_start = time.time()  # ukur durasi siklus
             all_coins = fetch_all_tickers()
 
             if not all_coins:
@@ -2803,6 +2846,14 @@ if __name__ == "__main__":
             consecutive_errors = 0
             coin_count = len(all_coins)
             now = datetime.now(WIB)
+
+            # Prefetch candle 1H paralel buat semua koin scan → warm cache,
+            # jadi loop early/confluence di bawah jadi cache-hit instan.
+            try:
+                _prefetch_candles_parallel(get_scan_coins(all_coins))
+            except Exception as e:
+                log(f"Prefetch error (lanjut): {e}", "warning")
+
             _paper_closed = []
             learning_profile = train_from_prices(
                 all_coins, closed_collector=_paper_closed
@@ -2842,6 +2893,14 @@ if __name__ == "__main__":
 
             # Save state at the end of each successful cycle
             save_bot_state()
+
+            # Ukur & log durasi siklus (buat lihat dampak optimasi performa).
+            _cycle_dur = time.time() - _cycle_start
+            if cycle_count % 10 == 1 or _cycle_dur > LOOP_SLEEP_SECONDS:
+                log(
+                    f"Siklus #{cycle_count} selesai dalam {_cycle_dur:.1f}s "
+                    f"(target loop {LOOP_SLEEP_SECONDS}s, workers={SCAN_WORKERS})"
+                )
 
             time.sleep(LOOP_SLEEP_SECONDS)
 

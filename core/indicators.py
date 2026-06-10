@@ -29,21 +29,54 @@ def is_entry_action(action):
 # =============================================================================
 # CANDLE FETCHING
 # =============================================================================
-def fetch_candles(pair_id, tf="60", lookback_days=21):
-    """Ambil candle historis dari Indodax untuk indikator teknikal."""
-    end_ts = int(time.time())
-    start_ts = end_ts - lookback_days * 86400
+# Cache candle ber-TTL pendek. Dalam satu siklus scan, candle koin yang sama
+# sering di-fetch berkali-kali (mis. early-entry ambil 1H, lalu confluence
+# ambil 1H lagi untuk koin yang sama). Tanpa cache = ratusan request HTTP
+# redundan + sleep di mode agresif (80 koin). TTL pendek aman karena candle
+# cuma berubah sekali tiap timeframe.
+_CANDLE_CACHE: dict = {}
+_CANDLE_CACHE_TTL = float(__import__("os").environ.get("CANDLE_CACHE_TTL", "45"))
+
+
+def fetch_candles(pair_id, tf="60", lookback_days=21, use_cache=True):
+    """Ambil candle historis dari Indodax untuk indikator teknikal.
+
+    Hasil di-cache per (symbol, tf, lookback_days) selama _CANDLE_CACHE_TTL detik
+    supaya tidak fetch berulang untuk koin yang sama dalam satu siklus.
+    """
     symbol = pair_id.replace("_", "").upper()
+    cache_key = (symbol, tf, lookback_days)
+    now = time.time()
+
+    if use_cache:
+        cached = _CANDLE_CACHE.get(cache_key)
+        if cached is not None and (now - cached[0]) < _CANDLE_CACHE_TTL:
+            # Return salinan supaya caller tidak mengubah data cache bersama.
+            return cached[1].copy()
+
+    end_ts = int(now)
+    start_ts = end_ts - lookback_days * 86400
     url = "https://indodax.com/tradingview/history_v2"
     try:
-        resp = requests.get(url, params={"from": start_ts, "to": end_ts, "tf": tf, "symbol": symbol}, timeout=8)
+        resp = requests.get(
+            url,
+            params={"from": start_ts, "to": end_ts, "tf": tf, "symbol": symbol},
+            timeout=8,
+        )
         rows = resp.json()
     except Exception:
         return pd.DataFrame()
     if not isinstance(rows, list) or not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    rename = {"Time": "time", "Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}
+    rename = {
+        "Time": "time",
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close",
+        "Volume": "volume",
+    }
     df = df.rename(columns=rename)
     required = ["time", "open", "high", "low", "close", "volume"]
     if not all(c in df.columns for c in required):
@@ -51,7 +84,17 @@ def fetch_candles(pair_id, tf="60", lookback_days=21):
     for c in required:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["close"]).sort_values("time")
-    return df.tail(500).reset_index(drop=True)
+    result = df.tail(500).reset_index(drop=True)
+
+    if use_cache and not result.empty:
+        _CANDLE_CACHE[cache_key] = (now, result)
+        # Cegah cache membengkak tanpa batas (mis. saat scan ratusan koin).
+        if len(_CANDLE_CACHE) > 400:
+            cutoff = now - _CANDLE_CACHE_TTL
+            for k in [k for k, v in _CANDLE_CACHE.items() if v[0] < cutoff]:
+                _CANDLE_CACHE.pop(k, None)
+
+    return result.copy() if use_cache else result
 
 
 # =============================================================================
@@ -59,8 +102,8 @@ def fetch_candles(pair_id, tf="60", lookback_days=21):
 # =============================================================================
 def compute_rsi(close, period=14):
     delta = close.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
+    gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
     # float("nan") (bukan pd.NA) agar series tetap dtype float: hasil numerik
     # identik tapi tidak memicu FutureWarning downcasting saat .fillna.
     rs = gain / loss.replace(0, float("nan"))
@@ -87,7 +130,13 @@ def _resample_candles(candles, rule):
     df = _candles_with_datetime_index(candles)
     if df.empty:
         return pd.DataFrame()
-    agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    agg = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+    }
     return df.resample(rule).agg(agg).dropna(subset=["close"]).reset_index(drop=True)
 
 
@@ -98,7 +147,11 @@ def _timeframe_bias(candles):
     ema_fast = compute_ema(close, 5).iloc[-1]
     ema_slow = compute_ema(close, 13).iloc[-1]
     lookback = min(6, len(close) - 1)
-    momentum = (close.iloc[-1] / close.iloc[-1 - lookback] - 1) * 100 if lookback > 0 and close.iloc[-1 - lookback] > 0 else 0
+    momentum = (
+        (close.iloc[-1] / close.iloc[-1 - lookback] - 1) * 100
+        if lookback > 0 and close.iloc[-1 - lookback] > 0
+        else 0
+    )
     gap = (ema_fast - ema_slow) / ema_slow * 100 if ema_slow > 0 else 0
     if gap > 0.15 and momentum > 0:
         return "BULLISH", 2
@@ -178,12 +231,19 @@ def compute_supertrend(candles):
     high = candles["high"].astype(float)
     low = candles["low"].astype(float)
     close = candles["close"].astype(float)
-    tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
+    tr = pd.concat(
+        [high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()],
+        axis=1,
+    ).max(axis=1)
     atr = tr.rolling(14).mean()
     ema_fast = close.ewm(span=10, adjust=False).mean()
     ema_slow = close.ewm(span=30, adjust=False).mean()
     floor = ((high + low) / 2) - (2.4 * atr)
-    if pd.notna(floor.iloc[-1]) and close.iloc[-1] > floor.iloc[-1] and ema_fast.iloc[-1] > ema_slow.iloc[-1]:
+    if (
+        pd.notna(floor.iloc[-1])
+        and close.iloc[-1] > floor.iloc[-1]
+        and ema_fast.iloc[-1] > ema_slow.iloc[-1]
+    ):
         return "bullish"
     elif pd.notna(floor.iloc[-1]):
         return "bearish"
@@ -214,20 +274,34 @@ def compute_adx(candles):
     hi = candles["high"].astype(float)
     lo = candles["low"].astype(float)
     cl = candles["close"].astype(float)
-    tr = pd.concat([hi - lo, (hi - cl.shift(1)).abs(), (lo - cl.shift(1)).abs()], axis=1).max(axis=1)
+    tr = pd.concat(
+        [hi - lo, (hi - cl.shift(1)).abs(), (lo - cl.shift(1)).abs()], axis=1
+    ).max(axis=1)
     up = hi - hi.shift(1)
     dn = lo.shift(1) - lo
     pdm = up.where((up > dn) & (up > 0), 0.0)
     ndm = dn.where((dn > up) & (dn > 0), 0.0)
-    atr = tr.ewm(alpha=1/14, adjust=False).mean()
-    pdi = 100 * pdm.ewm(alpha=1/14, adjust=False).mean() / atr.replace(0, float('nan'))
-    ndi = 100 * ndm.ewm(alpha=1/14, adjust=False).mean() / atr.replace(0, float('nan'))
-    dx = 100 * abs(pdi - ndi) / (pdi + ndi).replace(0, float('nan'))
-    adx = float(dx.fillna(25).ewm(alpha=1/14, adjust=False).mean().iloc[-1])
+    atr = tr.ewm(alpha=1 / 14, adjust=False).mean()
+    pdi = (
+        100 * pdm.ewm(alpha=1 / 14, adjust=False).mean() / atr.replace(0, float("nan"))
+    )
+    ndi = (
+        100 * ndm.ewm(alpha=1 / 14, adjust=False).mean() / atr.replace(0, float("nan"))
+    )
+    dx = 100 * abs(pdi - ndi) / (pdi + ndi).replace(0, float("nan"))
+    adx = float(dx.fillna(25).ewm(alpha=1 / 14, adjust=False).mean().iloc[-1])
     pdi_v = float(pdi.fillna(0).iloc[-1])
     ndi_v = float(ndi.fillna(0).iloc[-1])
     if adx >= 25:
-        trend = "bullish_strong" if pdi_v > ndi_v and adx >= 40 else "bullish" if pdi_v > ndi_v else "bearish_strong" if adx >= 40 else "bearish"
+        trend = (
+            "bullish_strong"
+            if pdi_v > ndi_v and adx >= 40
+            else "bullish"
+            if pdi_v > ndi_v
+            else "bearish_strong"
+            if adx >= 40
+            else "bearish"
+        )
     else:
         trend = "sideways"
     return {"adx": round(adx, 1), "trend": trend}
@@ -271,7 +345,7 @@ def _walk_forward_skill(train_X, train_future, k, horizon=6, n_test=40):
         usable = p - horizon  # outcome baris q diketahui di q+horizon <= p
         if usable < 30:
             continue
-        kk = int(min(k, max(8, round(usable ** 0.5))))
+        kk = int(min(k, max(8, round(usable**0.5))))
         prob = _knn_predict(train_X[:usable], train_future[:usable], train_X[p], kk)
         actual_up = train_future[p] > 1.0
         pred_up = prob >= 50.0
@@ -295,8 +369,14 @@ def compute_ml_forecast(candles):
     Key lama (ml_prob/ml_label/ml_conf) tetap ada; tambah ml_wf_acc (akurasi
     walk-forward %), ml_wf_n (jumlah uji), ml_prob_raw (sebelum shrinkage).
     """
-    default = {"ml_prob": 50.0, "ml_label": "NO DATA", "ml_conf": "rendah",
-               "ml_wf_acc": None, "ml_wf_n": 0, "ml_prob_raw": 50.0}
+    default = {
+        "ml_prob": 50.0,
+        "ml_label": "NO DATA",
+        "ml_conf": "rendah",
+        "ml_wf_acc": None,
+        "ml_wf_n": 0,
+        "ml_prob_raw": 50.0,
+    }
     if candles.empty or len(candles) < 80:
         return default
     close = candles["close"].astype(float)
@@ -308,27 +388,38 @@ def compute_ml_forecast(candles):
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean()
     rsi = 100 - (100 / (1 + gain / loss.replace(0, float("nan"))))
-    feat = pd.DataFrame({
-        "ret1": ret1, "ret3": close.pct_change(3)*100, "ret6": close.pct_change(6)*100,
-        "vol12": ret1.rolling(12).std(),
-        "ema_gap": (close.ewm(span=8,adjust=False).mean() - close.ewm(span=21,adjust=False).mean()) / close * 100,
-        "rsi": rsi,
-        "rng": (close - low.rolling(24).min()) / (high.rolling(24).max() - low.rolling(24).min()).replace(0, float("nan")) * 100,
-        "vr": volume / volume.rolling(24).mean().replace(0, float("nan")),
-    })
+    feat = pd.DataFrame(
+        {
+            "ret1": ret1,
+            "ret3": close.pct_change(3) * 100,
+            "ret6": close.pct_change(6) * 100,
+            "vol12": ret1.rolling(12).std(),
+            "ema_gap": (
+                close.ewm(span=8, adjust=False).mean()
+                - close.ewm(span=21, adjust=False).mean()
+            )
+            / close
+            * 100,
+            "rsi": rsi,
+            "rng": (close - low.rolling(24).min())
+            / (high.rolling(24).max() - low.rolling(24).min()).replace(0, float("nan"))
+            * 100,
+            "vr": volume / volume.rolling(24).mean().replace(0, float("nan")),
+        }
+    )
     feat["future"] = close.shift(-6) / close * 100 - 100
-    feat = feat.replace([float('inf'), float('-inf')], float("nan"))
-    cols = ["ret1","ret3","ret6","vol12","ema_gap","rsi","rng","vr"]
+    feat = feat.replace([float("inf"), float("-inf")], float("nan"))
+    cols = ["ret1", "ret3", "ret6", "vol12", "ema_gap", "rsi", "rng", "vr"]
     current = feat[cols].dropna().tail(1).astype(float)
-    train = feat.dropna(subset=cols+["future"]).copy()
+    train = feat.dropna(subset=cols + ["future"]).copy()
     if current.empty or len(train) < 50:
         return default
     means = train[cols].mean()
-    stds = train[cols].std().replace(0,1).fillna(1)
-    train_X = ((train[cols]-means)/stds).astype(float).to_numpy()
+    stds = train[cols].std().replace(0, 1).fillna(1)
+    train_X = ((train[cols] - means) / stds).astype(float).to_numpy()
     train_future = train["future"].astype(float).to_numpy()
-    query_x = ((current.iloc[0]-means)/stds).astype(float).to_numpy()
-    k = int(clamp(round(len(train)**0.5), 12, 35))
+    query_x = ((current.iloc[0] - means) / stds).astype(float).to_numpy()
+    k = int(clamp(round(len(train) ** 0.5), 12, 35))
 
     prob_raw = _knn_predict(train_X, train_future, query_x, k)
 
@@ -338,7 +429,7 @@ def compute_ml_forecast(candles):
     # Shrinkage ke 50% sesuai skill terbukti. Tanpa skill -> probabilitas jujur
     # mendekati coin-flip. Dengan skill kuat -> dipertahankan apa adanya.
     if wf_acc is None:
-        skill_factor = 0.5          # skill belum teruji: setengah jalan
+        skill_factor = 0.5  # skill belum teruji: setengah jalan
     elif wf_acc >= 58:
         skill_factor = 1.0
     elif wf_acc >= 53:
@@ -346,7 +437,7 @@ def compute_ml_forecast(candles):
     elif wf_acc >= 48:
         skill_factor = 0.45
     else:
-        skill_factor = 0.25         # lebih buruk dari coin-flip
+        skill_factor = 0.25  # lebih buruk dari coin-flip
     prob = 50.0 + (prob_raw - 50.0) * skill_factor
 
     label = "BULLISH" if prob >= 62 else "BEARISH" if prob <= 42 else "NETRAL"
@@ -385,8 +476,12 @@ def compute_backtest(candles, fee_pct_per_side=0.3, slippage_pct_per_side=0.1):
     """
     round_trip_cost = 2.0 * (fee_pct_per_side + slippage_pct_per_side)
     default = {
-        "bt_wr": 0, "bt_trades": 0, "bt_label": "DATA KURANG",
-        "bt_wr_gross": 0, "bt_oos_wr": 0, "bt_avg_net_pct": 0.0,
+        "bt_wr": 0,
+        "bt_trades": 0,
+        "bt_label": "DATA KURANG",
+        "bt_wr_gross": 0,
+        "bt_oos_wr": 0,
+        "bt_avg_net_pct": 0.0,
         "bt_cost_pct": round(round_trip_cost, 2),
     }
     if candles.empty or len(candles) < 90:
@@ -402,22 +497,27 @@ def compute_backtest(candles, fee_pct_per_side=0.3, slippage_pct_per_side=0.1):
     ema8 = close.ewm(span=8, adjust=False).mean()
     ema21 = close.ewm(span=21, adjust=False).mean()
     vr = volume / volume.rolling(24).mean().replace(0, float("nan"))
-    sig = ((ema8>ema21) & rsi.between(42,72) & (vr>=0.75)).fillna(False)
+    sig = ((ema8 > ema21) & rsi.between(42, 72) & (vr >= 0.75)).fillna(False)
     gross_outcomes = []
     last_i = -6
-    for i in range(35, len(candles)-7):
+    for i in range(35, len(candles) - 7):
         if not bool(sig.iloc[i]) or i - last_i < 6:
             continue
         entry = float(close.iloc[i])
-        if entry <= 0: continue
+        if entry <= 0:
+            continue
         tgt = entry * 1.026
         stp = entry * 0.978
         out = None
-        for j in range(i+1, i+7):
-            if float(low.iloc[j]) <= stp: out = -2.2; break
-            if float(high.iloc[j]) >= tgt: out = 2.6; break
+        for j in range(i + 1, i + 7):
+            if float(low.iloc[j]) <= stp:
+                out = -2.2
+                break
+            if float(high.iloc[j]) >= tgt:
+                out = 2.6
+                break
         if out is None:
-            out = float((close.iloc[i+6]-entry)/entry*100)
+            out = float((close.iloc[i + 6] - entry) / entry * 100)
         gross_outcomes.append(out)
         last_i = i
     if len(gross_outcomes) < 6:
@@ -433,7 +533,13 @@ def compute_backtest(candles, fee_pct_per_side=0.3, slippage_pct_per_side=0.1):
     split = int(len(net_outcomes) * 0.7)
     oos = net_outcomes[split:]
     oos_wr = (len([x for x in oos if x > 0]) / len(oos) * 100) if oos else 0.0
-    label = "TERUJI" if wr >= 58 and len(net_outcomes) >= 14 else "CUKUP" if wr >= 50 else "LEMAH"
+    label = (
+        "TERUJI"
+        if wr >= 58 and len(net_outcomes) >= 14
+        else "CUKUP"
+        if wr >= 50
+        else "LEMAH"
+    )
     return {
         "bt_wr": round(wr, 1),
         "bt_trades": len(net_outcomes),
@@ -445,16 +551,25 @@ def compute_backtest(candles, fee_pct_per_side=0.3, slippage_pct_per_side=0.1):
     }
 
 
-def build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr):
+def build_verdict(
+    score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr
+):
     """Komite bull/bear sederhana: approve, approve kecil, tunggu, atau tolak."""
     bull = bear = 0
-    if score >= 75: bull += 18
-    elif score >= 65: bull += 10
-    else: bear += 8
-    if ml["ml_prob"] >= 62: bull += 12
-    elif ml["ml_prob"] <= 42: bear += 12
-    if bt["bt_trades"] >= 10 and bt["bt_wr"] >= 58: bull += 14
-    elif bt["bt_trades"] >= 10 and bt["bt_label"] == "LEMAH": bear += 16
+    if score >= 75:
+        bull += 18
+    elif score >= 65:
+        bull += 10
+    else:
+        bear += 8
+    if ml["ml_prob"] >= 62:
+        bull += 12
+    elif ml["ml_prob"] <= 42:
+        bear += 12
+    if bt["bt_trades"] >= 10 and bt["bt_wr"] >= 58:
+        bull += 14
+    elif bt["bt_trades"] >= 10 and bt["bt_label"] == "LEMAH":
+        bear += 16
     # Out-of-sample decay: kalau winrate di 30% data terakhir jeblok jauh di
     # bawah keseluruhan, pola mulai basi (regime berubah) -> hukum.
     # Pakai .get agar kompatibel dgn pemanggil/bt lama tanpa key ini.
@@ -462,18 +577,25 @@ def build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_le
     if bt["bt_trades"] >= 12 and bt_oos is not None:
         oos_gap = bt["bt_wr"] - bt_oos
         if oos_gap >= 25:
-            bear += 10   # pola jelas memburuk di periode terbaru
+            bear += 10  # pola jelas memburuk di periode terbaru
         elif oos_gap >= 15:
             bear += 5
         elif bt_oos >= 60 and bt["bt_wr"] >= 55:
-            bull += 4    # tetap kuat termasuk out-of-sample
-    if adx_data["trend"] in ("bullish_strong","bullish"): bull += 7
-    elif adx_data["trend"] in ("bearish_strong","bearish"): bear += 9
-    if supertrend == "bullish": bull += 7
-    elif supertrend == "bearish": bear += 9
-    if rsi >= 78: bear += 8
-    if vol_idr < 100_000_000: bear += 12
-    elif vol_idr >= 5_000_000_000: bull += 5
+            bull += 4  # tetap kuat termasuk out-of-sample
+    if adx_data["trend"] in ("bullish_strong", "bullish"):
+        bull += 7
+    elif adx_data["trend"] in ("bearish_strong", "bearish"):
+        bear += 9
+    if supertrend == "bullish":
+        bull += 7
+    elif supertrend == "bearish":
+        bear += 9
+    if rsi >= 78:
+        bear += 8
+    if vol_idr < 100_000_000:
+        bear += 12
+    elif vol_idr >= 5_000_000_000:
+        bull += 5
     net = int(clamp(50 + bull - bear, 0, 100))
     if risk_level == "TINGGI" or bear >= bull + 18:
         return "TOLAK", net, 0
@@ -493,21 +615,16 @@ def compute_atr(candles, period=14):
     high = candles["high"].astype(float)
     low = candles["low"].astype(float)
     close = candles["close"].astype(float)
-    tr = pd.concat([
-        high - low,
-        (high - close.shift(1)).abs(),
-        (low - close.shift(1)).abs()
-    ], axis=1).max(axis=1)
+    tr = pd.concat(
+        [high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()],
+        axis=1,
+    ).max(axis=1)
     return float(tr.rolling(period).mean().iloc[-1])
 
 
 def compute_ema200_trend(candles):
     if candles.empty or len(candles) < 220:
-        return {
-            "ema200_ok": False,
-            "ema200": None,
-            "trend_side": "NO DATA"
-        }
+        return {"ema200_ok": False, "ema200": None, "trend_side": "NO DATA"}
     close = candles["close"].astype(float)
     ema200 = close.ewm(span=200, adjust=False).mean()
     last_price = float(close.iloc[-1])
@@ -518,19 +635,12 @@ def compute_ema200_trend(candles):
     else:
         side = "BEARISH"
         ok = False
-    return {
-        "ema200_ok": ok,
-        "ema200": last_ema200,
-        "trend_side": side
-    }
+    return {"ema200_ok": ok, "ema200": last_ema200, "trend_side": side}
 
 
 def compute_volume_anomaly(candles, threshold=1.2):
     if candles.empty or len(candles) < 22:
-        return {
-            "volume_ok": False,
-            "volume_ratio": 1.0
-        }
+        return {"volume_ok": False, "volume_ratio": 1.0}
 
     closed = candles.iloc[:-1]
     volume = closed["volume"].astype(float)
@@ -539,25 +649,16 @@ def compute_volume_anomaly(candles, threshold=1.2):
     last_vol = float(volume.iloc[-1])
 
     if avg20 <= 0:
-        return {
-            "volume_ok": False,
-            "volume_ratio": 1.0
-        }
+        return {"volume_ok": False, "volume_ratio": 1.0}
 
     ratio = last_vol / avg20
 
-    return {
-        "volume_ok": ratio >= threshold,
-        "volume_ratio": round(ratio, 2)
-    }
+    return {"volume_ok": ratio >= threshold, "volume_ratio": round(ratio, 2)}
 
 
 def detect_bullish_pinbar(candles):
     if candles.empty or len(candles) < 3:
-        return {
-            "pinbar_ok": False,
-            "pinbar_type": "NO DATA"
-        }
+        return {"pinbar_ok": False, "pinbar_type": "NO DATA"}
 
     closed = candles.iloc[:-1]
     c = closed.iloc[-1]
@@ -573,34 +674,25 @@ def detect_bullish_pinbar(candles):
     lower_shadow = min(open_, close) - low
 
     if candle_range <= 0:
-        return {
-            "pinbar_ok": False,
-            "pinbar_type": "INVALID"
-        }
+        return {"pinbar_ok": False, "pinbar_type": "INVALID"}
 
     body_pct = body / candle_range
     lower_pct = lower_shadow / candle_range
     upper_pct = upper_shadow / candle_range
 
     bullish_pinbar = (
-        lower_pct >= 0.45 and
-        body_pct <= 0.35 and
-        close > open_ and
-        upper_pct <= 0.35
+        lower_pct >= 0.45 and body_pct <= 0.35 and close > open_ and upper_pct <= 0.35
     )
 
     return {
         "pinbar_ok": bullish_pinbar,
-        "pinbar_type": "BULLISH_PINBAR" if bullish_pinbar else "NO_REJECTION"
+        "pinbar_type": "BULLISH_PINBAR" if bullish_pinbar else "NO_REJECTION",
     }
 
 
 def compute_dynamic_walls(candles, tolerance_pct=1.0):
     if candles.empty or len(candles) < 100:
-        return {
-            "dynamic_wall_ok": False,
-            "wall_type": "NO DATA"
-        }
+        return {"dynamic_wall_ok": False, "wall_type": "NO DATA"}
     close = candles["close"].astype(float)
     last_price = float(close.iloc[-1])
     ma99 = float(close.rolling(99).mean().iloc[-1])
@@ -608,10 +700,12 @@ def compute_dynamic_walls(candles, tolerance_pct=1.0):
     std = float(close.tail(20).std())
     upper_bb = mid + 2 * std
     lower_bb = mid - 2 * std
+
     def near(a, b):
         if b <= 0:
             return False
         return abs(a - b) / b * 100 <= tolerance_pct
+
     near_ma99 = near(last_price, ma99)
     near_lower_bb = near(last_price, lower_bb)
     near_upper_bb = near(last_price, upper_bb)
@@ -629,7 +723,7 @@ def compute_dynamic_walls(candles, tolerance_pct=1.0):
         "wall_type": wall_type,
         "ma99": ma99,
         "lower_bb": lower_bb,
-        "upper_bb": upper_bb
+        "upper_bb": upper_bb,
     }
 
 
@@ -649,12 +743,24 @@ def compute_static_sr(candles, tolerance_pct=1.2):
     support = float(recent["low"].min())
     resistance = float(recent["high"].max())
 
-    near_support = abs(last_price - support) / support * 100 <= tolerance_pct if support > 0 else False
-    near_resistance = abs(last_price - resistance) / resistance * 100 <= tolerance_pct if resistance > 0 else False
+    near_support = (
+        abs(last_price - support) / support * 100 <= tolerance_pct
+        if support > 0
+        else False
+    )
+    near_resistance = (
+        abs(last_price - resistance) / resistance * 100 <= tolerance_pct
+        if resistance > 0
+        else False
+    )
 
     return {
         "sr_ok": near_support,
-        "sr_type": "SUPPORT" if near_support else "RESISTANCE" if near_resistance else "NONE",
+        "sr_type": "SUPPORT"
+        if near_support
+        else "RESISTANCE"
+        if near_resistance
+        else "NONE",
         "support": support,
         "resistance": resistance,
     }
