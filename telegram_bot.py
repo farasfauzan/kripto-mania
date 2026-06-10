@@ -859,10 +859,15 @@ def _message_fingerprint(text):
     return hashlib.sha256(normalized.encode()).hexdigest()
 
 
+_reply_context = threading.local()
+
+
 def send_message(text, notify=False, force=False):
     global _message_fingerprints
 
-    if not BOT_TOKEN or not CHAT_ID:
+    target_chat_id = getattr(_reply_context, "chat_id", None) or CHAT_ID
+
+    if not BOT_TOKEN or not target_chat_id:
         return False
 
     now_ts = time.time()
@@ -887,7 +892,7 @@ def send_message(text, notify=False, force=False):
     chunks = [text] if len(text) <= 4096 else _split_text(text)
     for i, chunk in enumerate(chunks):
         payload = {
-            "chat_id": CHAT_ID,
+            "chat_id": target_chat_id,
             "text": chunk,
             "parse_mode": "Markdown",
             "disable_notification": not notify,
@@ -899,7 +904,7 @@ def send_message(text, notify=False, force=False):
                 not result.get("ok")
                 and "parse" in str(result.get("description", "")).lower()
             ):
-                payload["parse_mode"] = None
+                payload.pop("parse_mode", None)
                 resp2 = requests.post(url, json=payload, timeout=10)
                 result = resp2.json()
             if not result.get("ok"):
@@ -2070,6 +2075,29 @@ def _format_idr(value):
 
 
 def handle_telegram_command(update_data):
+    """Wrapper to route Telegram responses back to the originating chat ID."""
+    message = None
+    if not update_data:
+        return False
+    if "message" in update_data:
+        message = update_data["message"]
+    elif "channel_post" in update_data:
+        message = update_data["channel_post"]
+    elif "callback_query" in update_data:
+        message = update_data["callback_query"].get("message")
+
+    if message:
+        chat_info = message.get("chat", {})
+        msg_chat_id = str(chat_info.get("id", ""))
+        _reply_context.chat_id = msg_chat_id
+
+    try:
+        return _handle_telegram_command_inner(update_data)
+    finally:
+        _reply_context.chat_id = None
+
+
+def _handle_telegram_command_inner(update_data):
     """Handle incoming Telegram commands. Returns True if a command was processed."""
     global _message_fingerprints
     global AUTO_TRADE_ENABLED, PAPER_TRADING_MODE
@@ -2129,7 +2157,8 @@ def handle_telegram_command(update_data):
         return False
 
     if (
-        allowed_user_id
+        chat_type != "channel"
+        and allowed_user_id
         and str(auth_message.get("from", {}).get("id", "")) != allowed_user_id
     ):
         return False

@@ -74,6 +74,10 @@ def send_telegram_message(text, notify=False, force=False):
         try:
             resp = requests.post(url, json=payload, timeout=10)
             result = resp.json()
+            if not result.get("ok") and "parse" in str(result.get("description", "")).lower():
+                payload.pop("parse_mode", None)
+                resp2 = requests.post(url, json=payload, timeout=10)
+                result = resp2.json()
             if not result.get("ok"):
                 _LOGGER.error("Telegram error: %s", result.get('description', ''))
         except Exception as e:

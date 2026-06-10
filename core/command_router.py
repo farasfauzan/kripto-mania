@@ -232,7 +232,7 @@ def authorize_telegram_command(message, command, configured_chat_id, allowed_use
     if (not configured_chat_id or msg_chat_id != str(configured_chat_id)) and not is_authorized_dm:
         return {"allowed": False, "reason": "Unauthorized Telegram chat"}
 
-    if allowed_user and sender_id != allowed_user:
+    if chat_type != "channel" and allowed_user and sender_id != allowed_user:
         return {"allowed": False, "reason": "Unauthorized Telegram user"}
 
     command_type = str(command.get("type", "UNKNOWN")).upper()

@@ -381,7 +381,7 @@ def _bot_send_message(text, alert=True):
             resp = requests.post(url, json=payload, timeout=10)
             result = resp.json()
             if not result.get("ok") and "parse" in str(result.get("description", "")).lower():
-                payload["parse_mode"] = None
+                payload.pop("parse_mode", None)
                 resp2 = requests.post(url, json=payload, timeout=10)
                 result = resp2.json()
             if not result.get("ok"):
