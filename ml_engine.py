@@ -955,6 +955,103 @@ def _check_online_retrain():
         logger.error(f"Online retrain failed: {e}")
 
 
+def force_online_retrain() -> dict:
+    """Paksa retrain ensemble dari buffer SEKARANG (abaikan gate interval waktu).
+
+    Dipakai untuk training manual (mis. command /train di Telegram). Tetap
+    butuh data minimum & dua kelas (menang+kalah) supaya model valid.
+    Mengembalikan dict status yang ramah ditampilkan ke user.
+    """
+    _load_online_buffer()
+    n = len(_ONLINE_BUFFER["y"])
+    if n < CFG.min_train_samples:
+        return {
+            "success": False,
+            "reason": f"Data belum cukup: {n}/{CFG.min_train_samples} sampel. "
+            f"Bot kumpulin otomatis tiap trade kena TP/SL.",
+            "n_samples": n,
+        }
+    y_buf = np.array(_ONLINE_BUFFER["y"])
+    if len(np.unique(y_buf)) < 2:
+        return {
+            "success": False,
+            "reason": "Butuh variasi hasil (ada menang DAN kalah) buat training.",
+            "n_samples": n,
+        }
+    try:
+        raw = pd.DataFrame(_ONLINE_BUFFER["X"])
+        if "symbol" in raw.columns:
+            raw = raw.drop(columns=["symbol"])
+        df = raw.select_dtypes(include=[np.number]).fillna(0.0)
+        if os.path.exists(FEATURE_META_PATH):
+            try:
+                with open(FEATURE_META_PATH) as f:
+                    known = json.load(f).get("feature_names", [])
+                common = [c for c in known if c in df.columns]
+                if len(common) >= 5:
+                    df = df[common]
+            except Exception:
+                pass
+        if df.shape[1] < 5:
+            return {
+                "success": False,
+                "reason": f"Fitur terlalu sedikit ({df.shape[1]}<5).",
+                "n_samples": n,
+            }
+        result = train_ensemble(df, pd.Series(y_buf))
+        if result.get("success"):
+            _ONLINE_BUFFER["last_retrain"] = datetime.now(WIB).timestamp()
+            _ONLINE_BUFFER["X"] = []
+            _ONLINE_BUFFER["y"] = []
+            _save_online_buffer()
+            logger.info(
+                f"Manual retrain done v{result['version']} — {result['n_samples']} samples"
+            )
+            return {
+                "success": True,
+                "version": result.get("version"),
+                "n_samples": result.get("n_samples"),
+                "metrics": result.get("metrics", {}),
+            }
+        return {
+            "success": False,
+            "reason": result.get("error", "training gagal"),
+            "n_samples": n,
+        }
+    except Exception as e:
+        logger.error(f"Manual retrain failed: {e}")
+        return {"success": False, "reason": str(e), "n_samples": n}
+
+
+def get_learning_status() -> dict:
+    """Status ringkas proses belajar untuk ditampilkan ke user (command /brain)."""
+    _load_online_buffer()
+    _load_adaptive_state()
+    registry = _load_model_registry()
+    last_retrain_ts = _ONLINE_BUFFER.get("last_retrain", 0)
+    if last_retrain_ts:
+        last_retrain = datetime.fromtimestamp(last_retrain_ts, WIB).strftime(
+            "%d/%m %H:%M"
+        )
+    else:
+        last_retrain = "belum pernah"
+    latest = registry[-1] if registry else None
+    return {
+        "buffer_samples": len(_ONLINE_BUFFER.get("y", [])),
+        "min_samples_needed": CFG.min_train_samples,
+        "online_enabled": CFG.online_learning_enabled,
+        "retrain_interval_h": CFG.online_learning_interval_hours,
+        "last_retrain": last_retrain,
+        "model_versions": len(registry),
+        "latest_version": latest.get("version") if latest else None,
+        "latest_metrics": latest.get("metrics") if latest else None,
+        "consecutive_wins": _ADAPTIVE_STATE.get("consecutive_wins", 0),
+        "consecutive_losses": _ADAPTIVE_STATE.get("consecutive_losses", 0),
+        "current_threshold": get_adaptive_threshold(),
+        "model_exists": os.path.exists(ENSEMBLE_MODEL_PATH),
+    }
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 8. PREDICTION
 # ═════════════════════════════════════════════════════════════════════════════

@@ -2072,6 +2072,9 @@ def _format_idr(value):
 def handle_telegram_command(update_data):
     """Handle incoming Telegram commands. Returns True if a command was processed."""
     global _message_fingerprints
+    global AUTO_TRADE_ENABLED, PAPER_TRADING_MODE
+    global ENABLE_FOMO_ALERTS, ENABLE_CONFLUENCE_ALERTS, ENABLE_EARLY_ALERTS
+
 
     if not update_data or not BOT_TOKEN or not CHAT_ID:
         return False
@@ -2167,7 +2170,12 @@ def handle_telegram_command(update_data):
             f"🏓 */ping* — Cek bot hidup + uptime\n"
             f"🤖 */status* — Kondisi bot (mode, agresif, posisi)\n"
             f"🔥 */agresif on|off* — Toggle mode agresif\n"
+            f"💸 */autotrade paper|real|off* — Atur eksekusi auto-trade\n"
+            f"🧠 */brain* — Status belajar ML (data, versi model)\n"
+
+            f"🏋️ */train* — Paksa latih ulang model ML sekarang\n"
             f"📊 */scan* — Scan semua koin utama sekarang\n"
+
             f"🎯 */top* — Lihat 5 koin terbaik saat ini\n"
             f"💼 */portfolio* — Cek posisi terbuka + P/L\n"
             f"📜 */journal* — Riwayat sinyal + winrate\n"
@@ -2518,8 +2526,8 @@ def handle_telegram_command(update_data):
             return True
 
         if args[0] == "on":
-            global ENABLE_FOMO_ALERTS, ENABLE_CONFLUENCE_ALERTS, ENABLE_EARLY_ALERTS
             ENABLE_FOMO_ALERTS = True
+
             ENABLE_CONFLUENCE_ALERTS = True
             ENABLE_EARLY_ALERTS = True
             send_message("🔔 *Alert AKTIF* — Semua notifikasi on.", notify=True)
@@ -2658,6 +2666,145 @@ def handle_telegram_command(update_data):
                 notify=True,
                 force=True,
             )
+        return True
+
+    # === /autotrade — kontrol eksekusi trade (paper/real/off) ===
+    if cmd in ("/autotrade", "/auto"):
+        sub = args[0].lower() if args else ""
+
+
+        def _mode_now():
+            if AUTO_TRADE_ENABLED and not PAPER_TRADING_MODE:
+                return "REAL 💸 (uang asli)"
+            if PAPER_TRADING_MODE:
+                return "PAPER 🧻 (simulasi)"
+            return "OFF ⛔ (cuma sinyal, tidak eksekusi)"
+
+        if sub == "off":
+            AUTO_TRADE_ENABLED = False
+            PAPER_TRADING_MODE = False
+            send_message(
+                "⛔ *AUTO-TRADE OFF* — bot cuma kirim sinyal, tidak eksekusi order. "
+                "Kamu eksekusi manual sendiri.",
+                notify=True,
+                force=True,
+            )
+            return True
+        if sub == "paper":
+            AUTO_TRADE_ENABLED = False
+            PAPER_TRADING_MODE = True
+            send_message(
+                "🧻 *AUTO-TRADE PAPER ON* — bot eksekusi SIMULASI (tanpa uang asli). "
+                "Aman buat uji strategi. Cek hasil di /portfolio & /stats.",
+                notify=True,
+                force=True,
+            )
+            return True
+        if sub == "real":
+            # Wajib konfirmasi eksplisit "real yes" supaya tidak kepencet.
+            if len(args) < 2 or args[1].lower() != "yes":
+                send_message(
+                    "⚠️ *KONFIRMASI UANG ASLI* ⚠️\n"
+                    "Ini akan eksekusi order BENERAN di Indodax pakai uang asli.\n"
+                    f"Limit per trade: Rp{MAX_TRADE_IDR:,.0f}\n"
+                    f"Konfirmasi sebelum tiap order: {'Ya' if CONFIRM_BEFORE_TRADE else 'TIDAK (langsung beli!)'}\n\n"
+                    "Kalau yakin, ketik: */autotrade real yes*",
+                    notify=True,
+                    force=True,
+                )
+                return True
+            AUTO_TRADE_ENABLED = True
+            PAPER_TRADING_MODE = False
+            send_message(
+                "💸 *AUTO-TRADE REAL ON!* — bot mulai eksekusi order pakai UANG ASLI.\n"
+                f"Limit per trade: Rp{MAX_TRADE_IDR:,.0f}\n"
+                f"Konfirmasi tiap order: {'Ya' if CONFIRM_BEFORE_TRADE else 'TIDAK'}\n"
+                "Pantau ketat /portfolio. Matikan kapan saja: /autotrade off",
+                notify=True,
+                force=True,
+            )
+            return True
+
+        # Tanpa argumen valid → tampilkan status + bantuan
+        send_message(
+            "🤖 *AUTO-TRADE*\n"
+            f"Sekarang: *{_mode_now()}*\n"
+            "──────────────────────\n"
+            "/autotrade paper — eksekusi simulasi (aman)\n"
+            "/autotrade real — eksekusi uang asli (perlu konfirmasi)\n"
+            "/autotrade off — cuma sinyal, tanpa eksekusi",
+            notify=True,
+            force=True,
+        )
+        return True
+
+    # === /brain — status proses belajar bot ===
+    if cmd == "/brain":
+
+        try:
+            from ml_engine import get_learning_status
+
+            st = get_learning_status()
+            metrics = st.get("latest_metrics") or {}
+            wf = metrics.get("walk_f1_mean")
+            wf_txt = f"{wf:.2f}" if isinstance(wf, (int, float)) else "-"
+            send_message(
+                "🧠 *STATUS OTAK BOT (ML LEARNING)*\n"
+                "──────────────────────\n"
+                f"Online learning: {'ON ✅' if st['online_enabled'] else 'OFF ❌'}\n"
+                f"Data terkumpul: *{st['buffer_samples']}/{st['min_samples_needed']}* sampel\n"
+                f"(bot kumpulin otomatis tiap trade kena TP/SL)\n"
+                f"Model sudah ada: {'Ya' if st['model_exists'] else 'Belum'}\n"
+                f"Versi model: {st['latest_version'] or '-'} (total {st['model_versions']} versi)\n"
+                f"Walk-forward F1: {wf_txt}\n"
+                f"Retrain terakhir: {st['last_retrain']}\n"
+                f"Auto-retrain tiap: {st['retrain_interval_h']} jam\n"
+                f"Win streak: {st['consecutive_wins']} · Loss streak: {st['consecutive_losses']}\n"
+                f"Threshold sekarang: {st['current_threshold']:.0f}%\n"
+                "──────────────────────\n"
+                "Latih sekarang (manual): /train",
+                notify=True,
+                force=True,
+            )
+        except Exception as e:
+            log(f"Error /brain: {e}")
+            send_message(f"❌ Error: {str(e)[:100]}", notify=True, force=True)
+        return True
+
+    # === /train — paksa latih ulang model ML sekarang ===
+    if cmd == "/train":
+        send_message(
+            "🏋️ *Mulai latih ulang model ML...* (bisa makan waktu)",
+            notify=False,
+            force=True,
+        )
+        try:
+            from ml_engine import force_online_retrain
+
+            res = force_online_retrain()
+            if res.get("success"):
+                m = res.get("metrics", {})
+                send_message(
+                    "✅ *TRAINING SELESAI!*\n"
+                    f"Versi model baru: *v{res.get('version')}*\n"
+                    f"Dilatih dari: {res.get('n_samples')} sampel\n"
+                    f"Akurasi: {m.get('accuracy', '-')} · F1: {m.get('f1', '-')} · "
+                    f"Walk-F1: {m.get('walk_f1_mean', '-')}\n"
+                    "Model baru langsung dipakai buat prediksi berikutnya. 🧠",
+                    notify=True,
+                    force=True,
+                )
+            else:
+                send_message(
+                    f"⚠️ *Belum bisa latih:* {res.get('reason')}\n"
+                    f"(sampel sekarang: {res.get('n_samples', 0)})\n"
+                    "Bot tetap belajar otomatis sambil ngumpulin data.",
+                    notify=True,
+                    force=True,
+                )
+        except Exception as e:
+            log(f"Error /train: {e}")
+            send_message(f"❌ Error training: {str(e)[:100]}", notify=True, force=True)
         return True
 
     return False
