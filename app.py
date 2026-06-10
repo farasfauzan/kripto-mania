@@ -2304,6 +2304,21 @@ def render_sidebar(market_stats, fg_data, all_results):
                 st.markdown(f"**{p['symbol']}** · Score {p['score']}/100 · {p['change']:+.1f}%")
         st.markdown("#### Status")
         st.markdown("Telegram Bot: **Aktif**" if BOT_ENABLED else "Telegram Bot: **Nonaktif**")
+        if not BOT_ENABLED or not BOT_TOKEN or not BOT_CHAT_ID:
+            st.sidebar.warning(
+                "⚠️ **Config Telegram Belum Lengkap**\n\n"
+                "Telegram Bot tidak aktif di Hugging Face. Hubungkan dengan cara:\n\n"
+                "1. Buka tab **Settings** -> **Variables and Secrets** di Space Anda.\n"
+                "2. Tambahkan **Secrets**:\n"
+                "   • `TELEGRAM_BOT_TOKEN` = `8947452796:AAEyKOPuOa_JmjDfTUTybhz5H3Puec_7yYs`\n"
+                "   • `TELEGRAM_CHAT_ID` = `-1003878919874`\n"
+                "   • `GEMINI_API_KEY` = (dari secrets.toml Anda)\n"
+                "   • `DEEPSEEK_API_KEY` = (dari secrets.toml Anda)\n"
+                "3. Tambahkan **Variables**:\n"
+                "   • `ENABLE_TELEGRAM_BOT` = `true`\n"
+                "   • `TELEGRAM_ALLOWED_USER_ID` = `1206494871`\n\n"
+                "Setelah itu Space akan me-restart otomatis dan bot akan mulai menjawab perintah Anda."
+            )
         auto_state = "ON (60 detik)" if st.session_state.get("auto_refresh_enabled") else "OFF (manual)"
         st.markdown(f"Auto-refresh: **{auto_state}**")
 
