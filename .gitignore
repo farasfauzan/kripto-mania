@@ -47,6 +47,7 @@ test_*.py
 
 # ML Models & Runtime State
 *.pkl
+ml_models/
 
 # Local environments
 .env

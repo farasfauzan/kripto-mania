@@ -10,11 +10,60 @@ Fitur: RSI, EMA, MACD, Bollinger, Supertrend, ADX, ML/KNN, Backtest, Agentic Ver
 
 import os
 import time
+import threading
 import requests
 import pandas as pd
 import json
 from datetime import datetime, timezone, timedelta
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AGGRESSIVE PRESET (terpusat)
+# ─────────────────────────────────────────────────────────────────────────────
+# Set AGGRESSIVE_PRESET=high untuk nyalain mode cari-cuan agresif. Preset ini
+# memakai os.environ.setdefault, jadi env var yang sudah kamu set manual TETAP
+# menang (preset tidak menimpa). HARUS dijalankan SEBELUM import modul lain
+# (ml_engine, portfolio_manager) karena mereka baca env saat import.
+#
+# Catatan keamanan: preset TIDAK menyalakan real-money. Default tetap PAPER.
+# Untuk real-money kamu wajib set AUTO_TRADE_ENABLED=true + PAPER_TRADING_MODE=false
+# secara eksplisit.
+def _apply_aggressive_preset():
+    preset = str(os.environ.get("AGGRESSIVE_PRESET", "")).strip().lower()
+    if preset not in {"high", "tinggi", "max", "ultra"}:
+        return
+    defaults = {
+        # Sinyal scalp XGBoost: aktif + boost skor lebih besar
+        "AGGRESSIVE_MODE": "1",
+        "AGGRESSIVE_BOOST": "35",
+        # Threshold ML diturunin → lebih banyak sinyal lolos
+        "ML_PROB_THRESHOLD": "58",
+        "ML_ADAPTIVE_BASE": "60",
+        "ML_ADAPTIVE_MIN": "50",
+        # Scan lebih luas + lebih sering
+        "MAX_SCAN_COINS": "80",
+        "MIN_VOLUME_IDR": "100000000",
+        "LOOP_SLEEP_SECONDS": "20",
+        # Lebih banyak posisi bareng
+        "MAX_ACTIVE_TRADES": "12",
+        "MAX_OPEN_POSITIONS": "12",
+        # Alert/entry threshold dilonggarin
+        "MIN_ALERT_SCORE": "60",
+        "EARLY_MIN_SCORE": "50",
+        # Guardrail tetap ON biar agresif tapi gak bunuh diri
+        "MAX_DAILY_LOSS_IDR": os.environ.get("MAX_DAILY_LOSS_IDR", "150000"),
+        "TRADE_COOLDOWN_SEC": os.environ.get("TRADE_COOLDOWN_SEC", "120"),
+        # Keamanan: tetap PAPER kecuali user override eksplisit
+        "PAPER_TRADING_MODE": "true",
+    }
+    for key, val in defaults.items():
+        os.environ.setdefault(key, str(val))
+
+
+_apply_aggressive_preset()
+
 from keep_alive import keep_alive
+
 from learning_engine import (
     apply_learning_adjustments,
     record_signal,
@@ -26,6 +75,7 @@ from ai_pilot import generate_signal_insight
 from core.applog import get_logger
 from core.committee import build_committee, committee_summary_line
 from core import command_router, execution_engine, portfolio_manager
+from core.persistence import file_lock, atomic_write_json, read_json_safe
 
 try:
     from ml_engine import predict_aggressive_scalp
@@ -167,7 +217,11 @@ EARLY_MIN_SETUP_STRENGTH = int(
 
 
 # === STATE ===
+_BOT_START_TS = time.time()  # buat /ping uptime
+_CYCLE_COUNT = 0  # diupdate tiap siklus loop utama
+_LISTENER_STARTED = False  # guard supaya listener thread cuma sekali
 _last_sinyal_date = None
+
 _last_summary_date = None
 _fomo_sent_symbols = {}
 _confluence_sent_symbols = {}  # track real-time confluence alerts
@@ -248,6 +302,7 @@ def _save_executed_buy_position(result, symbol, tp1, tp2, sl, trade_type):
         sl=sl,
         trade_type=trade_type,
         mode=result.get("mode", "paper"),
+        entry_features=result.get("metadata", {}).get("entry_features"),
     )
     if saved:
         return True
@@ -374,8 +429,11 @@ def load_bot_state():
         log("No state file found. Starting fresh.")
         return
     try:
-        with open(STATE_FILE, "r") as f:
-            data = json.load(f)
+        with file_lock(STATE_FILE):
+            data = read_json_safe(STATE_FILE, {})
+        if not data:
+            log("No state loaded or empty state file.")
+            return
         _last_sinyal_date = data.get("last_sinyal_date", _last_sinyal_date)
         _last_summary_date = data.get("last_summary_date", _last_summary_date)
         _fomo_sent_symbols = data.get("fomo_sent_symbols", _fomo_sent_symbols)
@@ -431,13 +489,10 @@ def save_bot_state():
             "daily_stats": _daily_stats,
             "last_fomo_alert_time": _last_fomo_alert_time,
             "message_fingerprints": _message_fingerprints,
-            "early_sent_symbols": _early_sent_symbols,
         }
 
-        tmp_path = f"{STATE_FILE}.tmp"
-        with open(tmp_path, "w") as f:
-            json.dump(data, f, indent=4)
-        os.replace(tmp_path, STATE_FILE)
+        with file_lock(STATE_FILE):
+            atomic_write_json(STATE_FILE, data)
     except Exception as e:
         log(f"Error saving bot state: {e}")
 
@@ -639,9 +694,11 @@ def analyze_coin(symbol, data, candles):
     # Aggressive Scalp (XGBoost) — BOOST dari 15 jadi 25
     xgb_prob = 0.0
     xgb_label = "NO DATA"
+    entry_feats = {}
     boost_mult = float(os.environ.get("AGGRESSIVE_BOOST", "25"))
     if predict_aggressive_scalp and os.environ.get("AGGRESSIVE_MODE") == "1":
         xgb_scalp = predict_aggressive_scalp(candles)
+        entry_feats = xgb_scalp.get("entry_features", {})
         if xgb_scalp.get("is_scalp_valid"):
             base += boost_mult
             xgb_prob = xgb_scalp.get("prob_up_pct", 0)
@@ -751,6 +808,7 @@ def analyze_coin(symbol, data, candles):
         ),
         "binance_book_ratio": binance_data.get("order_book", {}).get("book_ratio", 0),
         "binance_available": binance_data.get("available", False),
+        "entry_features": entry_feats,
     }
 
 
@@ -1035,11 +1093,14 @@ def send_sinyal_harian(all_coins):
                             trade_amount,
                             float(s["price"]),
                             reason="BELI KUAT",
-                            metadata=_trade_risk_metadata(
-                                "daily_signal",
-                                risk_tag=s.get("risk_level"),
-                                market_state={"risk_level": s.get("risk_level")},
-                            ),
+                            metadata={
+                                **_trade_risk_metadata(
+                                    "daily_signal",
+                                    risk_tag=s.get("risk_level"),
+                                    market_state={"risk_level": s.get("risk_level")},
+                                ),
+                                "entry_features": s.get("entry_features"),
+                            },
                         )
                         if res_buy.get("success"):
                             received = res_buy["received_coin"]
@@ -1688,11 +1749,14 @@ def check_early_entry_alerts(all_coins):
                             trade_amount,
                             float(res["price"]),
                             reason="EARLY",
-                            metadata=_trade_risk_metadata(
-                                "early_entry",
-                                risk_tag=res.get("risk_level"),
-                                market_state={"risk_level": res.get("risk_level")},
-                            ),
+                            metadata={
+                                **_trade_risk_metadata(
+                                    "early_entry",
+                                    risk_tag=res.get("risk_level"),
+                                    market_state={"risk_level": res.get("risk_level")},
+                                ),
+                                "entry_features": res.get("entry_features"),
+                            },
                         )
                         if res_buy.get("success"):
                             received = res_buy["received_coin"]
@@ -2013,6 +2077,8 @@ def handle_telegram_command(update_data):
     message = None
     if "message" in update_data:
         message = update_data["message"]
+    elif "channel_post" in update_data:
+        message = update_data["channel_post"]
     elif "callback_query" in update_data:
         # Handle inline query (button clicks)
         message = update_data["callback_query"].get("message")
@@ -2095,6 +2161,9 @@ def handle_telegram_command(update_data):
         help_text = (
             f"*⚙️ DAFTAR COMMAND TELEGRAM*\n"
             f"──────────────────────\n"
+            f"🏓 */ping* — Cek bot hidup + uptime\n"
+            f"🤖 */status* — Kondisi bot (mode, agresif, posisi)\n"
+            f"🔥 */agresif on|off* — Toggle mode agresif\n"
             f"📊 */scan* — Scan semua koin utama sekarang\n"
             f"🎯 */top* — Lihat 5 koin terbaik saat ini\n"
             f"💼 */portfolio* — Cek posisi terbuka + P/L\n"
@@ -2516,6 +2585,76 @@ def handle_telegram_command(update_data):
             send_message(f"❌ Error: {str(e)[:100]}", notify=True)
         return True
 
+    # === /ping — cek bot hidup + responsif ===
+    if cmd in ("/ping", "/start"):
+        up = time.time() - _BOT_START_TS
+        hours = int(up // 3600)
+        mins = int((up % 3600) // 60)
+        send_message(
+            f"🏓 *PONG — bot hidup & responsif!*\n"
+            f"Uptime: {hours}j {mins}m\n"
+            f"Cycle ke-{_CYCLE_COUNT}\n"
+            f"Posisi aktif: {len(_active_signals)}\n"
+            f"Ketik /help buat lihat semua command.",
+            notify=True,
+            force=True,
+        )
+        return True
+
+    # === /status — ringkasan kondisi bot sekarang ===
+    if cmd == "/status":
+        aggressive = os.environ.get("AGGRESSIVE_MODE") == "1"
+        preset = os.environ.get("AGGRESSIVE_PRESET", "-")
+        mode_real = AUTO_TRADE_ENABLED and not PAPER_TRADING_MODE
+        send_message(
+            "🤖 *STATUS BOT*\n"
+            "──────────────────────\n"
+            f"Mode trading: *{'REAL 💸' if mode_real else 'PAPER 🧻'}*\n"
+            f"Agresif: *{'ON 🔥' if aggressive else 'OFF 🛡️'}* (preset: {preset})\n"
+            f"Konfirmasi sebelum trade: {'Ya' if CONFIRM_BEFORE_TRADE else 'Tidak'}\n"
+            f"Max posisi bareng: {os.environ.get('MAX_ACTIVE_TRADES', '5')}\n"
+            f"Scan: {MAX_SCAN_COINS} koin tiap {LOOP_SLEEP_SECONDS}s\n"
+            f"Limit per trade: Rp{MAX_TRADE_IDR:,.0f}\n"
+            f"Alert: FOMO {'on' if ENABLE_FOMO_ALERTS else 'off'} · "
+            f"Confluence {'on' if ENABLE_CONFLUENCE_ALERTS else 'off'} · "
+            f"Early {'on' if ENABLE_EARLY_ALERTS else 'off'}\n"
+            f"Posisi aktif: {len(_active_signals)}\n"
+            "──────────────────────\n"
+            "Ubah agresif: /agresif on|off",
+            notify=True,
+            force=True,
+        )
+        return True
+
+    # === /agresif on|off — toggle mode agresif runtime ===
+    if cmd in ("/agresif", "/aggressive"):
+        if not args or args[0].lower() not in ("on", "off"):
+            current = "ON 🔥" if os.environ.get("AGGRESSIVE_MODE") == "1" else "OFF 🛡️"
+            send_message(
+                f"🔥 *MODE AGRESIF*\nSekarang: *{current}*\n\n"
+                "Gunakan:\n/agresif on — cari sinyal scalp cepat (boost ML)\n"
+                "/agresif off — kembali normal/swing",
+                notify=True,
+                force=True,
+            )
+            return True
+        if args[0].lower() == "on":
+            os.environ["AGGRESSIVE_MODE"] = "1"
+            send_message(
+                "🔥 *MODE AGRESIF AKTIF* — bot cari sinyal scalp cepat pakai XGBoost. "
+                "Lebih banyak entry, lebih sering. Pantau /portfolio & /stats.",
+                notify=True,
+                force=True,
+            )
+        else:
+            os.environ["AGGRESSIVE_MODE"] = "0"
+            send_message(
+                "🛡️ *MODE AGRESIF NONAKTIF* — bot kembali ke mode swing/normal.",
+                notify=True,
+                force=True,
+            )
+        return True
+
     return False
 
 
@@ -2549,6 +2688,54 @@ def poll_telegram_commands():
 
 
 _last_update_offset = 0
+
+
+def _command_listener_loop():
+    """Long-polling listener di thread terpisah supaya bot SELALU responsif,
+    bahkan saat loop utama lagi sibuk scan 80 koin (yang bisa makan menit).
+
+    Pakai getUpdates dengan long-poll timeout 25s — hemat request tapi balasan
+    command (/ping, /scan, /agresif, dst) terasa instan."""
+    global _last_update_offset
+    if not BOT_TOKEN or not CHAT_ID:
+        log("Listener tidak jalan: BOT_TOKEN/CHAT_ID kosong.", "warning")
+        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    log("Command listener thread aktif (long-poll 25s).")
+    while True:
+        try:
+            params = {
+                "timeout": 25,  # long-poll: nunggu sampai ada pesan / 25s
+                "offset": _last_update_offset + 1 if _last_update_offset else None,
+            }
+            resp = requests.get(url, params=params, timeout=35)
+            data = resp.json()
+            if not data.get("ok"):
+                time.sleep(2)
+                continue
+            for update in data.get("result", []):
+                _last_update_offset = max(
+                    _last_update_offset, update.get("update_id", 0)
+                )
+                try:
+                    handle_telegram_command(update)
+                except Exception as e:
+                    log(f"listener handle error: {e}", "warning")
+        except requests.exceptions.Timeout:
+            continue  # wajar untuk long-poll, lanjut aja
+        except Exception as e:
+            log(f"listener loop error: {e}", "warning")
+            time.sleep(3)
+
+
+def _start_command_listener():
+    """Start listener thread sekali aja (idempotent)."""
+    global _LISTENER_STARTED
+    if _LISTENER_STARTED:
+        return
+    t = threading.Thread(target=_command_listener_loop, name="tg-listener", daemon=True)
+    t.start()
+    _LISTENER_STARTED = True
 
 
 # =============================================================================
@@ -2589,12 +2776,19 @@ if __name__ == "__main__":
     # Load previously saved bot state to avoid duplicate alerts and preserve active trades
     load_bot_state()
 
+    # Listener thread: bikin bot SELALU responsif ke command (instan), terpisah
+    # dari loop scan yang bisa lama. Kalau token ada → jalan di background.
+    _start_command_listener()
+    if BOT_TOKEN and CHAT_ID:
+        log("Bot interaktif: command dibalas instan via listener thread.")
+
     consecutive_errors = 0
     cycle_count = 0
 
     while True:
         try:
             cycle_count += 1
+            _CYCLE_COUNT = cycle_count  # sinkron buat /ping & /status
             all_coins = fetch_all_tickers()
 
             if not all_coins:
@@ -2621,10 +2815,11 @@ if __name__ == "__main__":
                     f"Heartbeat -- {coin_count} koin | {now.strftime('%H:%M WIB')} | Learning WR: {wr_text} | News: {news_profile.get('global_label', 'NO DATA')}"
                 )
 
-            # 0. Proses command Telegram masuk (/scan, /top, /portfolio, dst)
-            poll_telegram_commands()
+            # 0. Command Telegram ditangani listener thread terpisah (instan),
+            #    jadi tidak perlu poll di sini lagi (hindari race offset getUpdates).
 
             # 1. Sinyal harian (jam 7-12 pagi)
+
             if should_send_sinyal():
                 send_sinyal_harian(all_coins)
 
