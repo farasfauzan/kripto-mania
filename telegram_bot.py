@@ -2535,8 +2535,14 @@ def _handle_telegram_command_inner(update_data):
     # === /portfolio ===
     if cmd == "/portfolio":
         try:
-            # Check active signals as proxy for portfolio
-            if not _active_signals:
+            portfolio = portfolio_manager._load_portfolio()
+            open_positions = {
+                sym: pos
+                for sym, pos in portfolio.items()
+                if str(pos.get("status", "OPEN")).strip().upper() == "OPEN"
+            }
+
+            if not open_positions:
                 send_message(
                     "💼 *PORTFOLIO*\n\nTidak ada posisi terbuka saat ini.\n\n"
                     "💡 Tips: Buka /scan untuk cari entry baru.",
@@ -2555,44 +2561,41 @@ def _handle_telegram_command_inner(update_data):
             total_pnl = 0
             all_coins = fetch_all_tickers()
 
-            for sym, sig in _active_signals.items():
-                if sym not in all_coins:
-                    continue
-                price = all_coins[sym]["price"]
-                entry = sig["entry"]
-                pnl = (price - entry) / entry * 100
+            for sym, pos in open_positions.items():
+                sym_upper = sym.upper()
+                ticker = all_coins.get(sym_upper) if isinstance(all_coins, dict) else None
+                if isinstance(ticker, dict):
+                    price = ticker.get("price")
+                elif isinstance(ticker, (int, float)):
+                    price = ticker
+                else:
+                    price = pos.get("buy_price")  # fallback
+
+                entry = pos.get("buy_price", 1)
+                pnl = ((price - entry) / entry * 100) if entry else 0.0
                 total_pnl += pnl
 
+                mode_str = "REAL 💸" if pos.get("mode") == "real" else "PAPER 🧻"
                 emoji = "🟢" if pnl >= 0 else "🔴"
-                hit_status = (
-                    ", ".join(sig.get("hit", [])) if sig.get("hit") else "Aktif"
-                )
 
-                lines.append(f"{emoji} *{sym}*")
+                lines.append(f"{emoji} *{sym_upper}* ({mode_str})")
                 lines.append(
-                    f"   Entry: {format_idr(entry)} → Sekarang: {format_idr(price)}"
+                    f"   Beli: {format_idr(entry)} → Sekarang: {format_idr(price)}"
                 )
-                lines.append(f"   P/L: {pnl:+.2f}% | Status: {hit_status}")
-
-                if "TP1" in sig.get("hit", []):
-                    lines.append(f"   ✅ TP1 TERCAPAI!")
-                if "TP2" in sig.get("hit", []):
-                    lines.append(f"   ✅ TP2 TERCAPAI!")
-                if "TP3" in sig.get("hit", []):
-                    lines.append(f"   ✅ TP3 TERCAPAI!")
-                if "SL" in sig.get("hit", []):
-                    lines.append(f"   🛑 STOP LOSS KENA")
+                lines.append(
+                    f"   P/L: {pnl:+.2f}% | SL: {format_idr(pos.get('sl'))} | TP1/TP2: {format_idr(pos.get('tp1'))}/{format_idr(pos.get('tp2'))}"
+                )
                 lines.append("")
 
             lines.append("──────────────────────")
             lines.append(f"Total P/L: {total_pnl:+.2f}%")
-            lines.append(f"Posisi aktif: {len(_active_signals)}")
+            lines.append(f"Posisi aktif: {len(open_positions)}")
             lines.append("")
             lines.append("📌 Monitor: bot akan notif otomatis saat TP/SL kena.")
 
             send_message("\n".join(lines), notify=True, force=True)
             log(
-                f"/portfolio command executed — {len(_active_signals)} active positions"
+                f"/portfolio command executed — {len(open_positions)} active positions loaded from active_trades.json"
             )
 
         except Exception as e:
