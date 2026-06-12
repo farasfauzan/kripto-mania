@@ -20,6 +20,9 @@ from __future__ import annotations
 
 from core.indicators import clamp, is_entry_action
 
+# Stablecoin set — koin yang dipatok ke USD, tidak relevan untuk pump signals
+STABLECOINS = {"USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP", "PYUSD", "FDUSD"}
+
 
 # Ambang keputusan — satu definisi, dipakai web & bot.
 THRESHOLDS = {
@@ -49,6 +52,9 @@ def compute_base_score(change, ema_trend_pct, macd_signal, rsi, supertrend,
     liquidity_bonus = min(16, vol_idr / 1_000_000_000)
     fomo_penalty = 9 if range_pos > 88 and change > 8 else 0
     micin_penalty = 6 if is_micin else 0
+    # Stablecoin penalty — stablecoin bukan aset spekulatif, jangan
+    # generate sinyal beli/pump. Penalty besar supaya score selalu rendah.
+    stablecoin_penalty = 30 if symbol in STABLECOINS else 0
 
     tech_score = 0
     tech_score += clamp(ema_trend_pct * 3, -12, 12)
@@ -85,6 +91,7 @@ def compute_base_score(change, ema_trend_pct, macd_signal, rsi, supertrend,
         + mtf_adjustment
         - fomo_penalty
         - micin_penalty
+        - stablecoin_penalty
     )
     return base, {
         "liquidity_bonus": liquidity_bonus,
@@ -95,6 +102,7 @@ def compute_base_score(change, ema_trend_pct, macd_signal, rsi, supertrend,
         "bt_adj": bt_adj,
         "fomo_penalty": fomo_penalty,
         "micin_penalty": micin_penalty,
+        "stablecoin_penalty": stablecoin_penalty,
     }
 
 
@@ -155,9 +163,12 @@ def decide_action(score, change, confluence, range_pos, mtf_adjustment,
     return action, emoji
 
 
-def compute_risk_level(change, vol_idr, rsi, macd_signal, supertrend, range_pos, ml, bt):
+def compute_risk_level(change, vol_idr, rsi, macd_signal, supertrend, range_pos, ml, bt, symbol=""):
     """Risk level RENDAH/SEDANG/TINGGI. IDENTIK web & bot."""
     risk_pts = 0
+    # Stablecoin dengan pergerakan besar = red flag (spread/wick anomaly)
+    if symbol in STABLECOINS and abs(change) > 2:
+        risk_pts += 3  # langsung high risk
     if abs(change) >= 10:
         risk_pts += 2
     elif abs(change) >= 5:

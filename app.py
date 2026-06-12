@@ -1650,7 +1650,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats, market_regime=Non
     score = int(clamp(round(base), 0, 100))
 
     # Risk level (dibutuhkan committee verdict)
-    risk_level = compute_risk_level(change, vol_idr, rsi, macd_signal, supertrend, range_pos, ml, bt)
+    risk_level = compute_risk_level(change, vol_idr, rsi, macd_signal, supertrend, range_pos, ml, bt, symbol=symbol)
 
     # Verdict committee
     verdict, verdict_net, size_mult = build_verdict(score, rsi, macd_signal, supertrend, adx_data, ml, bt, risk_level, vol_idr)

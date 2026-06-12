@@ -151,6 +151,7 @@ def _get_trade_amount(alloc_pct):
 
 BLUE_CHIPS = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA"}
 MICIN_COINS = {"DOGE", "PEPE", "SHIB", "BONK", "FLOKI", "LUNC", "BTT", "JASMY"}
+STABLECOINS = {"USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP", "PYUSD", "FDUSD"}
 
 # Maks koin yang di-scan tiap siklus. Dynamic by volume.
 MAX_SCAN_COINS = int(os.environ.get("MAX_SCAN_COINS", "40"))
@@ -719,7 +720,7 @@ def analyze_coin(symbol, data, candles):
 
     # Risk level (sebelum verdict, dibutuhkan committee)
     risk_level = compute_risk_level(
-        change, vol_idr, rsi, macd_signal, supertrend, range_pos, ml, bt
+        change, vol_idr, rsi, macd_signal, supertrend, range_pos, ml, bt, symbol=symbol
     )
 
     # Verdict committee
@@ -766,8 +767,8 @@ def analyze_coin(symbol, data, candles):
         "supertrend": supertrend,
         "adx": adx_data["adx"],
         "adx_trend": adx_data["trend"],
-        "ml_prob": ml["ml_prob"] if xgb_prob == 0 else xgb_prob,
-        "ml_label": ml["ml_label"] if xgb_label == "NO DATA" else xgb_label,
+        "ml_prob": xgb_prob if xgb_prob > 0 else ml["ml_prob"],
+        "ml_label": xgb_label if xgb_label != "NO DATA" else ml["ml_label"],
         "ml_conf": ml["ml_conf"],
         "bt_wr": bt["bt_wr"],
         "bt_trades": bt["bt_trades"],
@@ -1176,7 +1177,9 @@ def send_sinyal_harian(all_coins):
             ] == "BELI KUAT":
                 trade_amount = _get_trade_amount(s.get("alloc_pct", 10.0))
                 try:
-                    if CONFIRM_BEFORE_TRADE:
+                    if trade_amount <= 0:
+                        lines.append("🤖 *TRADE DIBLOKIR:* Alokasi 0% (Dilarang AI karena riwayat coin ini sering loss / Winrate buruk).")
+                    elif CONFIRM_BEFORE_TRADE:
                         command_router.create_buy_confirmation_proposal(
                             s["symbol"].lower(),
                             trade_amount,
@@ -1481,6 +1484,8 @@ def check_realtime_confluence_alerts(all_coins):
     for sym, pair in scan_coins.items():
         if sym not in all_coins:
             continue
+        if sym in STABLECOINS:
+            continue  # Stablecoin tidak relevan untuk pump/confluence signals
 
         # Hindari spam: jika baru dikirim dalam cooldown terakhir, lewati
         if sym in _confluence_sent_symbols:
@@ -1718,6 +1723,8 @@ def check_early_entry_alerts(all_coins):
     for sym, pair in scan_coins.items():
         if sym not in all_coins:
             continue
+        if sym in STABLECOINS:
+            continue  # Stablecoin tidak relevan untuk pump detection
         if sym in _early_sent_symbols:
             continue
         # Kalau symbol udah keluar di confluence alert, skip biar tidak dobel
@@ -1741,6 +1748,11 @@ def check_early_entry_alerts(all_coins):
             if ticker["change"] > 8:
                 continue  # udah pump ngegas, ini ranah FOMO/Confluence
 
+            # Range anomaly check: wide range tapi no momentum = wick/spread, bukan trend
+            range_pct = ((high_24h - low_24h) / low_24h * 100) if low_24h > 0 else 0
+            if range_pct > 8 and ticker["change"] < 2:
+                continue  # wide range tanpa momentum = anomaly, skip
+
             # Fetch 15m candles
             candles_15m = fetch_candles(pair, tf="15", lookback_days=5)
             time.sleep(0.25)
@@ -1755,6 +1767,14 @@ def check_early_entry_alerts(all_coins):
                 continue
             res = apply_bot_intelligence(analyze_coin(sym, ticker, candles_1h))
 
+            # HARD GATE: kalau 1H action jelas bearish, jangan fire early entry
+            if res["action"] in ("JANGAN BELI", "HINDARI"):
+                continue
+
+            # HARD GATE: ML bearish dengan confidence bukan rendah = skip
+            if res["ml_label"] == "BEARISH" and res["ml_conf"] != "rendah":
+                continue
+
             # Binance turbo-boost: kalau sentimen Binance kuat, turunkan threshold entry
             binance_boost = False
             bn_data = res.get("binance_signal", "NO DATA")
@@ -1763,6 +1783,10 @@ def check_early_entry_alerts(all_coins):
                 binance_boost = (
                     True  # Binance konfirmasi strong → relaksasi setup threshold
                 )
+            # Binance boost ada floor — tidak bisa bypass score terlalu rendah
+            absolute_min_score = max(35, EARLY_MIN_SCORE - 15)
+            if res["score"] < absolute_min_score:
+                continue  # Score terlalu rendah bahkan untuk Binance boost
             if not binance_boost and res["score"] < EARLY_MIN_SCORE:
                 continue
 
@@ -1781,11 +1805,18 @@ def check_early_entry_alerts(all_coins):
             # Suggested entry zone: harga sekarang ± 0.4%
             entry_lo = res["price"] * 0.996
             entry_hi = res["price"] * 1.004
-            # Early SL agak lebih ketat krn entry awal: 2.5% di bawah harga
-            early_sl = res["price"] * 0.975
-            # Early TP1/TP2: 1.8% & 3.5%
-            early_tp1 = res["price"] * 1.018
-            early_tp2 = res["price"] * 1.035
+            # ATR-based TP/SL untuk R:R >= 1.2:1. Fallback fixed % kalau ATR
+            # tidak valid (terlalu besar atau data kurang).
+            atr_early = compute_atr(candles_15m)
+            if atr_early and atr_early > 0 and atr_early < res["price"] * 0.10:
+                early_sl = res["price"] - (1.5 * atr_early)
+                early_tp1 = res["price"] + (2.0 * atr_early)   # R:R = 1.33:1
+                early_tp2 = res["price"] + (3.0 * atr_early)
+            else:
+                # Fixed fallback: SL -2.5%, TP1 +3.0% → R:R = 1.2:1
+                early_sl = res["price"] * 0.975
+                early_tp1 = res["price"] * 1.030
+                early_tp2 = res["price"] * 1.050
 
             checks_text = "\n".join(
                 f"   {'🟢' if ok else '⚪'} {name}"
@@ -1813,7 +1844,7 @@ def check_early_entry_alerts(all_coins):
                 f"📊 RSI 15m: {setup['rsi_prev']} → *{setup['rsi']}* | Vol 15m: *{setup['vol_ratio']}x*\n"
                 f"📈 EMA 15m: {setup['ema_state']} | MACD 15m: {setup['macd_state']}\n"
                 f"🛡️ Konteks 1H: Score *{res['score']}/100* | {res['action']}\n"
-                f"🧠 ML: {res['ml_label']} ({res['ml_prob']}%) | MTF: {res['mtf_label']}\n"
+                f"🧠 ML: {res['ml_label']} ({res['ml_prob']:.1f}% prob naik) | MTF: {res['mtf_label']}\n"
                 f"{bn_line}"
                 f"\n✅ *Checklist Setup 15m:*\n"
                 f"{checks_text}\n\n"
@@ -1832,7 +1863,9 @@ def check_early_entry_alerts(all_coins):
             if AUTO_TRADE_ENABLED or PAPER_TRADING_MODE:
                 trade_amount = _get_trade_amount(res.get("alloc_pct", 10.0))
                 try:
-                    if CONFIRM_BEFORE_TRADE:
+                    if trade_amount <= 0:
+                        msg += "\n\n🤖 *TRADE DIBLOKIR:* Alokasi 0% (Dilarang AI karena riwayat coin ini sering loss / Winrate buruk)."
+                    elif CONFIRM_BEFORE_TRADE:
                         command_router.create_buy_confirmation_proposal(
                             sym.lower(),
                             trade_amount,

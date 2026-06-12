@@ -193,6 +193,8 @@ MIN_VOLUME_IDR = 500_000_000      # 500M IDR minimum
 MIN_CHANGE = -2.0                  # Jangan terlalu bearish
 MAX_CHANGE = 12.0                  # Belum pump terlalu jauh
 MAX_RANGE_POS = 80.0               # Belum di puncak range 24h
+# Stablecoin — tidak relevan untuk pump detection
+STABLECOINS = {"USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP", "PYUSD", "FDUSD"}
 
 
 def layer1_ticker_filter(tickers: dict, prices_24h: dict) -> list[dict]:
@@ -203,6 +205,8 @@ def layer1_ticker_filter(tickers: dict, prices_24h: dict) -> list[dict]:
             continue
         try:
             symbol = pair.replace("_idr", "").upper()
+            if symbol in STABLECOINS:
+                continue  # Stablecoin tidak bisa pump
             price = float(info.get("last", 0))
             if price <= 0:
                 continue

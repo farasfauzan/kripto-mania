@@ -439,6 +439,7 @@ def compute_ml_forecast(candles):
     else:
         skill_factor = 0.25  # lebih buruk dari coin-flip
     prob = 50.0 + (prob_raw - 50.0) * skill_factor
+    prob = max(1.0, min(99.0, prob))  # clamp: hindari 0.0% / 100.0% yang menyesatkan
 
     label = "BULLISH" if prob >= 62 else "BEARISH" if prob <= 42 else "NETRAL"
     edge = abs(prob - 50)
