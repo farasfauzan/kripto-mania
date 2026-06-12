@@ -3073,7 +3073,7 @@ if __name__ == "__main__":
                 _boot_scan = get_scan_coins(_boot_coins)
                 _boot_pairs = list(_boot_scan.values())
                 _boot_res = bootstrap_train_from_history(
-                    fetch_candles, _boot_pairs, tf="60", lookback_days=60, max_pairs=40
+                    fetch_candles, _boot_pairs, tf="60", lookback_days=60
                 )
                 if _boot_res.get("success"):
                     log(
