@@ -889,10 +889,45 @@ def _tg_send_worker():
 
 
 def _do_send_with_fallback(url, payload):
-    """Kirim pesan: coba curl dulu (sering tembus di cloud), fallback requests."""
+    """Kirim pesan: coba http.client (stdlib) → curl → requests."""
     import json as _json
-    # Attempt 1: curl (bypasses Python SSL/connection pool issues)
+    import http.client
+    import ssl
+    import urllib.parse
+
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path
+
+    body = _json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+
+    # ── Attempt 1: http.client (stdlib) — completely different SSL stack ──
     for attempt in range(3):
+        try:
+            ctx = ssl.create_default_context()
+            conn = http.client.HTTPSConnection(
+                parsed.hostname, timeout=60, context=ctx
+            )
+            conn.request("POST", path, body=body, headers=headers)
+            resp = conn.getresponse()
+            resp_body = resp.read().decode("utf-8")
+            conn.close()
+            resp_data = _json.loads(resp_body)
+            if resp_data.get("ok"):
+                log("TG send OK (http.client)")
+                return True
+            if "parse" in str(resp_data.get("description", "")).lower():
+                payload.pop("parse_mode", None)
+                body = _json.dumps(payload).encode("utf-8")
+                headers["Content-Length"] = str(len(body))
+                continue
+            log(f"TG http.client fail: {resp_data.get('description', '?')}")
+        except Exception as e:
+            log(f"http.client attempt {attempt+1}: {e}", "warning")
+        time.sleep(2 * (attempt + 1))
+
+    # ── Attempt 2: curl (system binary) ──
+    for attempt in range(2):
         try:
             curl_result = subprocess.run(
                 [
@@ -900,40 +935,40 @@ def _do_send_with_fallback(url, payload):
                     "-H", "Content-Type: application/json",
                     "-d", _json.dumps(payload),
                     "--connect-timeout", "10",
-                    "--max-time", "30",
+                    "--max-time", "60",
                 ],
-                capture_output=True, text=True, timeout=35,
+                capture_output=True, text=True, timeout=65,
             )
             if curl_result.returncode == 0:
                 resp_data = _json.loads(curl_result.stdout)
                 if resp_data.get("ok"):
+                    log("TG send OK (curl)")
                     return True
-                # Markdown parse error → retry without parse_mode
                 if "parse" in str(resp_data.get("description", "")).lower():
                     payload.pop("parse_mode", None)
                     continue
-                log(f"TG send fail: {resp_data.get('description', '?')}")
-            else:
-                log(f"curl attempt {attempt+1} rc={curl_result.returncode}", "warning")
+        except FileNotFoundError:
+            break  # curl not installed, skip
         except Exception as e:
-            log(f"curl attempt {attempt+1} error: {e}", "warning")
-        time.sleep(2 * (attempt + 1))
+            log(f"curl attempt {attempt+1}: {e}", "warning")
+        time.sleep(3)
 
-    # Attempt 2: Python requests fallback
+    # ── Attempt 3: Python requests ──
     for attempt in range(2):
         try:
-            resp = requests.post(url, json=payload, timeout=15)
+            resp = requests.post(url, json=payload, timeout=60)
             result = resp.json()
             if result.get("ok"):
+                log("TG send OK (requests)")
                 return True
             if "parse" in str(result.get("description", "")).lower():
                 payload.pop("parse_mode", None)
                 continue
         except Exception as e:
-            log(f"requests fallback {attempt+1} error: {e}", "warning")
+            log(f"requests attempt {attempt+1}: {e}", "warning")
         time.sleep(3)
 
-    log("Send GAGAL setelah semua percobaan (curl + requests)", "error")
+    log("Send GAGAL setelah semua percobaan (http.client + curl + requests)", "error")
     return False
 
 
@@ -3046,21 +3081,26 @@ def _command_listener_loop():
         log("Listener tidak jalan: BOT_TOKEN/CHAT_ID kosong.", "warning")
         return
     import json as _json
-    base_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    log("Command listener thread aktif (curl long-poll 25s).")
+    import http.client
+    import ssl
+
+    path_base = f"/bot{BOT_TOKEN}/getUpdates"
+    log("Command listener thread aktif (http.client long-poll 25s).")
+
     while True:
         try:
             offset_param = f"&offset={_last_update_offset + 1}" if _last_update_offset else ""
-            full_url = f"{base_url}?timeout=25{offset_param}"
-            # Gunakan curl — lebih stabil di cloud (bypass Python SSL issues)
-            result = subprocess.run(
-                ["curl", "-s", "--max-time", "35", "--connect-timeout", "10", full_url],
-                capture_output=True, text=True, timeout=40,
-            )
-            if result.returncode != 0:
-                time.sleep(3)
-                continue
-            data = _json.loads(result.stdout)
+            path = f"{path_base}?timeout=25{offset_param}"
+
+            # http.client: timeout 60s (must be > 25s Telegram hold time)
+            ctx = ssl.create_default_context()
+            conn = http.client.HTTPSConnection("api.telegram.org", timeout=60, context=ctx)
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8")
+            conn.close()
+
+            data = _json.loads(raw)
             if not data.get("ok"):
                 time.sleep(2)
                 continue
@@ -3072,12 +3112,13 @@ def _command_listener_loop():
                     handle_telegram_command(update)
                 except Exception as e:
                     log(f"listener handle error: {e}", "warning")
-        except subprocess.TimeoutExpired:
-            continue  # wajar untuk long-poll
+        except (TimeoutError, OSError) as e:
+            # Timeout is normal for long-poll, just retry
+            continue
         except _json.JSONDecodeError:
             time.sleep(2)
         except Exception as e:
-            log(f"listener loop error: {e}", "warning")
+            log(f"listener error: {e}", "warning")
             time.sleep(3)
 
 
