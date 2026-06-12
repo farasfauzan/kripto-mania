@@ -2,7 +2,6 @@ import hmac
 import math
 import os
 import secrets
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -959,6 +958,27 @@ def handle_command(text, context=None) -> dict:
         except CorruptJSONError as e:
             result = _blocked_result("buy", command.get("symbol"), f"Pending proposal persistence is corrupt: {e}")
             return {"success": False, "command": command, "result": result, "message": result["error"]}
+
+        # If no proposal and paper trading is active, create a manual buy proposal on the fly
+        if not proposal and execution_engine.is_paper_trading_mode():
+            price = _context_value(context, "price")
+            if not price:
+                return {"success": False, "command": command, "message": f"Gagal mengambil harga pasar untuk {command.get('symbol', '').upper()}"}
+            tp1 = price * 1.03
+            tp2 = price * 1.05
+            sl = price * 0.975
+            proposal = create_trade_proposal(
+                command.get("symbol"),
+                "BUY",
+                proposed_idr=command.get("amount"),
+                price=price,
+                tp1=tp1,
+                tp2=tp2,
+                sl=sl,
+                reason="Manual Paper Buy",
+                metadata=_risk_metadata(context),
+            )
+
         result = execute_confirmed_buy(
             command.get("symbol"),
             command.get("amount"),

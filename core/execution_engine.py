@@ -190,18 +190,24 @@ def execute_buy(
     if invalid:
         return invalid
 
-    risk = risk_manager.can_open_position(
-        symbol,
-        amount,
-        **_risk_context(metadata=metadata, risk_context=risk_context),
-    )
+    mode = _execution_mode(force_paper=force_paper)
+    bypass_risk = (mode == "paper") and str(reason).startswith("Manual")
+
+    if bypass_risk:
+        risk = {"allowed": True, "reason": "Bypassed for manual paper trade", "risk_level": "LOW"}
+    else:
+        risk = risk_manager.can_open_position(
+            symbol,
+            amount,
+            **_risk_context(metadata=metadata, risk_context=risk_context),
+        )
+
     if not risk.get("allowed"):
         result = _base_result(False, "blocked", "buy", symbol, risk.get("reason", "Risk manager blocked buy"), risk.get("reason"))
         result["risk"] = risk
         result["metadata"] = metadata or {}
         return result
 
-    mode = _execution_mode(force_paper=force_paper)
     if require_real and mode != "real":
         return _base_result(False, "blocked", "buy", symbol, reason, "Real trade blocked: real position requires real execution gate")
     if mode == "real" and not _consume_submit_permission("BUY", symbol, amount, price, mode, metadata):

@@ -2341,7 +2341,7 @@ def _handle_telegram_command_inner(update_data):
             return True
         context_symbol = (
             router_command.get("symbol")
-            if router_command.get("type") == "SELL"
+            if router_command.get("type") in ("BUY", "SELL")
             else None
         )
         result = command_router.handle_command(
