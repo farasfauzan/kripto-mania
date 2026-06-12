@@ -2429,7 +2429,7 @@ def _handle_telegram_command_inner(update_data):
             lines.append(f"*{buy_count} koin layak beli* dari {len(signals)} koin")
             lines.append(f"⚠️ Bukan saran keuangan. DYOR.")
 
-            send_message("\n".join(lines), notify=True)
+            send_message("\n".join(lines), notify=True, force=True)
             log(f"/scan command executed — {buy_count} buy signals found")
 
         except Exception as e:
@@ -2491,7 +2491,7 @@ def _handle_telegram_command_inner(update_data):
             lines.append("──────────────────────")
             lines.append("⚠️ Bukan saran keuangan. DYOR.")
 
-            send_message("\n".join(lines), notify=True)
+            send_message("\n".join(lines), notify=True, force=True)
             log(f"/top command executed")
 
         except Exception as e:
@@ -2508,6 +2508,7 @@ def _handle_telegram_command_inner(update_data):
                     "💼 *PORTFOLIO*\n\nTidak ada posisi terbuka saat ini.\n\n"
                     "💡 Tips: Buka /scan untuk cari entry baru.",
                     notify=True,
+                    force=True,
                 )
                 return True
 
@@ -2556,7 +2557,7 @@ def _handle_telegram_command_inner(update_data):
             lines.append("")
             lines.append("📌 Monitor: bot akan notif otomatis saat TP/SL kena.")
 
-            send_message("\n".join(lines), notify=True)
+            send_message("\n".join(lines), notify=True, force=True)
             log(
                 f"/portfolio command executed — {len(_active_signals)} active positions"
             )
@@ -2611,7 +2612,7 @@ def _handle_telegram_command_inner(update_data):
             lines.append("📊 Data dari semua sinyal yang tercatat.")
             lines.append("⚠️ Bukan saran keuangan. DYOR.")
 
-            send_message("\n".join(lines), notify=True)
+            send_message("\n".join(lines), notify=True, force=True)
             log(f"/journal command executed — WR: {wr_text}")
 
         except Exception as e:
