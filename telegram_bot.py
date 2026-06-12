@@ -2879,6 +2879,8 @@ def _handle_telegram_command_inner(update_data):
         if sub == "off":
             AUTO_TRADE_ENABLED = False
             PAPER_TRADING_MODE = False
+            os.environ["AUTO_TRADE_ENABLED"] = "false"
+            os.environ["PAPER_TRADING_MODE"] = "false"
             send_message(
                 "⛔ *AUTO-TRADE OFF* — bot cuma kirim sinyal, tidak eksekusi order. "
                 "Kamu eksekusi manual sendiri.",
@@ -2889,6 +2891,8 @@ def _handle_telegram_command_inner(update_data):
         if sub == "paper":
             AUTO_TRADE_ENABLED = False
             PAPER_TRADING_MODE = True
+            os.environ["AUTO_TRADE_ENABLED"] = "false"
+            os.environ["PAPER_TRADING_MODE"] = "true"
             send_message(
                 "🧻 *AUTO-TRADE PAPER ON* — bot eksekusi SIMULASI (tanpa uang asli). "
                 "Aman buat uji strategi. Cek hasil di /portfolio & /stats.",
@@ -2911,6 +2915,8 @@ def _handle_telegram_command_inner(update_data):
                 return True
             AUTO_TRADE_ENABLED = True
             PAPER_TRADING_MODE = False
+            os.environ["AUTO_TRADE_ENABLED"] = "true"
+            os.environ["PAPER_TRADING_MODE"] = "false"
             send_message(
                 "💸 *AUTO-TRADE REAL ON!* — bot mulai eksekusi order pakai UANG ASLI.\n"
                 f"Limit per trade: Rp{MAX_TRADE_IDR:,.0f}\n"
