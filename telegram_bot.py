@@ -863,6 +863,90 @@ def _message_fingerprint(text):
 _reply_context = threading.local()
 
 
+import queue as _queue_mod
+import subprocess
+
+# ── ASYNC SEND QUEUE ────────────────────────────────────────────────────────
+# Semua pesan Telegram dikirim lewat background thread supaya TIDAK PERNAH
+# memblokir bot loop / listener, bahkan kalau network HF → Telegram lambat.
+_send_queue: _queue_mod.Queue = _queue_mod.Queue(maxsize=200)
+_SEND_WORKER_STARTED = False
+
+
+def _tg_send_worker():
+    """Background worker: ambil pesan dari queue, kirim ke Telegram."""
+    while True:
+        try:
+            item = _send_queue.get(timeout=60)
+        except _queue_mod.Empty:
+            continue
+        if item is None:
+            break
+        url, payload = item
+        _do_send_with_fallback(url, payload)
+        _send_queue.task_done()
+        time.sleep(0.3)  # rate-limit
+
+
+def _do_send_with_fallback(url, payload):
+    """Kirim pesan: coba curl dulu (sering tembus di cloud), fallback requests."""
+    import json as _json
+    # Attempt 1: curl (bypasses Python SSL/connection pool issues)
+    for attempt in range(3):
+        try:
+            curl_result = subprocess.run(
+                [
+                    "curl", "-s", "-X", "POST", url,
+                    "-H", "Content-Type: application/json",
+                    "-d", _json.dumps(payload),
+                    "--connect-timeout", "10",
+                    "--max-time", "30",
+                ],
+                capture_output=True, text=True, timeout=35,
+            )
+            if curl_result.returncode == 0:
+                resp_data = _json.loads(curl_result.stdout)
+                if resp_data.get("ok"):
+                    return True
+                # Markdown parse error → retry without parse_mode
+                if "parse" in str(resp_data.get("description", "")).lower():
+                    payload.pop("parse_mode", None)
+                    continue
+                log(f"TG send fail: {resp_data.get('description', '?')}")
+            else:
+                log(f"curl attempt {attempt+1} rc={curl_result.returncode}", "warning")
+        except Exception as e:
+            log(f"curl attempt {attempt+1} error: {e}", "warning")
+        time.sleep(2 * (attempt + 1))
+
+    # Attempt 2: Python requests fallback
+    for attempt in range(2):
+        try:
+            resp = requests.post(url, json=payload, timeout=15)
+            result = resp.json()
+            if result.get("ok"):
+                return True
+            if "parse" in str(result.get("description", "")).lower():
+                payload.pop("parse_mode", None)
+                continue
+        except Exception as e:
+            log(f"requests fallback {attempt+1} error: {e}", "warning")
+        time.sleep(3)
+
+    log("Send GAGAL setelah semua percobaan (curl + requests)", "error")
+    return False
+
+
+def _start_send_worker():
+    global _SEND_WORKER_STARTED
+    if _SEND_WORKER_STARTED:
+        return
+    t = threading.Thread(target=_tg_send_worker, name="tg-sender", daemon=True)
+    t.start()
+    _SEND_WORKER_STARTED = True
+    log("Telegram send worker thread aktif.")
+
+
 def send_message(text, notify=False, force=False):
     global _message_fingerprints
 
@@ -888,43 +972,23 @@ def send_message(text, notify=False, force=False):
 
         _message_fingerprints[fp] = now_ts
 
+    _start_send_worker()
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     # Split panjang
     chunks = [text] if len(text) <= 4096 else _split_text(text)
-    for i, chunk in enumerate(chunks):
+    for chunk in chunks:
         payload = {
             "chat_id": target_chat_id,
             "text": chunk,
             "parse_mode": "Markdown",
             "disable_notification": not notify,
         }
-        last_err = None
-        for attempt in range(3):
-            try:
-                resp = requests.post(url, json=payload, timeout=30)
-                result = resp.json()
-                if (
-                    not result.get("ok")
-                    and "parse" in str(result.get("description", "")).lower()
-                ):
-                    payload.pop("parse_mode", None)
-                    resp = requests.post(url, json=payload, timeout=30)
-                    result = resp.json()
-                if result.get("ok"):
-                    last_err = None
-                    break  # sukses!
-                else:
-                    last_err = result.get("description", "unknown")
-                    log(f"Send attempt {attempt+1} failed: {last_err}")
-            except Exception as e:
-                last_err = str(e)
-                log(f"Send attempt {attempt+1} error: {last_err}", "warning")
-            time.sleep(2 * (attempt + 1))  # backoff: 2s, 4s, 6s
-        if last_err:
-            log(f"Send GAGAL setelah 3 percobaan: {last_err}", "error")
+        try:
+            _send_queue.put_nowait((url, payload))
+        except _queue_mod.Full:
+            log("Send queue penuh, drop message", "warning")
             return False
-        if i < len(chunks) - 1:
-            time.sleep(0.3)
     return True
 
 
@@ -2981,17 +3045,22 @@ def _command_listener_loop():
     if not BOT_TOKEN or not CHAT_ID:
         log("Listener tidak jalan: BOT_TOKEN/CHAT_ID kosong.", "warning")
         return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    log("Command listener thread aktif (long-poll 25s).")
+    import json as _json
+    base_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    log("Command listener thread aktif (curl long-poll 25s).")
     while True:
         try:
-            params = {
-                "timeout": 25,  # long-poll: Telegram holds 25s
-                "offset": _last_update_offset + 1 if _last_update_offset else None,
-            }
-            # read timeout HARUS > 25s (Telegram hold time) + buffer
-            resp = requests.get(url, params=params, timeout=40)
-            data = resp.json()
+            offset_param = f"&offset={_last_update_offset + 1}" if _last_update_offset else ""
+            full_url = f"{base_url}?timeout=25{offset_param}"
+            # Gunakan curl — lebih stabil di cloud (bypass Python SSL issues)
+            result = subprocess.run(
+                ["curl", "-s", "--max-time", "35", "--connect-timeout", "10", full_url],
+                capture_output=True, text=True, timeout=40,
+            )
+            if result.returncode != 0:
+                time.sleep(3)
+                continue
+            data = _json.loads(result.stdout)
             if not data.get("ok"):
                 time.sleep(2)
                 continue
@@ -3003,11 +3072,10 @@ def _command_listener_loop():
                     handle_telegram_command(update)
                 except Exception as e:
                     log(f"listener handle error: {e}", "warning")
-        except requests.exceptions.ReadTimeout:
-            continue  # wajar untuk long-poll, lanjut aja
-        except requests.exceptions.ConnectionError:
-            log("listener: connection error, retry in 5s", "warning")
-            time.sleep(5)
+        except subprocess.TimeoutExpired:
+            continue  # wajar untuk long-poll
+        except _json.JSONDecodeError:
+            time.sleep(2)
         except Exception as e:
             log(f"listener loop error: {e}", "warning")
             time.sleep(3)
@@ -3068,52 +3136,54 @@ if __name__ == "__main__":
         log("Bot interaktif: command dibalas instan via listener thread.")
 
     # ── AUTO-BOOTSTRAP ML MODEL ─────────────────────────────────────────────
-    # Saat startup (terutama di HuggingFace cold-start), cek apakah model
-    # sudah ada. Kalau belum, langsung bootstrap training dari data historis
-    # supaya bot langsung pintar dari menit pertama tanpa perlu /train manual.
-    try:
-        from ml_engine import get_learning_status, bootstrap_train_from_history
-        _ml_status = get_learning_status()
-        if not _ml_status.get("model_exists"):
-            log("⚡ AUTO-BOOTSTRAP: Model belum ada, mulai training otomatis...")
-            send_message(
-                "⚡ *AUTO-BOOTSTRAP ML*\n"
-                "Model belum ada di server ini.\n"
-                "Memulai training otomatis dari data historis...\n"
-                "Bot akan mulai scan setelah training selesai.",
-                notify=False,
-                force=True,
-            )
-            _boot_coins = fetch_all_tickers()
-            if _boot_coins:
-                _boot_scan = get_scan_coins(_boot_coins)
-                _boot_pairs = list(_boot_scan.values())
-                _boot_res = bootstrap_train_from_history(
-                    fetch_candles, _boot_pairs, tf="60", lookback_days=60, max_pairs=100
+    # Jalankan di background thread supaya bot LANGSUNG mulai scan + dengar
+    # perintah Telegram, tanpa menunggu training selesai (bisa 5-10 menit).
+    def _bootstrap_background():
+        try:
+            from ml_engine import get_learning_status, bootstrap_train_from_history
+            _ml_status = get_learning_status()
+            if not _ml_status.get("model_exists"):
+                log("⚡ AUTO-BOOTSTRAP: Model belum ada, mulai training di background...")
+                send_message(
+                    "⚡ *AUTO-BOOTSTRAP ML*\n"
+                    "Model belum ada di server ini.\n"
+                    "Training otomatis berjalan di background...\n"
+                    "Bot sudah aktif scan & dengar perintah!",
+                    notify=False,
+                    force=True,
                 )
-                if _boot_res.get("success"):
-                    log(
-                        f"✅ AUTO-BOOTSTRAP SELESAI: v{_boot_res.get('version')} — "
-                        f"{_boot_res.get('n_samples')} sampel dari "
-                        f"{_boot_res.get('coins_used')} koin"
+                _boot_coins = fetch_all_tickers()
+                if _boot_coins:
+                    _boot_scan = get_scan_coins(_boot_coins)
+                    _boot_pairs = list(_boot_scan.values())
+                    _boot_res = bootstrap_train_from_history(
+                        fetch_candles, _boot_pairs, tf="60", lookback_days=60, max_pairs=100
                     )
-                    send_message(
-                        f"✅ *AUTO-BOOTSTRAP SELESAI!*\n"
-                        f"Model v{_boot_res.get('version')} — "
-                        f"{_boot_res.get('n_samples')} sampel dari "
-                        f"{_boot_res.get('coins_used')} koin.\n"
-                        f"Bot siap tempur! 🚀",
-                        notify=True,
-                        force=True,
-                    )
+                    if _boot_res.get("success"):
+                        log(
+                            f"✅ AUTO-BOOTSTRAP SELESAI: v{_boot_res.get('version')} — "
+                            f"{_boot_res.get('n_samples')} sampel dari "
+                            f"{_boot_res.get('coins_used')} koin"
+                        )
+                        send_message(
+                            f"✅ *AUTO-BOOTSTRAP SELESAI!*\n"
+                            f"Model v{_boot_res.get('version')} — "
+                            f"{_boot_res.get('n_samples')} sampel dari "
+                            f"{_boot_res.get('coins_used')} koin.\n"
+                            f"Bot siap tempur! 🚀",
+                            notify=True,
+                            force=True,
+                        )
+                    else:
+                        log(f"⚠️ AUTO-BOOTSTRAP gagal: {_boot_res.get('reason', 'unknown')}")
                 else:
-                    log(f"⚠️ AUTO-BOOTSTRAP gagal: {_boot_res.get('reason', 'unknown')}")
+                    log("⚠️ AUTO-BOOTSTRAP: Gagal fetch tickers, skip bootstrap.")
             else:
-                log("⚠️ AUTO-BOOTSTRAP: Gagal fetch tickers, skip bootstrap.")
-        else:
-            log(f"✅ Model sudah ada (v{_ml_status.get('latest_version')}), skip bootstrap.")
-    except Exception as e:
-        log(f"⚠️ AUTO-BOOTSTRAP error (bot tetap jalan): {e}", "warning")
+                log(f"✅ Model sudah ada (v{_ml_status.get('latest_version')}), skip bootstrap.")
+        except Exception as e:
+            log(f"⚠️ AUTO-BOOTSTRAP error (bot tetap jalan): {e}", "warning")
+
+    threading.Thread(target=_bootstrap_background, name="ml-bootstrap", daemon=True).start()
     # ── END AUTO-BOOTSTRAP ──────────────────────────────────────────────────
 
     consecutive_errors = 0
