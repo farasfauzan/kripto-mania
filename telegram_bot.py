@@ -3051,6 +3051,55 @@ if __name__ == "__main__":
     if BOT_TOKEN and CHAT_ID:
         log("Bot interaktif: command dibalas instan via listener thread.")
 
+    # ── AUTO-BOOTSTRAP ML MODEL ─────────────────────────────────────────────
+    # Saat startup (terutama di HuggingFace cold-start), cek apakah model
+    # sudah ada. Kalau belum, langsung bootstrap training dari data historis
+    # supaya bot langsung pintar dari menit pertama tanpa perlu /train manual.
+    try:
+        from ml_engine import get_learning_status, bootstrap_train_from_history
+        _ml_status = get_learning_status()
+        if not _ml_status.get("model_exists"):
+            log("⚡ AUTO-BOOTSTRAP: Model belum ada, mulai training otomatis...")
+            send_message(
+                "⚡ *AUTO-BOOTSTRAP ML*\n"
+                "Model belum ada di server ini.\n"
+                "Memulai training otomatis dari data historis...\n"
+                "Bot akan mulai scan setelah training selesai.",
+                notify=False,
+                force=True,
+            )
+            _boot_coins = fetch_all_tickers()
+            if _boot_coins:
+                _boot_scan = get_scan_coins(_boot_coins)
+                _boot_pairs = list(_boot_scan.values())
+                _boot_res = bootstrap_train_from_history(
+                    fetch_candles, _boot_pairs, tf="60", lookback_days=60, max_pairs=40
+                )
+                if _boot_res.get("success"):
+                    log(
+                        f"✅ AUTO-BOOTSTRAP SELESAI: v{_boot_res.get('version')} — "
+                        f"{_boot_res.get('n_samples')} sampel dari "
+                        f"{_boot_res.get('coins_used')} koin"
+                    )
+                    send_message(
+                        f"✅ *AUTO-BOOTSTRAP SELESAI!*\n"
+                        f"Model v{_boot_res.get('version')} — "
+                        f"{_boot_res.get('n_samples')} sampel dari "
+                        f"{_boot_res.get('coins_used')} koin.\n"
+                        f"Bot siap tempur! 🚀",
+                        notify=True,
+                        force=True,
+                    )
+                else:
+                    log(f"⚠️ AUTO-BOOTSTRAP gagal: {_boot_res.get('reason', 'unknown')}")
+            else:
+                log("⚠️ AUTO-BOOTSTRAP: Gagal fetch tickers, skip bootstrap.")
+        else:
+            log(f"✅ Model sudah ada (v{_ml_status.get('latest_version')}), skip bootstrap.")
+    except Exception as e:
+        log(f"⚠️ AUTO-BOOTSTRAP error (bot tetap jalan): {e}", "warning")
+    # ── END AUTO-BOOTSTRAP ──────────────────────────────────────────────────
+
     consecutive_errors = 0
     cycle_count = 0
 
