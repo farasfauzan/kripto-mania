@@ -3278,6 +3278,18 @@ if __name__ == "__main__":
                 consecutive_errors += 1
                 wait = min(30, consecutive_errors * 5)
                 log(f"Fetch gagal ({consecutive_errors}x). Retry in {wait}s...")
+                if consecutive_errors == 5:
+                    try:
+                        send_message(
+                            "⚠️ *ALERT: BOT FETCH FAILED* ⚠️\n\n"
+                            "Bot gagal melakukan fetch data tickers dari Indodax sebanyak *5x berturut-turut*.\n"
+                            "Ada kemungkinan API Indodax sedang gangguan atau koneksi terhambat.\n\n"
+                            "Bot tetap mencoba recovery otomatis...",
+                            notify=True,
+                            force=True,
+                        )
+                    except Exception as tg_err:
+                        log(f"Gagal mengirim telegram alert: {tg_err}", "error")
                 time.sleep(wait)
                 continue
 
@@ -3348,4 +3360,16 @@ if __name__ == "__main__":
         except Exception as e:
             consecutive_errors += 1
             log(f"Crash: {e} -- restarting in 10s...", "error")
+            if consecutive_errors == 5:
+                try:
+                    send_message(
+                        f"🚨 *CRITICAL ALERT: BOT CRASH LOOP* 🚨\n\n"
+                        f"Bot telah mengalami *{consecutive_errors}* error/crash beruntun.\n"
+                        f"Detail error terakhir:\n`{str(e)[:500]}`\n\n"
+                        f"⚠️ Bot akan terus mencoba restart otomatis setiap 10s.",
+                        notify=True,
+                        force=True,
+                    )
+                except Exception as tg_err:
+                    log(f"Gagal mengirim telegram alert: {tg_err}", "error")
             time.sleep(10)

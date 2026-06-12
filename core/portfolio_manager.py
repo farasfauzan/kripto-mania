@@ -816,12 +816,15 @@ def check_tp_sl(current_prices: dict) -> list:
             action = True
 
         # 3. Cek Trailing Stop / TP1 (Sederhana: Kalau sudah lewat TP1, dan turun X% dari highest)
-        # Trailing stop aktif jika harga sudah minimal naik 2%
-        elif pnl_pct > 2.0:
+        # Trailing stop aktif jika tertinggi sempat melewati TP1
+        elif highest >= tp1:
             trailing_drop = (highest - curr_price) / highest * 100
             if trailing_drop >= 2.5:  # Jika turun 2.5% dari pucuk tertinggi
-                reason = f"🛡️ TRAILING STOP AKTIF (+{pnl_pct:.2f}%)"
-                action = True
+                # Amankan agar tidak rugi: minimal jual di harga beli + 0.5%
+                min_sell_price = buy_price * 1.005
+                if curr_price >= min_sell_price:
+                    reason = f"🛡️ TRAILING STOP AKTIF (+{pnl_pct:.2f}%)"
+                    action = True
 
         if action:
             logger.info(
