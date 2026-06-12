@@ -125,6 +125,14 @@ check("verdict APPROVE tidak ubah",
       ca.decide_action(85, 2.0, CONF_FULL, 40, 4, verdict="APPROVE")[0] == "BELI KUAT")
 
 # =============================================================================
+# Score Capping
+# =============================================================================
+action_tolak, _, score_tolak = ca.decide_action(100, 2.0, CONF_FULL, 40, 4, verdict="TOLAK")
+check("verdict TOLAK caps score at 49", score_tolak == 49, f"score={score_tolak}")
+action_conf, _, score_conf = ca.decide_action(100, 2.0, CONF_3, 40, 4)
+check("low confluence caps score at 64", score_conf == 64, f"score={score_conf}")
+
+# =============================================================================
 # compute_risk_level
 # =============================================================================
 check("risk rendah (stabil)",

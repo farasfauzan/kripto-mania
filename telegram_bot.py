@@ -730,7 +730,7 @@ def analyze_coin(symbol, data, candles):
 
     # Keputusan action + semua gate (threshold, confluence, anti-FOMO, MTF, verdict)
     # IDENTIK dengan web — tidak akan ada lagi sinyal bertentangan utk koin yg sama.
-    action, emoji = decide_action(
+    action, emoji, score = decide_action(
         score=score,
         change=change,
         confluence=confluence,

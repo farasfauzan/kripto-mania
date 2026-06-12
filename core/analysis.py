@@ -79,9 +79,10 @@ def compute_base_score(change, ema_trend_pct, macd_signal, rsi, supertrend,
     if bt["bt_trades"] >= 6:
         bt_adj = (bt["bt_wr"] - 50) * 0.12
 
+    clamped_change = clamp(change, -10.0, 5.0)
     base = (
         50
-        + change * 4.2
+        + clamped_change * 4.2
         + liquidity_bonus
         + tech_score * 0.65
         + bb_bonus
@@ -160,7 +161,20 @@ def decide_action(score, change, confluence, range_pos, mtf_adjustment,
     elif verdict == "TUNGGU" and is_entry_action(action):
         action, emoji = "WATCH", "⚪"
 
-    return action, emoji
+    # 7. Adjust score to match final action bounds
+    adjusted_score = score
+    if action == "BELI KUAT":
+        pass
+    elif action == "CICIL BELI":
+        adjusted_score = min(score, 79)
+    elif action == "WATCH":
+        adjusted_score = min(score, 64)
+    elif action == "JANGAN BELI":
+        adjusted_score = min(score, 49)
+    elif action == "HINDARI":
+        adjusted_score = min(score, 34)
+
+    return action, emoji, adjusted_score
 
 
 def compute_risk_level(change, vol_idr, rsi, macd_signal, supertrend, range_pos, ml, bt, symbol=""):

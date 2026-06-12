@@ -1657,7 +1657,7 @@ def analyze_coin_advanced(symbol, data, candles, market_stats, market_regime=Non
 
     # Keputusan action + semua gate (threshold, confluence, anti-FOMO, MTF,
     # regime, verdict) — terpadu via core.analysis, IDENTIK dengan bot Telegram.
-    action, emoji = decide_action(
+    action, emoji, score = decide_action(
         score=score, change=change, confluence=confluence, range_pos=range_pos,
         mtf_adjustment=mtf["mtf_adjustment"],
         regime_allow_aggressive=regime.get("allow_aggressive", True),
