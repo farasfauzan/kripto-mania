@@ -299,8 +299,16 @@ def _select_top_features_by_mutual_info(
     if X.shape[1] <= k:
         return X
     try:
+        if len(X) > 10000:
+            sample_idx = np.random.choice(len(X), 10000, replace=False)
+            X_sample = X.iloc[sample_idx]
+            y_sample = y.iloc[sample_idx]
+        else:
+            X_sample = X
+            y_sample = y
+            
         selector = SelectKBest(score_func=mutual_info_classif, k=k)
-        selector.fit(X, y)
+        selector.fit(X_sample, y_sample)
         mask = selector.get_support()
         selected = X.loc[:, mask]
         return selected
