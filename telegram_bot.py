@@ -851,6 +851,18 @@ def format_idr(value):
 
 import hashlib
 import re
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Global session with retries to handle random Hugging Face/Telegram TCP packet drops
+tg_session = requests.Session()
+_retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["POST", "GET"]
+)
+tg_session.mount("https://", HTTPAdapter(max_retries=_retry_strategy))
 
 
 def _message_fingerprint(text):
@@ -898,19 +910,22 @@ def send_message(text, notify=False, force=False):
             "disable_notification": not notify,
         }
         try:
-            resp = requests.post(url, json=payload, timeout=10)
+            resp = tg_session.post(url, json=payload, timeout=(5, 30))
             result = resp.json()
             if (
                 not result.get("ok")
                 and "parse" in str(result.get("description", "")).lower()
             ):
                 payload.pop("parse_mode", None)
-                resp2 = requests.post(url, json=payload, timeout=10)
+                resp2 = tg_session.post(url, json=payload, timeout=(5, 30))
                 result = resp2.json()
             if not result.get("ok"):
-                log(f"Telegram error: {result}", "error")
+                log(f"Send failed: {result.get('description')}")
+                return False
         except Exception as e:
-            log(f"Send error: {e}", "error")
+            err_str = str(e)
+            log(f"Send error: {err_str}", "error")
+            return False
         if i < len(chunks) - 1:
             time.sleep(0.3)
     return True
@@ -2977,7 +2992,7 @@ def _command_listener_loop():
                 "timeout": 25,  # long-poll: nunggu sampai ada pesan / 25s
                 "offset": _last_update_offset + 1 if _last_update_offset else None,
             }
-            resp = requests.get(url, params=params, timeout=35)
+            resp = tg_session.get(url, params=params, timeout=(5, 35))
             data = resp.json()
             if not data.get("ok"):
                 time.sleep(2)
