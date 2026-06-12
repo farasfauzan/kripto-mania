@@ -74,7 +74,13 @@ def _cached_get(url: str, params: dict | None = None, timeout: int = 8) -> Any:
         _cache[cache_key] = (now, data)
         return data
     except Exception as e:
-        logger.warning(f"Binance API error ({url}): {e}")
+        err_msg = str(e)
+        if "451" in err_msg:
+            # 451 Client Error (Unavailable For Legal Reasons) -> US IP block (Hugging Face)
+            # Log as debug to prevent spamming
+            logger.debug(f"Binance API blocked (451) for {url}: {err_msg}")
+        else:
+            logger.warning(f"Binance API error ({url}): {err_msg}")
         return None
 
 
