@@ -119,7 +119,15 @@ def decide_action(score, change, confluence, range_pos, mtf_adjustment,
       5. Regime guard (BTC RISK_OFF -> tahan agresif)
       6. Verdict committee (TOLAK/TUNGGU)
     """
-    t = THRESHOLDS
+    import os
+    t = THRESHOLDS.copy()
+    aggressive = os.environ.get("AGGRESSIVE_MODE") == "1"
+    default_min_confluence = 3 if aggressive else 4
+    default_watch_floor = 2 if aggressive else 3
+
+    t["confluence_min_entry"] = int(os.environ.get("CONFLUENCE_MIN_ENTRY", str(default_min_confluence)))
+    t["confluence_watch_floor"] = int(os.environ.get("CONFLUENCE_WATCH_FLOOR", str(default_watch_floor)))
+
     # 1. Threshold dasar
     if score >= t["beli_kuat_score"] and change > t["beli_kuat_change"]:
         action, emoji = "BELI KUAT", "🟢"

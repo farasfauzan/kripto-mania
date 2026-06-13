@@ -768,6 +768,7 @@ def compute_static_sr(candles, tolerance_pct=1.2):
 
 
 def compute_confluence_signal(candles):
+    import os
     ema200 = compute_ema200_trend(candles)
     volume = compute_volume_anomaly(candles, threshold=1.2)
     pinbar = detect_bullish_pinbar(candles)
@@ -782,22 +783,27 @@ def compute_confluence_signal(candles):
     }
     passed = sum(1 for v in checks.values() if v)
     total = len(checks)
+
+    # Dynamic confluence threshold
+    aggressive = os.environ.get("AGGRESSIVE_MODE") == "1"
+    default_min_confluence = 3 if aggressive else 4
+    min_confluence = int(os.environ.get("CONFLUENCE_MIN_ENTRY", str(default_min_confluence)))
+
+    allow_entry = passed >= min_confluence
+
     if passed == 5:
         label = "VALID 5/5"
         strength = "SANGAT KUAT"
-        allow_entry = True
     elif passed == 4:
         label = "VALID 4/5"
         strength = "KUAT"
-        allow_entry = True
     elif passed == 3:
         label = "VALID 3/5"
-        strength = "PANTAU"
-        allow_entry = False
+        strength = "CUKUP" if allow_entry else "PANTAU"
     else:
         label = f"INVALID {passed}/5"
         strength = "TOLAK"
-        allow_entry = False
+
     return {
         "confluence_passed": passed,
         "confluence_total": total,
