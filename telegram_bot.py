@@ -114,6 +114,7 @@ def _get_api_key(key_name):
 
 GEMINI_API_KEY = _get_api_key("GEMINI_API_KEY")
 DEEPSEEK_API_KEY = _get_api_key("DEEPSEEK_API_KEY")
+OPENROUTER_API_KEY = _get_api_key("OPENROUTER_API_KEY")
 
 BOT_TOKEN = _get_api_key("TELEGRAM_BOT_TOKEN")
 CHAT_ID = _get_api_key("TELEGRAM_CHAT_ID")
@@ -1529,7 +1530,7 @@ def check_realtime_confluence_alerts(all_coins):
             link_tv = f"https://www.tradingview.com/chart/?symbol=INDODAX:{pair_url}"
             ch_sign = "+" if res["change"] >= 0 else ""
 
-            insight_res = generate_signal_insight(res, GEMINI_API_KEY, DEEPSEEK_API_KEY)
+            insight_res = generate_signal_insight(res, GEMINI_API_KEY, DEEPSEEK_API_KEY, OPENROUTER_API_KEY)
             ai_insight = insight_res.get(
                 "insight",
                 "📊 *ANALYTICS & INSIGHT:*\nAI Insight tidak tersedia saat ini.\n\n🟢 *INSTRUKSI:*\nIkuti sinyal teknikal di atas dengan manajemen risiko.",
@@ -2575,7 +2576,7 @@ def _handle_telegram_command_inner(update_data):
             res = apply_bot_intelligence(analyze_coin(symbol, coin_data, candles))
             
             # Generate AI custom explanation
-            analysis_text = generate_custom_explain(res, GEMINI_API_KEY, DEEPSEEK_API_KEY)
+            analysis_text = generate_custom_explain(res, GEMINI_API_KEY, DEEPSEEK_API_KEY, OPENROUTER_API_KEY)
             
             # Send message
             header = (

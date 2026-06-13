@@ -326,16 +326,32 @@ def _is_quota_error(exc: Exception) -> bool:
     )
 
 
-def call_llm_for_playbook(prompt: str, gemini_key: str = "", deepseek_key: str = "") -> str:
-    """Panggil LLM dengan auto-fallback. Coba Gemini dulu, kalau quota habis pindah ke Deepseek."""
-    if not gemini_key and not deepseek_key:
-        return "_AI Auto-Pilot tidak aktif: API key Gemini atau Deepseek belum dipasang._"
+def call_llm_for_playbook(prompt: str, gemini_key: str = "", deepseek_key: str = "", openrouter_key: str = "") -> str:
+    """Panggil LLM dengan auto-fallback. Coba Gemini dulu, kalau quota habis pindah ke Deepseek, atau gunakan OpenRouter jika dipasang."""
+    if not gemini_key and not deepseek_key and not openrouter_key:
+        return "_AI Auto-Pilot tidak aktif: API key Gemini, Deepseek, atau OpenRouter belum dipasang._"
     try:
         from openai import OpenAI  # type: ignore
     except ImportError:
         return "_OpenAI client belum terinstall. Jalankan `pip install openai`._"
 
     errors: list[str] = []
+
+    # Try OpenRouter if provided
+    if openrouter_key:
+        client = OpenAI(
+            api_key=openrouter_key,
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={
+                "HTTP-Referer": "https://github.com/farasfauzan/kripto-mania",
+                "X-Title": "Kripto Mania Trading Bot"
+            }
+        )
+        text, err = _try_provider(client, "google/gemini-2.5-flash", prompt)
+        if text:
+            return text
+        if err is not None:
+            errors.append(f"OpenRouter: {type(err).__name__}: {str(err)[:140]}")
 
     # Try Gemini first kalau ada
     if gemini_key:
@@ -376,6 +392,7 @@ def generate_playbook(
     tickers: dict | None,
     gemini_key: str = "",
     deepseek_key: str = "",
+    openrouter_key: str = "",
 ) -> dict:
     """High-level entry point. Return {playbook, signature, generated_at}."""
     ctx = build_pilot_context(
@@ -384,7 +401,7 @@ def generate_playbook(
     )
     sig = _hash_context(ctx)
     prompt = render_pilot_prompt(ctx)
-    playbook = call_llm_for_playbook(prompt, gemini_key, deepseek_key)
+    playbook = call_llm_for_playbook(prompt, gemini_key, deepseek_key, openrouter_key)
     return {
         "playbook": playbook,
         "signature": sig,
@@ -397,7 +414,7 @@ def generate_playbook(
     }
 
 
-def generate_signal_insight(coin_data: dict, gemini_key: str = "", deepseek_key: str = "") -> dict:
+def generate_signal_insight(coin_data: dict, gemini_key: str = "", deepseek_key: str = "", openrouter_key: str = "") -> dict:
     """Generate a quick insight for a single realtime signal."""
     prompt = f"""
     Berikan "ANALYTICS & INSIGHT" dan "INSTRUKSI" singkat, padat, dan profesional untuk aset crypto {coin_data.get('symbol')} yang sedang memberikan sinyal {coin_data.get('action')}.
@@ -423,7 +440,7 @@ def generate_signal_insight(coin_data: dict, gemini_key: str = "", deepseek_key:
     Batasi maksimal 70 kata secara keseluruhan. Jangan beri salam pembuka/penutup.
     """
     
-    insight_text = call_llm_for_playbook(prompt, gemini_key, deepseek_key)
+    insight_text = call_llm_for_playbook(prompt, gemini_key, deepseek_key, openrouter_key)
     
     # Clean up
     insight_text = insight_text.replace("```markdown", "").replace("```", "").strip()
@@ -433,7 +450,7 @@ def generate_signal_insight(coin_data: dict, gemini_key: str = "", deepseek_key:
     return {"insight": insight_text}
 
 
-def generate_custom_explain(coin_data: dict, gemini_key: str = "", deepseek_key: str = "") -> str:
+def generate_custom_explain(coin_data: dict, gemini_key: str = "", deepseek_key: str = "", openrouter_key: str = "") -> str:
     """Generate a premium, comprehensive AI analysis for a single coin requested by the user."""
     price_str = _format_price(coin_data.get("price", 0))
     tp1_str = _format_price(coin_data.get("tp1", 0)) if coin_data.get("tp1") else "-"
@@ -481,7 +498,7 @@ def generate_custom_explain(coin_data: dict, gemini_key: str = "", deepseek_key:
     - WAJIB akhiri dengan "*Bukan saran keuangan. DYOR.*"
     """
     
-    analysis = call_llm_for_playbook(prompt, gemini_key, deepseek_key)
+    analysis = call_llm_for_playbook(prompt, gemini_key, deepseek_key, openrouter_key)
     analysis = analysis.replace("```markdown", "").replace("```", "").strip()
     
     if (analysis.startswith("_") and analysis.endswith("_")) or "tidak aktif" in analysis or "gagal" in analysis:
