@@ -431,3 +431,64 @@ def generate_signal_insight(coin_data: dict, gemini_key: str = "", deepseek_key:
         insight_text = "📊 *ANALYTICS & INSIGHT:*\nAI Insight tidak tersedia saat ini.\n\n🟢 *INSTRUKSI:*\nIkuti sinyal teknikal di atas dengan manajemen risiko."
         
     return {"insight": insight_text}
+
+
+def generate_custom_explain(coin_data: dict, gemini_key: str = "", deepseek_key: str = "") -> str:
+    """Generate a premium, comprehensive AI analysis for a single coin requested by the user."""
+    price_str = _format_price(coin_data.get("price", 0))
+    tp1_str = _format_price(coin_data.get("tp1", 0)) if coin_data.get("tp1") else "-"
+    tp2_str = _format_price(coin_data.get("tp2", 0)) if coin_data.get("tp2") else "-"
+    sl_str = _format_price(coin_data.get("stop_loss", 0)) if coin_data.get("stop_loss") else "-"
+    
+    prompt = f"""
+    Bertindaklah sebagai AI Crypto Analyst Senior. Berikan analisis mendalam, obyektif, dan profesional untuk aset crypto {coin_data.get('symbol')} berdasarkan data teknikal dan analisis pasar terkini.
+
+    DATA TEKNIKAL {coin_data.get('symbol')}:
+    - Harga Saat Ini: {price_str}
+    - Perubahan 24 Jam: {coin_data.get('change'):+.2f}%
+    - RSI (14): {coin_data.get('rsi')}
+    - MACD Signal: {coin_data.get('macd_signal')}
+    - Supertrend: {coin_data.get('supertrend')}
+    - Multi-Timeframe Confirmation (MTF): {coin_data.get('mtf_label')}
+    - Rekomendasi Bot: {coin_data.get('action')} (Score: {coin_data.get('score')}/100)
+    - Machine Learning Forecast: {coin_data.get('ml_label')} ({coin_data.get('ml_prob')}%)
+    """
+    
+    if coin_data.get('action') in ("BELI KUAT", "CICIL BELI"):
+        prompt += f"""
+    - Target Profit 1 (TP1): {tp1_str}
+    - Target Profit 2 (TP2): {tp2_str}
+    - Stop Loss (SL): {sl_str}
+    - Alokasi Modal Direkomendasikan: {coin_data.get('alloc_pct')}%
+    """
+    
+    prompt += f"""
+    Tuliskan laporan analisis dalam bahasa Indonesia dengan struktur Markdown premium berikut:
+
+    🔍 **Analisis Momentum & Trend:**
+    [Analisis mendalam mengenai kondisi trend saat ini berdasarkan RSI, MACD, Supertrend, dan MTF. Apakah jenuh beli/jenuh jual? Apakah trend bullish/bearish kuat?]
+
+    🧠 **Prediksi Machine Learning & Sentimen:**
+    [Jelaskan pandangan AI/ML forecast ({coin_data.get('ml_label')}) dan signifikansi probabilitasnya ({coin_data.get('ml_prob')}%) dalam market saat ini. Hubungkan dengan sentiment pasar jika relevan.]
+
+    🛡️ **Rekomendasi Strategi & Manajemen Risiko:**
+    [Berikan panduan taktis bagi trader: apakah layak masuk sekarang, menunggu (wait & see), atau keluar/hindari. Jika layak masuk, bagaimana skenario TP/SL dan alokasi terbaik. Jika tidak, sebutkan level konfirmasi yang harus ditunggu.]
+
+    BATASAN:
+    - Gunakan bahasa Indonesia yang profesional, berwawasan, dan tidak bertele-tele.
+    - Jangan memberikan kepastian mutlak (gunakan probabilitas).
+    - Maksimal 150 kata secara keseluruhan.
+    - WAJIB akhiri dengan "*Bukan saran keuangan. DYOR.*"
+    """
+    
+    analysis = call_llm_for_playbook(prompt, gemini_key, deepseek_key)
+    analysis = analysis.replace("```markdown", "").replace("```", "").strip()
+    
+    if "_Semua AI provider gagal" in analysis or "_Tidak ada API" in analysis:
+        analysis = (
+            f"🔍 *Analisis Momentum & Trend:*\nTidak dapat menghubungi provider AI untuk analisis saat ini.\n\n"
+            f"🧠 *Prediksi Machine Learning & Sentimen:*\nForecast: {coin_data.get('ml_label')} ({coin_data.get('ml_prob')}%)\n\n"
+            f"🛡️ *Rekomendasi Strategi & Manajemen Risiko:*\nBot Action: {coin_data.get('action')} (Score: {coin_data.get('score')}/100)."
+        )
+    return analysis
+

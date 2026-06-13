@@ -74,7 +74,7 @@ from learning_engine import (
     record_paper_signal,
 )
 from news_engine import apply_news_adjustments, build_news_profile
-from ai_pilot import generate_signal_insight
+from ai_pilot import generate_signal_insight, generate_custom_explain
 from core.applog import get_logger
 from core.committee import build_committee, committee_summary_line
 from core import command_router, execution_engine, portfolio_manager
@@ -2367,6 +2367,7 @@ def _handle_telegram_command_inner(update_data):
             f"🔥 */agresif on|off* — Toggle mode agresif\n"
             f"💸 */autotrade paper|real|off* — Atur eksekusi auto-trade\n"
             f"🧠 */brain* — Status belajar ML (data, versi model)\n"
+            f"🧠 */explain <koin>* — Analisis koin berbasis AI/LLM\n"
 
             f"🏋️ */train* — Paksa latih ulang model ML sekarang\n"
             f"📊 */scan* — Scan semua koin utama sekarang\n"
@@ -2530,6 +2531,66 @@ def _handle_telegram_command_inner(update_data):
         except Exception as e:
             log(f"Error /top: {e}")
             send_message(f"❌ Error: {str(e)[:100]}", notify=True)
+        return True
+
+    # === /explain ===
+    if cmd == "/explain":
+        if not args:
+            send_message(
+                "⚠️ *Format Salah*\nGunakan: `/explain <SYMBOL>` (contoh: `/explain BTC` atau `/explain ETH`)",
+                notify=True,
+                force=True,
+            )
+            return True
+            
+        symbol = args[0].upper().strip()
+        send_message(
+            f"⏳ *Menganalisis ${symbol}...* _AI sedang merangkum indikator teknikal & pasar._",
+            notify=False,
+        )
+        
+        try:
+            all_coins = fetch_all_tickers()
+            if not all_coins or symbol not in all_coins:
+                send_message(
+                    f"❌ Koin *{symbol}* tidak ditemukan di pasar IDR IndodaxSummaries.",
+                    notify=True,
+                    force=True,
+                )
+                return True
+                
+            coin_data = all_coins[symbol]
+            pair = coin_data["pair"]
+            
+            candles = fetch_candles(pair)
+            if candles.empty:
+                send_message(
+                    f"❌ Gagal mengambil data grafik (candles) untuk {symbol}.",
+                    notify=True,
+                    force=True,
+                )
+                return True
+                
+            # Jalankan analisis teknikal lengkap
+            res = apply_bot_intelligence(analyze_coin(symbol, coin_data, candles))
+            
+            # Generate AI custom explanation
+            analysis_text = generate_custom_explain(res, GEMINI_API_KEY, DEEPSEEK_API_KEY)
+            
+            # Send message
+            header = (
+                f"🧠 *AI ANALYSIS — {symbol}*\n"
+                f"💵 Harga: {format_idr(res['price'])} ({'+' if res['change'] >= 0 else ''}{res['change']:.2f}%)\n"
+                f"🤖 Rekomendasi Bot: *{res['action']}* (Score: {res['score']}/100)\n"
+                f"──────────────────────\n\n"
+            )
+            
+            send_message(header + analysis_text, notify=True, force=True)
+            log(f"/explain command executed for {symbol}")
+            
+        except Exception as e:
+            log(f"Error /explain: {e}")
+            send_message(f"❌ Error saat menganalisis koin: {str(e)[:100]}", notify=True, force=True)
         return True
 
     # === /portfolio ===
