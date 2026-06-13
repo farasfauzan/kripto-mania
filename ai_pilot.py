@@ -484,11 +484,11 @@ def generate_custom_explain(coin_data: dict, gemini_key: str = "", deepseek_key:
     analysis = call_llm_for_playbook(prompt, gemini_key, deepseek_key)
     analysis = analysis.replace("```markdown", "").replace("```", "").strip()
     
-    if "_Semua AI provider gagal" in analysis or "_Tidak ada API" in analysis:
+    if (analysis.startswith("_") and analysis.endswith("_")) or "tidak aktif" in analysis or "gagal" in analysis:
         analysis = (
-            f"🔍 *Analisis Momentum & Trend:*\nTidak dapat menghubungi provider AI untuk analisis saat ini.\n\n"
+            f"🔍 *Analisis Momentum & Trend:*\nTidak dapat membuat analisis AI otomatis saat ini.\n\n"
             f"🧠 *Prediksi Machine Learning & Sentimen:*\nForecast: {coin_data.get('ml_label')} ({coin_data.get('ml_prob')}%)\n\n"
-            f"🛡️ *Rekomendasi Strategi & Manajemen Risiko:*\nBot Action: {coin_data.get('action')} (Score: {coin_data.get('score')}/100)."
+            f"🛡️ *Rekomendasi Strategi & Manajemen Risiko:*\nBot Action: {coin_data.get('action')} (Score: {coin_data.get('score')}/100). Harap perhatikan TP/SL manual."
         )
     return analysis
 
