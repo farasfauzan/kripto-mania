@@ -189,6 +189,7 @@ def cmd_help():
         f"🔔 */alert on/off* — Aktifkan/nonaktifkan alert\n"
         f"🔥 */agresif on/off* — Mode Pro Trader Scalper\n"
         f"🌤 */weather* — Cek market mode saat ini\n"
+        f"⚡ */analyze <koin>* — Analisis teknikal murni (tanpa LLM)\n"
         f"──────────────────────\n"
         f"💡 Bot juga otomatis push sinyal:\n"
         f"• 08:00 WIB — Sinyal harian\n"
@@ -646,11 +647,86 @@ def cmd_agresif(state):
         return True
     else:
         os.environ["AGGRESSIVE_MODE"] = "0"
-        send_telegram_message("🛡️ *MODE AGRESIF NONAKTIF* — Bot kembali ke mode swing/defensif normal.", notify=True)
+def cmd_analyze(args, telegram_bot_module=None):
+    """Handle /analyze command — analisis teknikal tanpa LLM."""
+    if not args:
+        send_telegram_message(
+            "⚠️ *Format Salah*\nGunakan: `/analyze <SYMBOL>` (contoh: `/analyze BTC`)",
+            notify=True
+        )
+        return True
+        
+    symbol = args[0].upper().strip()
+    send_telegram_message(f"⏳ *Menganalisis ${symbol}...* _Menghitung indikator teknikal..._", notify=False)
+    
+    if telegram_bot_module:
+        fetch_all = getattr(telegram_bot_module, 'fetch_all_tickers', None)
+        fetch_candles = getattr(telegram_bot_module, 'fetch_candles', None)
+        analyze_coin = getattr(telegram_bot_module, 'analyze_coin', None)
+        apply_bot_intel = getattr(telegram_bot_module, 'apply_bot_intelligence', None)
+    else:
+        fetch_all = _fetch_all_tickers
+        fetch_candles = _fetch_candles
+        # We need the full analyze function from telegram_bot to get res, but this fallback is okay to fail gracefully
+        send_telegram_message("❌ Fitur /analyze butuh telegram_bot module.", notify=True)
         return True
 
+    try:
+        all_coins = fetch_all()
+        if not all_coins or symbol not in all_coins:
+            send_telegram_message(f"❌ Koin *{symbol}* tidak ditemukan.", notify=True)
+            return True
+            
+        coin_data = all_coins[symbol]
+        pair = coin_data["pair"]
+        
+        candles = fetch_candles(pair)
+        if candles.empty:
+            send_telegram_message(f"❌ Gagal mengambil grafik untuk {symbol}.", notify=True)
+            return True
+            
+        res = apply_bot_intel(analyze_coin(symbol, coin_data, candles))
+        
+        ch = f"+{res['change']:.2f}" if res["change"] >= 0 else f"{res['change']:.2f}"
+        rsi_val = res.get('rsi', 50)
+        rsi_status = 'Oversold' if isinstance(rsi_val, (int, float)) and rsi_val < 30 else 'Overbought' if isinstance(rsi_val, (int, float)) and rsi_val > 70 else 'Netral'
+        
+        lines = [
+            f"⚡ *ANALISIS TEKNIKAL — {symbol}*",
+            f"💵 Harga: {format_idr_simple(res['price'])} ({ch}%)",
+            f"🤖 Rekomendasi Bot: *{res['action']}* (Score: {res['score']}/100)",
+            f"──────────────────────",
+            f"📊 *Indikator Teknikal:*",
+            f"• RSI (14): {rsi_val} — {rsi_status}",
+            f"• MACD: {str(res.get('macd_signal', '')).upper()}",
+            f"• Supertrend: {str(res.get('supertrend', '')).upper()}",
+            f"• Volume 24h: {format_idr_simple(res.get('vol_idr', 0))}",
+            f"",
+            f"🧠 *Kecerdasan Bot:*",
+            f"• ML Prediction: {res.get('ml_label', '')} ({res.get('ml_prob', 0)}%)",
+            f"• Trend MTF: {res.get('mtf_label', '')}",
+            f"• Confluence: {res.get('confluence_label', '')}"
+        ]
+        
+        if _is_entry_action(res["action"]):
+            lines.append("")
+            lines.append(f"🎯 *Target Setup:*")
+            lines.append(f"• TP1: {format_idr_simple(res.get('tp1', 0))}")
+            if res.get('tp2'):
+                lines.append(f"• TP2: {format_idr_simple(res.get('tp2', 0))}")
+            lines.append(f"• SL: {format_idr_simple(res.get('stop_loss', 0))}")
+            lines.append(f"• Alokasi: {res.get('alloc_pct', 0)}%")
+            
+        send_telegram_message("\n".join(lines), notify=True)
+        _LOGGER.info("/analyze executed for %s", symbol)
+        
+    except Exception as e:
+        _LOGGER.error("Error /analyze: %s", e)
+        send_telegram_message(f"❌ Error saat menganalisis koin: {str(e)[:100]}", notify=True)
+    return True
 
 # =============================================================================
+
 # MAIN COMMAND DISPATCHER
 # =============================================================================
 
@@ -674,7 +750,10 @@ def handle_telegram_command(text, telegram_bot_module=None):
         return cmd_scan(telegram_bot_module)
 
     if cmd == "/scan-full":
-        return cmd_scan_fallback()
+        return _cmd_scan_fallback()
+
+    if cmd in ("/analyze", "/tech"):
+        return cmd_analyze(args, telegram_bot_module)
 
     if cmd == "/top":
         return cmd_top(telegram_bot_module)

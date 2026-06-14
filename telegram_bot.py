@@ -2369,6 +2369,7 @@ def _handle_telegram_command_inner(update_data):
             f"💸 */autotrade paper|real|off* — Atur eksekusi auto-trade\n"
             f"🧠 */brain* — Status belajar ML (data, versi model)\n"
             f"🧠 */explain <koin>* — Analisis koin berbasis AI/LLM\n"
+            f"⚡ */analyze <koin>* — Analisis teknikal murni (tanpa LLM)\n"
 
             f"🏋️ */train* — Paksa latih ulang model ML sekarang\n"
             f"📊 */scan* — Scan semua koin utama sekarang\n"
@@ -2591,6 +2592,86 @@ def _handle_telegram_command_inner(update_data):
             
         except Exception as e:
             log(f"Error /explain: {e}")
+            send_message(f"❌ Error saat menganalisis koin: {str(e)[:100]}", notify=True, force=True)
+        return True
+
+    # === /analyze ===
+    if cmd in ("/analyze", "/tech"):
+        if not args:
+            send_message(
+                "⚠️ *Format Salah*\nGunakan: `/analyze <SYMBOL>` (contoh: `/analyze BTC` atau `/analyze ETH`)",
+                notify=True,
+                force=True,
+            )
+            return True
+            
+        symbol = args[0].upper().strip()
+        send_message(
+            f"⏳ *Menganalisis ${symbol}...* _Menghitung indikator teknikal murni..._",
+            notify=False,
+        )
+        
+        try:
+            all_coins = fetch_all_tickers()
+            if not all_coins or symbol not in all_coins:
+                send_message(
+                    f"❌ Koin *{symbol}* tidak ditemukan di pasar IDR Indodax.",
+                    notify=True,
+                    force=True,
+                )
+                return True
+                
+            coin_data = all_coins[symbol]
+            pair = coin_data["pair"]
+            
+            candles = fetch_candles(pair)
+            if candles.empty:
+                send_message(
+                    f"❌ Gagal mengambil data grafik (candles) untuk {symbol}.",
+                    notify=True,
+                    force=True,
+                )
+                return True
+                
+            # Jalankan analisis teknikal lengkap
+            res = apply_bot_intelligence(analyze_coin(symbol, coin_data, candles))
+            
+            # Format manual tanpa LLM
+            ch = f"+{res['change']:.2f}" if res["change"] >= 0 else f"{res['change']:.2f}"
+            rsi_val = res.get('rsi', 50)
+            rsi_status = 'Oversold' if isinstance(rsi_val, (int, float)) and rsi_val < 30 else 'Overbought' if isinstance(rsi_val, (int, float)) and rsi_val > 70 else 'Netral'
+            
+            lines = [
+                f"⚡ *ANALISIS TEKNIKAL — {symbol}*",
+                f"💵 Harga: {format_idr(res['price'])} ({ch}%)",
+                f"🤖 Rekomendasi Bot: *{res['action']}* (Score: {res['score']}/100)",
+                f"──────────────────────",
+                f"📊 *Indikator Teknikal:*",
+                f"• RSI (14): {rsi_val} — {rsi_status}",
+                f"• MACD: {str(res.get('macd_signal', '')).upper()}",
+                f"• Supertrend: {str(res.get('supertrend', '')).upper()}",
+                f"• Volume 24h: {format_idr(res.get('vol_idr', 0))}",
+                f"",
+                f"🧠 *Kecerdasan Bot:*",
+                f"• ML Prediction: {res.get('ml_label', '')} ({res.get('ml_prob', 0)}%)",
+                f"• Trend MTF: {res.get('mtf_label', '')}",
+                f"• Confluence: {res.get('confluence_label', '')}"
+            ]
+            
+            if is_entry_action(res["action"]):
+                lines.append("")
+                lines.append(f"🎯 *Target Setup:*")
+                lines.append(f"• TP1: {format_idr(res.get('tp1', 0))}")
+                if res.get('tp2'):
+                    lines.append(f"• TP2: {format_idr(res.get('tp2', 0))}")
+                lines.append(f"• SL: {format_idr(res.get('stop_loss', 0))}")
+                lines.append(f"• Alokasi: {res.get('alloc_pct', 0)}%")
+                
+            send_message("\n".join(lines), notify=True, force=True)
+            log(f"/analyze command executed for {symbol}")
+            
+        except Exception as e:
+            log(f"Error /analyze: {e}")
             send_message(f"❌ Error saat menganalisis koin: {str(e)[:100]}", notify=True, force=True)
         return True
 
